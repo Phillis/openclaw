@@ -54,6 +54,16 @@ type MemoryPluginTestConfig = {
     maxCandidates?: number;
     maxDocumentChars?: number;
   };
+  budgetGovernor?: {
+    enabled?: boolean;
+  };
+  verificationRecipes?: Array<{
+    id: string;
+    project?: string;
+    description?: string;
+    commands: string[];
+    notes?: string;
+  }>;
   dbPath?: string;
   captureMaxChars?: number;
   recallMaxChars?: number;
@@ -308,6 +318,34 @@ describe("memory plugin e2e", () => {
     });
   });
 
+  test("config schema parses budget governor and verification recipes", () => {
+    const config = parseConfig({
+      budgetGovernor: {
+        enabled: true,
+      },
+      verificationRecipes: [
+        {
+          id: "openclaw-model-router",
+          project: "openclaw-model-router",
+          description: "Model router verification",
+          commands: ["cd /Users/phil/openclaw-model-router && npm run check"],
+          notes: "Run after routing changes.",
+        },
+      ],
+    });
+
+    expect(config?.budgetGovernor).toEqual({ enabled: true });
+    expect(config?.verificationRecipes).toEqual([
+      {
+        id: "openclaw-model-router",
+        project: "openclaw-model-router",
+        description: "Model router verification",
+        commands: ["cd /Users/phil/openclaw-model-router && npm run check"],
+        notes: "Run after routing changes.",
+      },
+    ]);
+  });
+
   test("normalizes reranker score ranges above one", () => {
     const scores = testing.parseModelRerankResponse(
       {
@@ -331,6 +369,18 @@ describe("memory plugin e2e", () => {
     expect(scores.get(1)).toBe(1);
     expect(scores.get(2)).toBe(0.8);
     expect(scores.get(3)).toBe(0);
+  });
+
+  test("classifies tighter and richer recall budgets by query shape", () => {
+    expect(testing.resolveRecallBudget("heartbeat status check", parseConfig()!).profile).toBe(
+      "tiny",
+    );
+    expect(
+      testing.resolveRecallBudget(
+        "Implement the plugin change and add focused tests.",
+        parseConfig()!,
+      ).profile,
+    ).toBe("coding");
   });
 
   test("config schema keeps autoCapture disabled by default", () => {
@@ -769,6 +819,83 @@ describe("memory plugin e2e", () => {
     });
   });
 
+  test("memory budget governor expands coding recall budgets and clamps tiny queries", async () => {
+    const embeddingsCreate = vi.fn(async () => ({
+      data: [{ embedding: [0.1, 0.2, 0.3] }],
+    }));
+    const ensureGlobalUndiciEnvProxyDispatcher = vi.fn();
+    const toArray = vi.fn(async () => []);
+    const limit = vi.fn(() => ({ toArray }));
+    const vectorSearch = vi.fn(() => ({ limit }));
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch,
+          countRows: vi.fn(async () => 0),
+          add: vi.fn(async () => undefined),
+          delete: vi.fn(async () => undefined),
+        })),
+      })),
+    }));
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher,
+      embeddingsCreate,
+      loadLanceDbModule,
+      run: async (dynamicMemoryPlugin) => {
+        const registeredTools: any[] = [];
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: OPENAI_API_KEY,
+              model: "text-embedding-3-small",
+            },
+            dbPath: getDbPath(),
+            autoCapture: false,
+            autoRecall: false,
+          },
+          runtime: {},
+          logger: {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+          },
+          registerTool: (tool: any, opts: any) => {
+            registeredTools.push({ tool, opts });
+          },
+          registerCli: vi.fn(),
+          registerService: vi.fn(),
+          on: vi.fn(),
+          resolvePath: (filePath: string) => filePath,
+        };
+
+        dynamicMemoryPlugin.register(mockApi as any);
+        const recallTool = registeredTools.find((t) => t.opts?.name === "memory_recall")?.tool;
+        if (!recallTool) {
+          throw new Error("memory_recall tool was not registered");
+        }
+
+        await recallTool.execute("coding-query", {
+          query: "Implement the plugin change and add focused tests.",
+          limit: 10,
+        });
+        expect(limit).toHaveBeenLastCalledWith(19);
+
+        await recallTool.execute("tiny-query", {
+          query: "heartbeat status check",
+          limit: 10,
+        });
+        expect(limit).toHaveBeenLastCalledWith(6);
+      },
+    });
+  });
+
   test("marks memory_recall results untrusted and escapes recalled text", async () => {
     const embeddingsCreate = vi.fn(async () => ({
       data: [{ embedding: [0.1, 0.2, 0.3] }],
@@ -1045,6 +1172,109 @@ describe("memory plugin e2e", () => {
           }),
         );
         expect(logger.warn).not.toHaveBeenCalled();
+      },
+    });
+  });
+
+  test("memory_recall surfaces matching verification recipes", async () => {
+    const embeddingsCreate = vi.fn(async () => ({
+      data: [{ embedding: [0.1, 0.2, 0.3] }],
+    }));
+    const ensureGlobalUndiciEnvProxyDispatcher = vi.fn();
+    const toArray = vi.fn(async () => [
+      {
+        id: "memory-router",
+        text: "OpenClaw model router is in /Users/phil/openclaw-model-router",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.8,
+        category: "fact",
+        createdAt: 1,
+        _distance: 0.01,
+      },
+    ]);
+    const limit = vi.fn(() => ({ toArray }));
+    const vectorSearch = vi.fn(() => ({ limit }));
+    const queryToArray = vi.fn(async () => []);
+    const select = vi.fn(() => ({ toArray: queryToArray }));
+    const query = vi.fn(() => ({ select }));
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch,
+          query,
+          countRows: vi.fn(async () => 0),
+          add: vi.fn(async () => undefined),
+          delete: vi.fn(async () => undefined),
+        })),
+      })),
+    }));
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher,
+      embeddingsCreate,
+      loadLanceDbModule,
+      run: async (dynamicMemoryPlugin) => {
+        const registeredTools: any[] = [];
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: OPENAI_API_KEY,
+              model: "text-embedding-3-small",
+            },
+            verificationRecipes: [
+              {
+                id: "openclaw-model-router",
+                project: "openclaw-model-router",
+                description: "Model router verification",
+                commands: ["cd /Users/phil/openclaw-model-router && npm run check"],
+                notes: "Run after routing changes.",
+              },
+            ],
+            dbPath: getDbPath(),
+            autoCapture: false,
+            autoRecall: false,
+          },
+          runtime: {},
+          logger: {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+          },
+          registerTool: (tool: any, opts: any) => {
+            registeredTools.push({ tool, opts });
+          },
+          registerCli: vi.fn(),
+          registerService: vi.fn(),
+          on: vi.fn(),
+          resolvePath: (filePath: string) => filePath,
+        };
+
+        dynamicMemoryPlugin.register(mockApi as any);
+        const recallTool = registeredTools.find((t) => t.opts?.name === "memory_recall")?.tool;
+        if (!recallTool) {
+          throw new Error("memory_recall tool was not registered");
+        }
+
+        const result = await recallTool.execute("recipes-query", {
+          query: "verify the openclaw model router changes",
+        });
+
+        expect(result.content?.[0]?.text ?? "").toContain("Verification recipes:");
+        expect(result.details?.recipes).toEqual([
+          {
+            id: "openclaw-model-router",
+            project: "openclaw-model-router",
+            description: "Model router verification",
+            commands: ["cd /Users/phil/openclaw-model-router && npm run check"],
+            notes: "Run after routing changes.",
+          },
+        ]);
       },
     });
   });

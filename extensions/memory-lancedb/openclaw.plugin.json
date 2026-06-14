@@ -77,6 +77,16 @@
       "help": "Maximum characters per candidate passed to the reranker",
       "advanced": true
     },
+    "budgetGovernor": {
+      "label": "Budget Governor",
+      "help": "Adaptive recall budgets that keep simple turns lean while letting deeper work pull richer memory context",
+      "advanced": true
+    },
+    "verificationRecipes": {
+      "label": "Verification Recipes",
+      "help": "Project-scoped verification commands and notes that can be surfaced alongside memory recall",
+      "advanced": true
+    },
     "dbPath": {
       "label": "Database Path",
       "placeholder": "~/.openclaw/memory/lancedb",
@@ -176,6 +186,50 @@
             "minimum": 100,
             "maximum": 4000
           }
+        }
+      },
+      "budgetGovernor": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "verificationRecipes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "project": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1
+            },
+            "commands": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "notes": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["id", "commands"]
         }
       },
       "dbPath": {

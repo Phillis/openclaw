@@ -21,6 +21,16 @@ export type MemoryConfig = {
     maxCandidates: number;
     maxDocumentChars: number;
   };
+  budgetGovernor?: {
+    enabled: boolean;
+  };
+  verificationRecipes?: Array<{
+    id: string;
+    project?: string;
+    description?: string;
+    commands: string[];
+    notes?: string;
+  }>;
   dreaming?: Record<string, unknown>;
   dbPath?: string;
   autoCapture?: boolean;
@@ -82,6 +92,14 @@ const RERANKER_CONFIG_KEYS = [
   "timeoutMs",
   "maxCandidates",
   "maxDocumentChars",
+] as const;
+const BUDGET_GOVERNOR_CONFIG_KEYS = ["enabled"] as const;
+const VERIFICATION_RECIPE_CONFIG_KEYS = [
+  "id",
+  "project",
+  "description",
+  "commands",
+  "notes",
 ] as const;
 
 function assertAllowedKeys(value: Record<string, unknown>, allowed: string[], label: string) {
@@ -166,6 +184,8 @@ export const memoryConfigSchema = {
       [
         "embedding",
         "reranker",
+        "budgetGovernor",
+        "verificationRecipes",
         "dreaming",
         "dbPath",
         "autoCapture",
@@ -234,6 +254,89 @@ export const memoryConfigSchema = {
           label: "reranker.maxDocumentChars",
         }),
       };
+    }
+
+    let budgetGovernor: MemoryConfig["budgetGovernor"] | undefined;
+    const budgetGovernorCfg = cfg.budgetGovernor as Record<string, unknown> | undefined;
+    if (budgetGovernorCfg !== undefined) {
+      if (
+        !budgetGovernorCfg ||
+        typeof budgetGovernorCfg !== "object" ||
+        Array.isArray(budgetGovernorCfg)
+      ) {
+        throw new Error("budgetGovernor config must be an object");
+      }
+      assertAllowedKeys(
+        budgetGovernorCfg,
+        [...BUDGET_GOVERNOR_CONFIG_KEYS],
+        "budgetGovernor config",
+      );
+      budgetGovernor = {
+        enabled: budgetGovernorCfg.enabled !== false,
+      };
+    }
+
+    let verificationRecipes: MemoryConfig["verificationRecipes"] | undefined;
+    if (cfg.verificationRecipes !== undefined) {
+      if (!Array.isArray(cfg.verificationRecipes)) {
+        throw new Error("verificationRecipes must be an array");
+      }
+      verificationRecipes = cfg.verificationRecipes.map((recipe, index) => {
+        if (!recipe || typeof recipe !== "object" || Array.isArray(recipe)) {
+          throw new Error(`verificationRecipes.${index} must be an object`);
+        }
+        const recipeCfg = recipe as Record<string, unknown>;
+        assertAllowedKeys(
+          recipeCfg,
+          [...VERIFICATION_RECIPE_CONFIG_KEYS],
+          `verificationRecipes.${index}`,
+        );
+        const id = typeof recipeCfg.id === "string" ? recipeCfg.id.trim() : "";
+        if (!id) {
+          throw new Error(`verificationRecipes.${index}.id must not be empty`);
+        }
+        if (!Array.isArray(recipeCfg.commands) || recipeCfg.commands.length === 0) {
+          throw new Error(`verificationRecipes.${index}.commands must be a non-empty array`);
+        }
+        const commands = recipeCfg.commands.map((command, commandIndex) => {
+          if (typeof command !== "string") {
+            throw new Error(
+              `verificationRecipes.${index}.commands.${commandIndex} must be a string`,
+            );
+          }
+          const normalized = command.trim();
+          if (!normalized) {
+            throw new Error(
+              `verificationRecipes.${index}.commands.${commandIndex} must not be empty`,
+            );
+          }
+          if (normalized.length > 500) {
+            throw new Error(
+              `verificationRecipes.${index}.commands.${commandIndex} must be at most 500 characters`,
+            );
+          }
+          return normalized;
+        });
+        const project =
+          typeof recipeCfg.project === "string" && recipeCfg.project.trim()
+            ? recipeCfg.project.trim()
+            : undefined;
+        const description =
+          typeof recipeCfg.description === "string" && recipeCfg.description.trim()
+            ? recipeCfg.description.trim()
+            : undefined;
+        const notes =
+          typeof recipeCfg.notes === "string" && recipeCfg.notes.trim()
+            ? recipeCfg.notes.trim()
+            : undefined;
+        return {
+          id,
+          ...(project ? { project } : {}),
+          ...(description ? { description } : {}),
+          commands,
+          ...(notes ? { notes } : {}),
+        };
+      });
     }
 
     const captureMaxChars = resolveBoundedIntegerConfig({
@@ -309,6 +412,8 @@ export const memoryConfigSchema = {
         dimensions,
       },
       ...(reranker ? { reranker } : {}),
+      ...(budgetGovernor ? { budgetGovernor } : {}),
+      ...(verificationRecipes ? { verificationRecipes } : {}),
       dreaming,
       dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : DEFAULT_DB_PATH,
       autoCapture: cfg.autoCapture === true,
@@ -383,6 +488,16 @@ export const memoryConfigSchema = {
       label: "Reranker Document Chars",
       placeholder: String(DEFAULT_RERANKER_MAX_DOCUMENT_CHARS),
       help: "Maximum characters per candidate passed to the reranker",
+      advanced: true,
+    },
+    budgetGovernor: {
+      label: "Budget Governor",
+      help: "Adaptive recall budgets that keep simple turns lean while letting deeper work pull richer memory context",
+      advanced: true,
+    },
+    verificationRecipes: {
+      label: "Verification Recipes",
+      help: "Project-scoped verification commands and notes that can be surfaced alongside memory recall",
       advanced: true,
     },
     dbPath: {
