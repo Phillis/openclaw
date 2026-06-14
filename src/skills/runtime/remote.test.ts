@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { NodeRegistry } from "../../gateway/node-registry.js";
 import { getSkillsSnapshotVersion, resetSkillsRefreshForTest } from "./refresh.js";
 import {
+  getRemoteCapabilitySnapshot,
   getRemoteSkillEligibility,
   recordRemoteNodeBins,
   recordRemoteNodeInfo,
@@ -157,6 +158,41 @@ describe("skills-remote", () => {
     } finally {
       removeRemoteNodeInfo(nodeA);
       removeRemoteNodeInfo(nodeB);
+    }
+  });
+
+  it("reports connected remote capability probe summaries", () => {
+    const nodeId = `node-${randomUUID()}`;
+    const bin = `bin-${randomUUID()}`;
+    try {
+      recordRemoteNodeInfo({
+        nodeId,
+        displayName: "Mac Studio",
+        platform: "darwin",
+        commands: ["system.run", "system.which"],
+      });
+      recordRemoteNodeBins(nodeId, [bin]);
+
+      const snapshot = getRemoteCapabilitySnapshot();
+
+      expect(snapshot?.state).toBe("ok");
+      expect(snapshot?.connectedNodes).toBe(1);
+      expect(snapshot?.eligibleNodes).toBe(1);
+      expect(snapshot?.probedBins).toBe(1);
+      expect(snapshot?.detail).toContain("1 connected");
+      expect(snapshot?.detail).toContain("Mac Studio");
+      expect(snapshot?.nodes[0]).toMatchObject({
+        nodeId,
+        displayName: "Mac Studio",
+        platform: "darwin",
+        connected: true,
+        supportsSystemRun: true,
+        supportsSystemWhich: true,
+        binCount: 1,
+      });
+      expect(snapshot?.nodes[0]?.binProbeCheckedAt).toEqual(expect.any(Number));
+    } finally {
+      removeRemoteNodeInfo(nodeId);
     }
   });
 

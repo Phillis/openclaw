@@ -5,6 +5,7 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { listAgentWorkspaceDirs } from "../../agents/workspace-dirs.js";
+import type { HealthRemoteCapabilitiesSummary } from "../../commands/health.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { NodeRegistry } from "../../gateway/node-registry.js";
 import { listNodePairing, updatePairedNodeMetadata } from "../../infra/node-pairing.js";
@@ -20,6 +21,7 @@ type RemoteNodeRecord = {
   deviceFamily?: string;
   commands?: string[];
   bins: Set<string>;
+  binProbeCheckedAt?: number;
   connected: boolean;
   remoteIp?: string;
 };
@@ -165,6 +167,7 @@ function upsertNode(record: {
     commands: record.commands ?? existing?.commands,
     remoteIp: record.remoteIp ?? existing?.remoteIp,
     bins,
+    binProbeCheckedAt: record.bins !== undefined ? Date.now() : existing?.binProbeCheckedAt,
     connected: record.connected ?? existing?.connected ?? false,
   });
 }
@@ -175,6 +178,7 @@ function clearRemoteNodeBins(nodeId: string): boolean {
     return false;
   }
   existing.bins = new Set();
+  existing.binProbeCheckedAt = Date.now();
   return true;
 }
 
@@ -478,6 +482,50 @@ export function getRemoteSkillEligibility(options?: {
     hasBin: (bin) => bins.has(bin),
     hasAnyBin: (required) => required.some((bin) => bins.has(bin)),
     ...(note ? { note } : {}),
+  };
+}
+
+function formatNodeLabel(node: RemoteNodeRecord): string {
+  return node.displayName?.trim() || node.nodeId;
+}
+
+export function getRemoteCapabilitySnapshot(): HealthRemoteCapabilitiesSummary | undefined {
+  const nodes = [...remoteNodes.values()].filter((node) => node.connected);
+  if (nodes.length === 0) {
+    return undefined;
+  }
+  const eligibleNodes = nodes.filter(
+    (node) => isMacPlatform(node.platform, node.deviceFamily) && supportsSystemRun(node.commands),
+  );
+  const probedBins = eligibleNodes.reduce((sum, node) => sum + node.bins.size, 0);
+  const state = eligibleNodes.length > 0 ? "ok" : "warn";
+  const labels = eligibleNodes.map(formatNodeLabel);
+  const detailParts = [
+    `${nodes.length} connected`,
+    eligibleNodes.length > 0
+      ? `${eligibleNodes.length} macOS exec node${eligibleNodes.length === 1 ? "" : "s"}`
+      : "no macOS exec nodes",
+    `${probedBins} probed bin${probedBins === 1 ? "" : "s"}`,
+    labels.length > 0 ? labels.join(", ") : null,
+  ].filter(Boolean);
+  return {
+    checkedAt: Date.now(),
+    state,
+    detail: detailParts.join(" · "),
+    connectedNodes: nodes.length,
+    eligibleNodes: eligibleNodes.length,
+    probedBins,
+    nodes: nodes.map((node) => ({
+      nodeId: node.nodeId,
+      ...(node.displayName ? { displayName: node.displayName } : {}),
+      ...(node.platform ? { platform: node.platform } : {}),
+      ...(node.deviceFamily ? { deviceFamily: node.deviceFamily } : {}),
+      connected: node.connected,
+      supportsSystemRun: supportsSystemRun(node.commands),
+      supportsSystemWhich: supportsSystemWhich(node.commands),
+      binCount: node.bins.size,
+      ...(node.binProbeCheckedAt ? { binProbeCheckedAt: node.binProbeCheckedAt } : {}),
+    })),
   };
 }
 

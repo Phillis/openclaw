@@ -253,6 +253,25 @@ describe("status.command-sections", () => {
             probes: [],
           },
         },
+        remoteCapabilities: {
+          checkedAt: Date.now(),
+          state: "ok",
+          detail: "1 connected · 1 macOS exec node · 2 probed bins · Mac Studio",
+          connectedNodes: 1,
+          eligibleNodes: 1,
+          probedBins: 2,
+          nodes: [
+            {
+              nodeId: "mac-studio",
+              displayName: "Mac Studio",
+              platform: "darwin",
+              connected: true,
+              supportsSystemRun: true,
+              supportsSystemWhich: true,
+              binCount: 2,
+            },
+          ],
+        },
       } as HealthSummary,
       formatHealthChannelLines: () => [],
       ok: (value) => `ok(${value})`,
@@ -281,6 +300,11 @@ describe("status.command-sections", () => {
         Item: "Agent runtimes",
         Status: "ok(OK)",
         Detail: "openclaw yes · codex yes · claude no · opencode no",
+      },
+      {
+        Item: "Remote nodes",
+        Status: "ok(OK)",
+        Detail: "1 connected · 1 macOS exec node · 2 probed bins · Mac Studio",
       },
     ]);
   });

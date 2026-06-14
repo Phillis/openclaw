@@ -118,6 +118,30 @@ export type HealthLocalCapabilitiesSummary = {
   agentRuntimes?: HealthAgentRuntimesCapabilitySummary;
 };
 
+/** One remote node capability snapshot derived from connected node probes. */
+export type HealthRemoteNodeCapabilitySummary = {
+  nodeId: string;
+  displayName?: string;
+  platform?: string;
+  deviceFamily?: string;
+  connected: boolean;
+  supportsSystemRun: boolean;
+  supportsSystemWhich: boolean;
+  binCount: number;
+  binProbeCheckedAt?: number;
+};
+
+/** Cached remote capability snapshot for connected node surfaces and probed bins. */
+export type HealthRemoteCapabilitiesSummary = {
+  checkedAt: number;
+  state: HealthCapabilityState;
+  detail: string;
+  connectedNodes: number;
+  eligibleNodes: number;
+  probedBins: number;
+  nodes: HealthRemoteNodeCapabilitySummary[];
+};
+
 /** Full gateway health payload consumed by `openclaw health`. */
 export type HealthSummary = {
   ok: true;
@@ -128,6 +152,7 @@ export type HealthSummary = {
   contextEngines?: ContextEngineHealthSummary;
   modelPricing?: ModelPricingHealthSummary;
   localCapabilities?: HealthLocalCapabilitiesSummary;
+  remoteCapabilities?: HealthRemoteCapabilitiesSummary;
   channels: Record<string, ChannelHealthSummary>;
   channelOrder: string[];
   channelLabels: Record<string, string>;

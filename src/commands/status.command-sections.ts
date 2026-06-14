@@ -347,6 +347,13 @@ export function buildStatusHealthRows(params: {
       Detail: params.health.localCapabilities.agentRuntimes.detail,
     });
   }
+  if (params.health.remoteCapabilities) {
+    rows.push({
+      Item: "Remote nodes",
+      Status: renderCapabilityState(params.health.remoteCapabilities.state, params),
+      Detail: params.health.remoteCapabilities.detail,
+    });
+  }
   for (const line of params.formatHealthChannelLines(params.health, { accountMode: "all" })) {
     const colon = line.indexOf(":");
     if (colon === -1) {
