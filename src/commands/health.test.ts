@@ -216,6 +216,28 @@ describe("healthCommand", () => {
         recent,
       },
     });
+    snapshot.localCapabilities = {
+      checkedAt: Date.now(),
+      runtime: {
+        state: "ok",
+        detail: "installed package 1.2.3 · /opt/homebrew/lib/node_modules/openclaw",
+      },
+      memory: {
+        state: "ok",
+        detail: "qmd memory · provider lmstudio · vector ok · embeddings ok",
+      },
+      auth: {
+        state: "warn",
+        detail: "2 providers · 1 ok · 1 expiring",
+        providers: 2,
+        counts: { ok: 1, expiring: 1, expired: 0, missing: 0, static: 0 },
+      },
+      agentRuntimes: {
+        state: "ok",
+        detail: "openclaw yes · codex yes · claude no · opencode no",
+        probes: [],
+      },
+    };
     callGatewayMock.mockResolvedValueOnce(snapshot);
 
     await healthCommand(
@@ -226,6 +248,10 @@ describe("healthCommand", () => {
     expect(runtime.exit).not.toHaveBeenCalled();
     const output = stripAnsi(runtime.log.mock.calls.map((c) => String(c[0])).join("\n"));
     expect(output).toMatch(/WhatsApp: linked/i);
+    expect(output).toMatch(/Runtime: installed package 1\.2\.3/i);
+    expect(output).toMatch(/Memory: qmd memory/i);
+    expect(output).toMatch(/Model auth: 2 providers/i);
+    expect(output).toMatch(/Agent runtimes: openclaw yes/i);
     expect(runtime.log.mock.calls.slice(0, 3)).toEqual([
       ["Gateway connection:"],
       ["  Gateway mode: local"],

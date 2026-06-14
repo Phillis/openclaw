@@ -70,6 +70,12 @@ export type GatewayProbeSnapshot = {
 };
 
 type StatusMemorySearchManager = {
+  getCachedEmbeddingAvailability?():
+    | import("../memory-host-sdk/engine-storage.js").MemoryEmbeddingProbeResult
+    | null;
+  probeEmbeddingAvailability?(): Promise<
+    import("../memory-host-sdk/engine-storage.js").MemoryEmbeddingProbeResult
+  >;
   probeVectorStoreAvailability?(): Promise<boolean>;
   probeVectorAvailability(): Promise<boolean>;
   status(): MemoryProviderStatus;

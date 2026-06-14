@@ -59,6 +59,65 @@ export type ContextEngineHealthSummary = {
 export type ModelPricingHealthSummary =
   import("../gateway/model-pricing-cache-state.js").GatewayModelPricingHealth;
 
+/** Compact status chip state for local capability summaries. */
+export type HealthCapabilityState = "ok" | "warn" | "off" | "missing" | "unknown";
+
+/** Current gateway runtime package/install provenance. */
+export type HealthRuntimeInstallSummary = {
+  state: HealthCapabilityState;
+  detail: string;
+  packageRoot?: string;
+  packageVersion?: string;
+  sourceCheckout?: boolean;
+};
+
+/** Memory backend readiness surfaced in health output. */
+export type HealthMemoryCapabilitySummary = {
+  state: HealthCapabilityState;
+  detail: string;
+  backend?: "builtin" | "qmd";
+  provider?: string;
+  pluginSlot?: string | null;
+};
+
+/** Aggregated model/provider auth readiness surfaced in health output. */
+export type HealthAuthCapabilitySummary = {
+  state: HealthCapabilityState;
+  detail: string;
+  providers: number;
+  counts: {
+    ok: number;
+    expiring: number;
+    expired: number;
+    missing: number;
+    static: number;
+  };
+};
+
+/** One local CLI/runtime probe included in the capability cache. */
+export type HealthAgentRuntimeProbeSummary = {
+  id: string;
+  label: string;
+  command: string;
+  available: boolean;
+};
+
+/** Local CLI/runtime probe rollup surfaced in health output. */
+export type HealthAgentRuntimesCapabilitySummary = {
+  state: HealthCapabilityState;
+  detail: string;
+  probes: HealthAgentRuntimeProbeSummary[];
+};
+
+/** Cached local capability snapshot for runtime install, memory, auth, and CLIs. */
+export type HealthLocalCapabilitiesSummary = {
+  checkedAt: number;
+  runtime: HealthRuntimeInstallSummary;
+  memory?: HealthMemoryCapabilitySummary;
+  auth?: HealthAuthCapabilitySummary;
+  agentRuntimes?: HealthAgentRuntimesCapabilitySummary;
+};
+
 /** Full gateway health payload consumed by `openclaw health`. */
 export type HealthSummary = {
   ok: true;
@@ -68,6 +127,7 @@ export type HealthSummary = {
   plugins?: PluginHealthSummary;
   contextEngines?: ContextEngineHealthSummary;
   modelPricing?: ModelPricingHealthSummary;
+  localCapabilities?: HealthLocalCapabilitiesSummary;
   channels: Record<string, ChannelHealthSummary>;
   channelOrder: string[];
   channelLabels: Record<string, string>;

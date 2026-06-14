@@ -227,6 +227,64 @@ describe("status.command-sections", () => {
     ]);
   });
 
+  it("adds local capability summaries to status rows", () => {
+    const rows = buildStatusHealthRows({
+      health: {
+        durationMs: 42,
+        localCapabilities: {
+          checkedAt: Date.now(),
+          runtime: {
+            state: "ok",
+            detail: "installed package 1.2.3 · /opt/homebrew/lib/node_modules/openclaw",
+          },
+          memory: {
+            state: "warn",
+            detail: "qmd memory · provider lmstudio · vector ok · embeddings warn",
+          },
+          auth: {
+            state: "missing",
+            detail: "2 providers · 1 missing · 1 expired",
+            providers: 2,
+            counts: { ok: 0, expiring: 0, expired: 1, missing: 1, static: 0 },
+          },
+          agentRuntimes: {
+            state: "ok",
+            detail: "openclaw yes · codex yes · claude no · opencode no",
+            probes: [],
+          },
+        },
+      } as HealthSummary,
+      formatHealthChannelLines: () => [],
+      ok: (value) => `ok(${value})`,
+      warn: (value) => `warn(${value})`,
+      muted: (value) => `muted(${value})`,
+    });
+
+    expect(rows).toEqual([
+      { Item: "Gateway", Status: "ok(reachable)", Detail: "42ms" },
+      {
+        Item: "Runtime",
+        Status: "ok(OK)",
+        Detail: "installed package 1.2.3 · /opt/homebrew/lib/node_modules/openclaw",
+      },
+      {
+        Item: "Memory",
+        Status: "warn(WARN)",
+        Detail: "qmd memory · provider lmstudio · vector ok · embeddings warn",
+      },
+      {
+        Item: "Model auth",
+        Status: "warn(MISS)",
+        Detail: "2 providers · 1 missing · 1 expired",
+      },
+      {
+        Item: "Agent runtimes",
+        Status: "ok(OK)",
+        Detail: "openclaw yes · codex yes · claude no · opencode no",
+      },
+    ]);
+  });
+
   it("builds footer lines from update and reachability state", () => {
     expect(
       buildStatusFooterLines({

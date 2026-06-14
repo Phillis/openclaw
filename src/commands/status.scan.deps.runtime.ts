@@ -9,6 +9,12 @@ import { getActiveMemorySearchManager } from "../plugins/memory-runtime.js";
 export { getTailnetHostname };
 
 type StatusMemoryManager = {
+  getCachedEmbeddingAvailability?():
+    | import("../memory-host-sdk/engine-storage.js").MemoryEmbeddingProbeResult
+    | null;
+  probeEmbeddingAvailability?(): Promise<
+    import("../memory-host-sdk/engine-storage.js").MemoryEmbeddingProbeResult
+  >;
   probeVectorStoreAvailability?(): Promise<boolean>;
   probeVectorAvailability(): Promise<boolean>;
   status(): MemoryProviderStatus;
@@ -25,12 +31,32 @@ export async function getMemorySearchManager(params: {
   if (!manager) {
     return { manager: null };
   }
-  const probeVectorStoreAvailability = manager.probeVectorStoreAvailability
-    ? async () => await manager.probeVectorStoreAvailability!()
-    : undefined;
   return {
     manager: {
-      probeVectorStoreAvailability,
+      getCachedEmbeddingAvailability: manager.getCachedEmbeddingAvailability
+        ? () => {
+            if (!manager.getCachedEmbeddingAvailability) {
+              return null;
+            }
+            return manager.getCachedEmbeddingAvailability();
+          }
+        : undefined,
+      probeEmbeddingAvailability: manager.probeEmbeddingAvailability
+        ? async () => {
+            if (!manager.probeEmbeddingAvailability) {
+              throw new Error("embedding availability probe unavailable");
+            }
+            return await manager.probeEmbeddingAvailability();
+          }
+        : undefined,
+      probeVectorStoreAvailability: manager.probeVectorStoreAvailability
+        ? async () => {
+            if (!manager.probeVectorStoreAvailability) {
+              throw new Error("vector store availability probe unavailable");
+            }
+            return await manager.probeVectorStoreAvailability();
+          }
+        : undefined,
       // Expose only the status-facing methods so shared scan code stays decoupled from plugin internals.
       async probeVectorAvailability() {
         return await manager.probeVectorAvailability();

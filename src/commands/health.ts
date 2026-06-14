@@ -49,6 +49,10 @@ import {
   gatewayProbeResultSawGateway,
 } from "./gateway-health-auth-diagnostic.js";
 import { formatHealthChannelLines } from "./health-format.js";
+import {
+  formatLocalCapabilityLines,
+  getHealthLocalCapabilitiesSnapshot,
+} from "./health.local-capabilities.js";
 import type {
   AgentHealthSummary,
   ChannelAccountHealthSummary,
@@ -654,6 +658,10 @@ export async function getHealthSnapshot(params?: {
 
   const pluginHealth = buildPluginHealthSummary();
   const contextEngineHealth = buildContextEngineHealthSummary();
+  const localCapabilities = await getHealthLocalCapabilitiesSnapshot({
+    cfg,
+    defaultAgentId,
+  });
   const summary: HealthSummary = {
     ok: true,
     ts: Date.now(),
@@ -662,6 +670,7 @@ export async function getHealthSnapshot(params?: {
     ...(pluginHealth ? { plugins: pluginHealth } : {}),
     ...(contextEngineHealth ? { contextEngines: contextEngineHealth } : {}),
     modelPricing: getGatewayModelPricingHealth({ enabled: isGatewayModelPricingEnabled(cfg) }),
+    localCapabilities,
     channels,
     channelOrder,
     channelLabels,
@@ -889,6 +898,9 @@ export async function healthCommand(
     const contextEngineLine = formatContextEngineHealthLine(summary);
     if (contextEngineLine) {
       runtime.log(styleHealthChannelLine(contextEngineLine, rich));
+    }
+    for (const line of formatLocalCapabilityLines(summary.localCapabilities)) {
+      runtime.log(styleHealthChannelLine(line, rich));
     }
     for (const plugin of displayPlugins) {
       const channelSummary = summary.channels?.[plugin.id];

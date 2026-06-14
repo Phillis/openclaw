@@ -4,5 +4,6 @@
  */
 export {
   resolveMemoryBackendConfig,
+  type MemoryEmbeddingProbeResult,
   type MemoryProviderStatus,
 } from "../../packages/memory-host-sdk/src/engine-storage.js";

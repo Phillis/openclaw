@@ -29,6 +29,29 @@ type MemoryPluginLike = MemoryPluginStatus;
 type SessionsRecentLike = SessionStatus;
 type EventLoopHealthLike = NonNullable<HealthSummary["eventLoop"]>;
 
+function renderCapabilityState(
+  state: NonNullable<HealthSummary["localCapabilities"]>["runtime"]["state"],
+  params: {
+    ok: (value: string) => string;
+    warn: (value: string) => string;
+    muted: (value: string) => string;
+  },
+): string {
+  switch (state) {
+    case "ok":
+      return params.ok("OK");
+    case "off":
+      return params.muted("OFF");
+    case "missing":
+      return params.warn("MISS");
+    case "unknown":
+      return params.muted("UNKNOWN");
+    case "warn":
+      return params.warn("WARN");
+  }
+  return params.warn("WARN");
+}
+
 export type StatusMemoryStateResolvers = {
   resolveMemoryVectorState: (value: NonNullable<MemoryStatusSnapshot["vector"]>) => {
     state: string;
@@ -294,6 +317,34 @@ export function buildStatusHealthRows(params: {
       Detail: `optional pricing refresh degraded${
         params.health.modelPricing.detail ? `: ${params.health.modelPricing.detail}` : ""
       }`,
+    });
+  }
+  if (params.health.localCapabilities?.runtime) {
+    rows.push({
+      Item: "Runtime",
+      Status: renderCapabilityState(params.health.localCapabilities.runtime.state, params),
+      Detail: params.health.localCapabilities.runtime.detail,
+    });
+  }
+  if (params.health.localCapabilities?.memory) {
+    rows.push({
+      Item: "Memory",
+      Status: renderCapabilityState(params.health.localCapabilities.memory.state, params),
+      Detail: params.health.localCapabilities.memory.detail,
+    });
+  }
+  if (params.health.localCapabilities?.auth) {
+    rows.push({
+      Item: "Model auth",
+      Status: renderCapabilityState(params.health.localCapabilities.auth.state, params),
+      Detail: params.health.localCapabilities.auth.detail,
+    });
+  }
+  if (params.health.localCapabilities?.agentRuntimes) {
+    rows.push({
+      Item: "Agent runtimes",
+      Status: renderCapabilityState(params.health.localCapabilities.agentRuntimes.state, params),
+      Detail: params.health.localCapabilities.agentRuntimes.detail,
     });
   }
   for (const line of params.formatHealthChannelLines(params.health, { accountMode: "all" })) {
