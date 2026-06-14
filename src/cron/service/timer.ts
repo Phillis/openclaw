@@ -1,4 +1,5 @@
 /** Cron timer loop, execution, catch-up, and run-result state transitions. */
+import { createHash } from "node:crypto";
 import { resolveFailoverReasonFromError } from "../../agents/failover-error.js";
 import { readSessionEntry } from "../../config/sessions/store-load.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
@@ -92,6 +93,8 @@ const MIN_REFIRE_GAP_MS = 2_000;
 const DEFAULT_MISSED_JOB_STAGGER_MS = 5_000;
 const DEFAULT_MAX_MISSED_JOBS_PER_RESTART = 5;
 const DEFAULT_STARTUP_DEFERRED_MISSED_AGENT_JOB_DELAY_MS = 2 * 60_000;
+const CONTEXT_COMPRESSION_MIN_MESSAGE_CHARS = 1_200;
+const CONTEXT_COMPRESSION_SUMMARY_MAX_CHARS = 700;
 
 type TimedCronRunOutcome = CronRunOutcome &
   CronRunTelemetry & {
@@ -118,6 +121,82 @@ type StartupCatchupPlan = {
   candidates: StartupCatchupCandidate[];
   deferredJobs: StartupDeferredJob[];
 };
+
+function truncateContextCompressionText(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.length > CONTEXT_COMPRESSION_SUMMARY_MAX_CHARS
+    ? `${trimmed.slice(0, CONTEXT_COMPRESSION_SUMMARY_MAX_CHARS - 1).trimEnd()}...`
+    : trimmed;
+}
+
+function resolveContextCompressionSnapshot(params: {
+  job: CronJob;
+  result: {
+    status: CronRunStatus;
+    error?: string;
+    summary?: string;
+    diagnostics?: CronRunOutcome["diagnostics"];
+  };
+  endedAt: number;
+}):
+  | {
+      summary: string;
+      status: CronRunStatus;
+      source: "summary" | "diagnostics" | "error";
+      updatedAtMs: number;
+      promptHash: string;
+    }
+  | undefined {
+  if (
+    params.job.sessionTarget !== "isolated" ||
+    params.job.schedule.kind === "at" ||
+    params.job.payload.kind !== "agentTurn" ||
+    params.job.payload.externalContentSource ||
+    params.job.payload.message.trim().length < CONTEXT_COMPRESSION_MIN_MESSAGE_CHARS
+  ) {
+    return undefined;
+  }
+  const promptHash = createHash("sha256")
+    .update(params.job.payload.message)
+    .digest("hex")
+    .slice(0, 32);
+  const summaryFromResult = truncateContextCompressionText(params.result.summary);
+  if (summaryFromResult) {
+    return {
+      summary: summaryFromResult,
+      status: params.result.status,
+      source: "summary",
+      updatedAtMs: params.endedAt,
+      promptHash,
+    };
+  }
+  const diagnosticsSummary = truncateContextCompressionText(
+    summarizeCronRunDiagnostics(normalizeCronRunDiagnostics(params.result.diagnostics)),
+  );
+  if (diagnosticsSummary) {
+    return {
+      summary: diagnosticsSummary,
+      status: params.result.status,
+      source: "diagnostics",
+      updatedAtMs: params.endedAt,
+      promptHash,
+    };
+  }
+  const errorSummary = truncateContextCompressionText(params.result.error);
+  if (errorSummary) {
+    return {
+      summary: errorSummary,
+      status: params.result.status,
+      source: "error",
+      updatedAtMs: params.endedAt,
+      promptHash,
+    };
+  }
+  return undefined;
+}
 
 /** Executes cron job core logic with the configured wall-clock timeout and watchdog cleanup. */
 export async function executeJobCoreWithTimeout(
@@ -537,6 +616,7 @@ export function applyJobResult(
   result: {
     status: CronRunStatus;
     error?: string;
+    summary?: string;
     diagnostics?: CronRunOutcome["diagnostics"];
     delivered?: boolean;
     provider?: string;
@@ -598,6 +678,20 @@ export function applyJobResult(
   job.state.lastFailureNotificationDeliveryStatus = deliveryState.failureNotification.status;
   job.state.lastFailureNotificationDeliveryError = deliveryState.failureNotification.error;
   job.updatedAtMs = result.endedAt;
+  if (result.status !== "skipped") {
+    const contextCompressionSnapshot = resolveContextCompressionSnapshot({
+      job,
+      result,
+      endedAt: result.endedAt,
+    });
+    if (contextCompressionSnapshot) {
+      job.state.contextCompressionSummary = contextCompressionSnapshot.summary;
+      job.state.contextCompressionStatus = contextCompressionSnapshot.status;
+      job.state.contextCompressionSource = contextCompressionSnapshot.source;
+      job.state.contextCompressionUpdatedAtMs = contextCompressionSnapshot.updatedAtMs;
+      job.state.contextCompressionPromptHash = contextCompressionSnapshot.promptHash;
+    }
+  }
 
   // Track consecutive errors for backoff / auto-disable; skipped runs use a
   // separate counter so opt-in skip alerts do not affect retry behavior.

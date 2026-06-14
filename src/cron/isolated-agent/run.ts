@@ -1,4 +1,5 @@
 /** Orchestrates isolated cron agent turn setup, execution, delivery, and cleanup. */
+import { createHash } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js";
 import { hasAnyAuthProfileStoreSource } from "../../agents/auth-profiles/source-check.js";
@@ -123,6 +124,9 @@ const cronModelPreflightRuntimeLoader = createLazyImportLoader(
 const runtimePluginsLoader = createLazyImportLoader(
   () => import("../../plugins/runtime-plugins.runtime.js"),
 );
+const CONTEXT_COMPRESSION_MIN_MESSAGE_CHARS = 1_200;
+const CONTEXT_COMPRESSION_MISSION_DIGEST_CHARS = 260;
+const CONTEXT_COMPRESSION_SUMMARY_CHARS = 700;
 
 async function loadSessionStoreRuntime() {
   return await sessionStoreRuntimeLoader.load();
@@ -470,6 +474,75 @@ function resolveCronAgentTurnMessage(input: RunCronAgentTurnParams): string {
   return input.message;
 }
 
+function hashCronPromptMessage(message: string): string {
+  return createHash("sha256").update(message).digest("hex").slice(0, 32);
+}
+
+function truncateCronContextCompressionText(
+  text: string | undefined,
+  maxChars: number,
+): string | undefined {
+  const trimmed = text?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars - 1).trimEnd()}...` : trimmed;
+}
+
+function buildCronMissionDigest(message: string): string {
+  const normalized = message.replace(/\s+/gu, " ").trim();
+  return truncateCronContextCompressionText(
+    normalized,
+    CONTEXT_COMPRESSION_MISSION_DIGEST_CHARS,
+  ) as string;
+}
+
+function shouldUseContextCompressedCronSession(params: {
+  job: CronJob;
+  hookExternalContentSource?: "gmail" | "webhook";
+}): boolean {
+  if (params.job.sessionTarget !== "isolated" || params.job.payload.kind !== "agentTurn") {
+    return false;
+  }
+  if (params.job.schedule.kind === "at" || params.hookExternalContentSource) {
+    return false;
+  }
+  const messageLength = params.job.payload.message.trim().length;
+  return messageLength >= CONTEXT_COMPRESSION_MIN_MESSAGE_CHARS;
+}
+
+function buildCompressedCronContinuationMessage(params: {
+  missionDigest: string;
+  carryForwardSummary: string;
+  carryForwardStatus?: string;
+  carryForwardUpdatedAtMs?: number;
+}): string {
+  const lines = [
+    "Continue this recurring cron job using the existing session context for the established instructions.",
+    "",
+    `Mission digest: ${params.missionDigest}`,
+  ];
+  if (params.carryForwardUpdatedAtMs || params.carryForwardStatus) {
+    const statusBits = [
+      params.carryForwardStatus ? `status=${params.carryForwardStatus}` : undefined,
+      params.carryForwardUpdatedAtMs
+        ? `updatedAt=${new Date(params.carryForwardUpdatedAtMs).toISOString()}`
+        : undefined,
+    ].filter((value): value is string => Boolean(value));
+    if (statusBits.length > 0) {
+      lines.push(`Carry-forward state: ${statusBits.join("  ")}`);
+    }
+  }
+  lines.push(
+    "",
+    "Carry-forward summary from the previous run. Verify it against current GitHub/files/tools before acting:",
+    params.carryForwardSummary,
+    "",
+    "Do only the new work needed for this run. Avoid restating the full standing instructions unless the current state requires it.",
+  );
+  return lines.join("\n");
+}
+
 type WithRunSession = (
   result: Omit<RunCronAgentTurnResult, "sessionId" | "sessionKey">,
 ) => RunCronAgentTurnResult;
@@ -582,6 +655,20 @@ async function prepareCronRunContext(params: {
     input.job.payload.kind === "agentTurn" ? input.job.payload.externalContentSource : undefined;
   const hookExternalContentSource =
     payloadHookExternalContentSource ?? resolveHookExternalContentSource(baseSessionKey);
+  const supportsContextCompressedReuse = shouldUseContextCompressedCronSession({
+    job: input.job,
+    hookExternalContentSource,
+  });
+  const agentTurnMessage =
+    input.job.payload.kind === "agentTurn" ? input.job.payload.message : undefined;
+  const agentTurnPromptHash = agentTurnMessage
+    ? hashCronPromptMessage(agentTurnMessage)
+    : undefined;
+  const hasReusableContextCompressionState =
+    supportsContextCompressedReuse &&
+    input.job.state.contextCompressionPromptHash === agentTurnPromptHash &&
+    typeof input.job.state.contextCompressionSummary === "string" &&
+    input.job.state.contextCompressionSummary.trim().length > 0;
 
   const workspaceDirRaw = resolveAgentWorkspaceDir(input.cfg, agentId);
   const agentDir = resolveAgentDir(input.cfg, agentId);
@@ -606,7 +693,7 @@ async function prepareCronRunContext(params: {
     sessionKey: agentSessionKey,
     agentId,
     nowMs: now,
-    forceNew: input.job.sessionTarget === "isolated",
+    forceNew: input.job.sessionTarget === "isolated" && !hasReusableContextCompressionState,
   });
   const runSessionId = cronSession.sessionEntry.sessionId;
   const currentRunSessionId = () => cronSession.sessionEntry.sessionId ?? runSessionId;
@@ -788,7 +875,23 @@ async function prepareCronRunContext(params: {
     });
 
   const { formattedTime, timeLine } = resolveCronStyleNow(input.cfg, now);
-  const message = resolveCronAgentTurnMessage(input);
+  const carryForwardSummary =
+    hasReusableContextCompressionState && !cronSession.isNewSession
+      ? truncateCronContextCompressionText(
+          input.job.state.contextCompressionSummary,
+          CONTEXT_COMPRESSION_SUMMARY_CHARS,
+        )
+      : undefined;
+  const shouldUseCompressedContinuation =
+    hasReusableContextCompressionState && !cronSession.isNewSession && Boolean(carryForwardSummary);
+  const message = shouldUseCompressedContinuation
+    ? buildCompressedCronContinuationMessage({
+        missionDigest: buildCronMissionDigest(resolveCronAgentTurnMessage(input)),
+        carryForwardSummary: carryForwardSummary as string,
+        carryForwardStatus: input.job.state.contextCompressionStatus,
+        carryForwardUpdatedAtMs: input.job.state.contextCompressionUpdatedAtMs,
+      })
+    : resolveCronAgentTurnMessage(input);
   const base = `[cron:${input.job.id} ${input.job.name}] ${message}`.trim();
   const isExternalHook =
     hookExternalContentSource !== undefined || isExternalHookSession(baseSessionKey);

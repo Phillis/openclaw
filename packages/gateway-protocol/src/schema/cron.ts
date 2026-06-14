@@ -400,6 +400,13 @@ export const CronJobStateSchema = Type.Object(
     lastFailureNotificationDeliveryStatus: Type.Optional(CronDeliveryStatusSchema),
     lastFailureNotificationDeliveryError: Type.Optional(Type.String()),
     lastFailureAlertAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    contextCompressionSummary: Type.Optional(Type.String()),
+    contextCompressionStatus: Type.Optional(CronRunStatusSchema),
+    contextCompressionSource: Type.Optional(
+      Type.Union([Type.Literal("summary"), Type.Literal("diagnostics"), Type.Literal("error")]),
+    ),
+    contextCompressionUpdatedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    contextCompressionPromptHash: Type.Optional(Type.String({ pattern: "^[a-f0-9]{32}$" })),
   },
   { additionalProperties: false },
 );
@@ -423,6 +430,13 @@ const CronJobStatePatchSchema = Type.Object(
     lastFailureNotificationDeliveryStatus: Type.Optional(CronDeliveryStatusSchema),
     lastFailureNotificationDeliveryError: Type.Optional(Type.String()),
     lastFailureAlertAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    contextCompressionSummary: Type.Optional(Type.String()),
+    contextCompressionStatus: Type.Optional(CronRunStatusSchema),
+    contextCompressionSource: Type.Optional(
+      Type.Union([Type.Literal("summary"), Type.Literal("diagnostics"), Type.Literal("error")]),
+    ),
+    contextCompressionUpdatedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    contextCompressionPromptHash: Type.Optional(Type.String({ pattern: "^[a-f0-9]{32}$" })),
   },
   { additionalProperties: false },
 );

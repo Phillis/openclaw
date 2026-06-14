@@ -314,6 +314,16 @@ export type CronJobState = {
   lastFailureNotificationDeliveryStatus?: CronDeliveryStatus;
   /** Delivery-specific error for the last failed run's failure notification. */
   lastFailureNotificationDeliveryError?: string;
+  /** Compact carry-forward summary for recurring isolated cron jobs. */
+  contextCompressionSummary?: string;
+  /** Status associated with the persisted carry-forward summary. */
+  contextCompressionStatus?: CronRunStatus;
+  /** Source used to derive the persisted carry-forward summary. */
+  contextCompressionSource?: "summary" | "diagnostics" | "error";
+  /** Timestamp (ms since epoch) when the carry-forward summary was refreshed. */
+  contextCompressionUpdatedAtMs?: number;
+  /** Hash of the cron payload message that produced the carry-forward summary. */
+  contextCompressionPromptHash?: string;
 };
 
 /** Fully persisted cron job with spec fields and mutable run state. */
