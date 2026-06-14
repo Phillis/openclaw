@@ -9,7 +9,7 @@
   },
   "kind": "memory",
   "contracts": {
-    "tools": ["memory_forget", "memory_recall", "memory_store"]
+    "tools": ["memory_feedback", "memory_forget", "memory_recall", "memory_store"]
   },
   "uiHints": {
     "embedding.apiKey": {
@@ -38,6 +38,43 @@
       "label": "Dimensions",
       "placeholder": "1536",
       "help": "Vector dimensions for custom models (required for non-standard models)",
+      "advanced": true
+    },
+    "reranker.model": {
+      "label": "Reranker Model",
+      "placeholder": "qwen.qwen3-reranker-4b",
+      "help": "Optional OpenAI-compatible chat model used to rerank vector search candidates",
+      "advanced": true
+    },
+    "reranker.apiKey": {
+      "label": "Reranker API Key",
+      "sensitive": true,
+      "placeholder": "lm-studio",
+      "help": "Optional API key override for reranking; falls back to the embedding API key",
+      "advanced": true
+    },
+    "reranker.baseUrl": {
+      "label": "Reranker Base URL",
+      "placeholder": "http://127.0.0.1:1234/v1",
+      "help": "Optional OpenAI-compatible base URL for reranking; falls back to the embedding base URL",
+      "advanced": true
+    },
+    "reranker.timeoutMs": {
+      "label": "Reranker Timeout",
+      "placeholder": "10000",
+      "help": "Maximum time to wait for a reranker response",
+      "advanced": true
+    },
+    "reranker.maxCandidates": {
+      "label": "Reranker Candidates",
+      "placeholder": "20",
+      "help": "Maximum number of vector candidates to send to the reranker",
+      "advanced": true
+    },
+    "reranker.maxDocumentChars": {
+      "label": "Reranker Document Chars",
+      "placeholder": "600",
+      "help": "Maximum characters per candidate passed to the reranker",
       "advanced": true
     },
     "dbPath": {
@@ -105,6 +142,39 @@
           "dimensions": {
             "type": "integer",
             "minimum": 1
+          }
+        }
+      },
+      "reranker": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "baseUrl": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 30000
+          },
+          "maxCandidates": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 50
+          },
+          "maxDocumentChars": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 4000
           }
         }
       },

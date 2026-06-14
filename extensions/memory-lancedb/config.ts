@@ -12,6 +12,15 @@ export type MemoryConfig = {
     baseUrl?: string;
     dimensions?: number;
   };
+  reranker?: {
+    enabled: boolean;
+    model: string;
+    apiKey?: string;
+    baseUrl?: string;
+    timeoutMs: number;
+    maxCandidates: number;
+    maxDocumentChars: number;
+  };
   dreaming?: Record<string, unknown>;
   dbPath?: string;
   autoCapture?: boolean;
@@ -28,6 +37,9 @@ export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
 const DEFAULT_MODEL = "text-embedding-3-small";
 export const DEFAULT_CAPTURE_MAX_CHARS = 500;
 export const DEFAULT_RECALL_MAX_CHARS = 1000;
+export const DEFAULT_RERANKER_TIMEOUT_MS = 10_000;
+export const DEFAULT_RERANKER_MAX_CANDIDATES = 20;
+export const DEFAULT_RERANKER_MAX_DOCUMENT_CHARS = 600;
 const LEGACY_STATE_DIRS: string[] = [];
 
 function resolveDefaultDbPath(): string {
@@ -62,6 +74,15 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
   "text-embedding-3-large": 3072,
 };
 const EMBEDDING_CONFIG_KEYS = ["provider", "apiKey", "model", "baseUrl", "dimensions"] as const;
+const RERANKER_CONFIG_KEYS = [
+  "enabled",
+  "model",
+  "apiKey",
+  "baseUrl",
+  "timeoutMs",
+  "maxCandidates",
+  "maxDocumentChars",
+] as const;
 
 function assertAllowedKeys(value: Record<string, unknown>, allowed: string[], label: string) {
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
@@ -144,6 +165,7 @@ export const memoryConfigSchema = {
       cfg,
       [
         "embedding",
+        "reranker",
         "dreaming",
         "dbPath",
         "autoCapture",
@@ -170,6 +192,48 @@ export const memoryConfigSchema = {
     const provider = typeof embedding.provider === "string" ? embedding.provider.trim() : "openai";
     if (!provider) {
       throw new Error("embedding.provider must not be empty");
+    }
+
+    let reranker: MemoryConfig["reranker"] | undefined;
+    const rerankerCfg = cfg.reranker as Record<string, unknown> | undefined;
+    if (rerankerCfg !== undefined) {
+      if (!rerankerCfg || typeof rerankerCfg !== "object" || Array.isArray(rerankerCfg)) {
+        throw new Error("reranker config must be an object");
+      }
+      assertAllowedKeys(rerankerCfg, [...RERANKER_CONFIG_KEYS], "reranker config");
+      const rerankerModel = typeof rerankerCfg.model === "string" ? rerankerCfg.model.trim() : "";
+      if (!rerankerModel) {
+        throw new Error("reranker.model must not be empty");
+      }
+      reranker = {
+        enabled: rerankerCfg.enabled !== false,
+        model: rerankerModel,
+        apiKey:
+          typeof rerankerCfg.apiKey === "string" ? resolveEnvVars(rerankerCfg.apiKey) : undefined,
+        baseUrl:
+          typeof rerankerCfg.baseUrl === "string" ? resolveEnvVars(rerankerCfg.baseUrl) : undefined,
+        timeoutMs: resolveBoundedIntegerConfig({
+          value: rerankerCfg.timeoutMs,
+          fallback: DEFAULT_RERANKER_TIMEOUT_MS,
+          min: 500,
+          max: 30_000,
+          label: "reranker.timeoutMs",
+        }),
+        maxCandidates: resolveBoundedIntegerConfig({
+          value: rerankerCfg.maxCandidates,
+          fallback: DEFAULT_RERANKER_MAX_CANDIDATES,
+          min: 2,
+          max: 50,
+          label: "reranker.maxCandidates",
+        }),
+        maxDocumentChars: resolveBoundedIntegerConfig({
+          value: rerankerCfg.maxDocumentChars,
+          fallback: DEFAULT_RERANKER_MAX_DOCUMENT_CHARS,
+          min: 100,
+          max: 4000,
+          label: "reranker.maxDocumentChars",
+        }),
+      };
     }
 
     const captureMaxChars = resolveBoundedIntegerConfig({
@@ -244,6 +308,7 @@ export const memoryConfigSchema = {
           typeof embedding.baseUrl === "string" ? resolveEnvVars(embedding.baseUrl) : undefined,
         dimensions,
       },
+      ...(reranker ? { reranker } : {}),
       dreaming,
       dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : DEFAULT_DB_PATH,
       autoCapture: cfg.autoCapture === true,
@@ -282,6 +347,43 @@ export const memoryConfigSchema = {
       label: "Embedding Model",
       placeholder: DEFAULT_MODEL,
       help: "OpenAI embedding model to use",
+    },
+    "reranker.model": {
+      label: "Reranker Model",
+      placeholder: "qwen.qwen3-reranker-4b",
+      help: "Optional OpenAI-compatible chat model used to rerank vector search candidates",
+      advanced: true,
+    },
+    "reranker.apiKey": {
+      label: "Reranker API Key",
+      sensitive: true,
+      placeholder: "lm-studio",
+      help: "Optional API key override for reranking; falls back to the embedding API key",
+      advanced: true,
+    },
+    "reranker.baseUrl": {
+      label: "Reranker Base URL",
+      placeholder: "http://127.0.0.1:1234/v1",
+      help: "Optional OpenAI-compatible base URL for reranking; falls back to the embedding base URL",
+      advanced: true,
+    },
+    "reranker.timeoutMs": {
+      label: "Reranker Timeout",
+      placeholder: String(DEFAULT_RERANKER_TIMEOUT_MS),
+      help: "Maximum time to wait for a reranker response",
+      advanced: true,
+    },
+    "reranker.maxCandidates": {
+      label: "Reranker Candidates",
+      placeholder: String(DEFAULT_RERANKER_MAX_CANDIDATES),
+      help: "Maximum number of vector candidates to send to the reranker",
+      advanced: true,
+    },
+    "reranker.maxDocumentChars": {
+      label: "Reranker Document Chars",
+      placeholder: String(DEFAULT_RERANKER_MAX_DOCUMENT_CHARS),
+      help: "Maximum characters per candidate passed to the reranker",
+      advanced: true,
     },
     dbPath: {
       label: "Database Path",

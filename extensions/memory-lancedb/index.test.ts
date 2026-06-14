@@ -45,6 +45,15 @@ type MemoryPluginTestConfig = {
     baseUrl?: string;
     dimensions?: number;
   };
+  reranker?: {
+    enabled?: boolean;
+    model?: string;
+    apiKey?: string;
+    baseUrl?: string;
+    timeoutMs?: number;
+    maxCandidates?: number;
+    maxDocumentChars?: number;
+  };
   dbPath?: string;
   captureMaxChars?: number;
   recallMaxChars?: number;
@@ -278,6 +287,50 @@ describe("memory plugin e2e", () => {
     });
 
     expect(config?.recallMaxChars).toBe(1800);
+  });
+
+  test("config schema parses reranker settings", () => {
+    const config = parseConfig({
+      reranker: {
+        model: "qwen.qwen3-reranker-4b",
+        timeoutMs: 4000,
+        maxCandidates: 15,
+        maxDocumentChars: 700,
+      },
+    });
+
+    expect(config?.reranker).toEqual({
+      enabled: true,
+      model: "qwen.qwen3-reranker-4b",
+      timeoutMs: 4000,
+      maxCandidates: 15,
+      maxDocumentChars: 700,
+    });
+  });
+
+  test("normalizes reranker score ranges above one", () => {
+    const scores = testing.parseModelRerankResponse(
+      {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                ranking: [
+                  { index: 1, score: 10 },
+                  { index: 2, score: 8 },
+                  { index: 3, score: 0 },
+                ],
+              }),
+            },
+          },
+        ],
+      },
+      3,
+    );
+
+    expect(scores.get(1)).toBe(1);
+    expect(scores.get(2)).toBe(0.8);
+    expect(scores.get(3)).toBe(0);
   });
 
   test("config schema keeps autoCapture disabled by default", () => {
@@ -743,11 +796,15 @@ describe("memory plugin e2e", () => {
     ]);
     const limit = vi.fn(() => ({ toArray }));
     const vectorSearch = vi.fn(() => ({ limit }));
+    const queryToArray = vi.fn(async () => []);
+    const select = vi.fn(() => ({ toArray: queryToArray }));
+    const query = vi.fn(() => ({ select }));
     const loadLanceDbModule = vi.fn(async () => ({
       connect: vi.fn(async () => ({
         tableNames: vi.fn(async () => ["memories"]),
         openTable: vi.fn(async () => ({
           vectorSearch,
+          query,
           countRows: vi.fn(async () => 0),
           add: vi.fn(async () => undefined),
           delete: vi.fn(async () => undefined),
@@ -810,7 +867,7 @@ describe("memory plugin e2e", () => {
         expect(text).not.toContain("<tool>memory_store</tool>");
         expect(text).not.toContain("[media attached");
         expect(limit).toHaveBeenCalledWith(11);
-        expect(result.details).toEqual({
+        expect(result.details).toMatchObject({
           count: 1,
           memories: [
             {
@@ -819,9 +876,175 @@ describe("memory plugin e2e", () => {
               category: "preference",
               importance: 0.9,
               score: expect.any(Number),
+              adjustedScore: expect.any(Number),
             },
           ],
         });
+      },
+    });
+  });
+
+  test("uses configured reranker model to reorder memory_recall results", async () => {
+    const ensureGlobalUndiciEnvProxyDispatcher = vi.fn();
+    const openAiPost = vi.fn((requestPath: string, opts: { body?: any }) => {
+      if (requestPath === "/embeddings") {
+        return Promise.resolve({ data: [{ embedding: [0.1, 0.2, 0.3] }] });
+      }
+      if (requestPath === "/chat/completions") {
+        expect(opts.body?.model).toBe("qwen.qwen3-reranker-4b");
+        const prompt = String(opts.body?.messages?.[1]?.content ?? "");
+        const hostIndex = Number(
+          prompt.match(
+            /(^|\n)(\d+)\.\s.*Options Trading Workstation runtime host is 192\.168\.11\.142/m,
+          )?.[2] ?? 0,
+        );
+        const routerIndex = Number(
+          prompt.match(
+            /(^|\n)(\d+)\.\s.*OpenClaw model router is in \/Users\/phil\/openclaw-model-router/m,
+          )?.[2] ?? 0,
+        );
+        const ewtIndex = Number(
+          prompt.match(
+            /(^|\n)(\d+)\.\s.*Victor is the lead developer for Elliott Wave Analysis Engine/m,
+          )?.[2] ?? 0,
+        );
+        expect(hostIndex).toBeGreaterThan(0);
+        expect(routerIndex).toBeGreaterThan(0);
+        expect(ewtIndex).toBeGreaterThan(0);
+        return Promise.resolve({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  ranking: [
+                    { index: hostIndex, score: 0.98 },
+                    { index: routerIndex, score: 0.05 },
+                    { index: ewtIndex, score: 0.02 },
+                  ],
+                }),
+              },
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected OpenAI-compatible path: ${requestPath}`);
+    });
+    const toArray = vi.fn(async () => [
+      {
+        id: "memory-otw-router",
+        text: "OpenClaw model router is in /Users/phil/openclaw-model-router",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.5,
+        category: "other",
+        createdAt: 1,
+        _distance: 0.01,
+      },
+      {
+        id: "memory-otw-host",
+        text: "Options Trading Workstation runtime host is 192.168.11.142",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.8,
+        category: "fact",
+        createdAt: 2,
+        _distance: 0.05,
+      },
+      {
+        id: "memory-ewt",
+        text: "Victor is the lead developer for Elliott Wave Analysis Engine",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.6,
+        category: "fact",
+        createdAt: 3,
+        _distance: 0.07,
+      },
+    ]);
+    const limit = vi.fn(() => ({ toArray }));
+    const vectorSearch = vi.fn(() => ({ limit }));
+    const queryToArray = vi.fn(async () => []);
+    const select = vi.fn(() => ({ toArray: queryToArray }));
+    const query = vi.fn(() => ({ select }));
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch,
+          query,
+          countRows: vi.fn(async () => 0),
+          add: vi.fn(async () => undefined),
+          delete: vi.fn(async () => undefined),
+        })),
+      })),
+    }));
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher,
+      openAiPost,
+      loadLanceDbModule,
+      run: async (dynamicMemoryPlugin) => {
+        const registeredTools: any[] = [];
+        const logger = {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
+        };
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: OPENAI_API_KEY,
+              baseUrl: "http://127.0.0.1:1234/v1",
+              model: "text-embedding-3-small",
+            },
+            reranker: {
+              model: "qwen.qwen3-reranker-4b",
+              maxCandidates: 15,
+              timeoutMs: 4000,
+            },
+            dbPath: getDbPath(),
+            autoCapture: false,
+            autoRecall: false,
+          },
+          runtime: {},
+          logger,
+          registerTool: (tool: any, opts: any) => {
+            registeredTools.push({ tool, opts });
+          },
+          registerCli: vi.fn(),
+          registerService: vi.fn(),
+          on: vi.fn(),
+          resolvePath: (filePath: string) => filePath,
+        };
+
+        dynamicMemoryPlugin.register(mockApi as any);
+        const recallTool = registeredTools.find((t) => t.opts?.name === "memory_recall")?.tool;
+        if (!recallTool) {
+          throw new Error("memory_recall tool was not registered");
+        }
+
+        const result = await recallTool.execute("test-call-reranker", {
+          query: "Options Trading Workstation runtime host",
+          limit: 2,
+        });
+        const memories = result.details?.memories ?? [];
+
+        expect(memories).toHaveLength(2);
+        expect(memories[0]?.id).toBe("memory-otw-host");
+        expect(memories[0]?.rerankerScore).toBe(0.98);
+        expect(memories[1]?.id).toBe("memory-otw-router");
+        expect(limit).toHaveBeenCalledWith(15);
+        expect(openAiPost).toHaveBeenCalledWith(
+          "/chat/completions",
+          expect.objectContaining({
+            body: expect.objectContaining({
+              model: "qwen.qwen3-reranker-4b",
+            }),
+          }),
+        );
+        expect(logger.warn).not.toHaveBeenCalled();
       },
     });
   });

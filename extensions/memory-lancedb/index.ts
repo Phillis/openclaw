@@ -7,7 +7,9 @@
  */
 
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type * as LanceDB from "@lancedb/lancedb";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import {
@@ -34,6 +36,9 @@ import { definePluginEntry, type OpenClawPluginApi } from "./api.js";
 import {
   DEFAULT_CAPTURE_MAX_CHARS,
   DEFAULT_RECALL_MAX_CHARS,
+  DEFAULT_RERANKER_MAX_CANDIDATES,
+  DEFAULT_RERANKER_MAX_DOCUMENT_CHARS,
+  DEFAULT_RERANKER_TIMEOUT_MS,
   MEMORY_CATEGORIES,
   type MemoryConfig,
   type MemoryCategory,
@@ -66,12 +71,44 @@ type MemorySearchResult = {
   score: number;
 };
 
+type MemoryMetadata = {
+  sourceType?: string | null;
+  sourcePath?: string | null;
+  workspace?: string | null;
+  project?: string | null;
+  agentId?: string | null;
+  sessionKey?: string | null;
+  messageProvider?: string | null;
+  channelId?: string | null;
+  sourceTimestamp?: number | null;
+};
+
+type MemoryMetadataStore = {
+  version: number;
+  entries: Record<string, MemoryMetadata>;
+  backfill: {
+    version: number;
+    completedAt: number;
+    scannedSources: number;
+    matchedEntries: number;
+  } | null;
+};
+
+type MemorySearchResultWithMetadata = MemorySearchResult & {
+  metadata?: MemoryMetadata | null;
+};
+
+type RerankedMemorySearchResult = MemorySearchResultWithMetadata & {
+  adjustedScore: number;
+  rerankerScore?: number;
+};
+
 type AutoCaptureCursor = {
   nextIndex: number;
   lastMessageFingerprint?: string;
 };
 
-type OpenAiEmbeddingClient = {
+type OpenAiCompatibleHttpClient = {
   post<T>(
     path: string,
     options: { body: unknown; timeout?: number; maxRetries?: number },
@@ -82,6 +119,15 @@ let openAiModulePromise: Promise<typeof import("openai")> | undefined;
 function loadOpenAiModule(): Promise<typeof import("openai")> {
   openAiModulePromise ??= import("openai");
   return openAiModulePromise;
+}
+
+function createOpenAiCompatibleClient(
+  apiKey: string,
+  baseUrl?: string,
+): Promise<OpenAiCompatibleHttpClient> {
+  return loadOpenAiModule().then(
+    ({ default: OpenAI }) => new OpenAI({ apiKey, baseURL: baseUrl }) as OpenAiCompatibleHttpClient,
+  );
 }
 
 let memoryEmbeddingProviderModulePromise:
@@ -211,6 +257,121 @@ const DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA = 10;
 const DEFAULT_AUTO_RECALL_OVERFETCH_LIMIT = 10;
 const DEFAULT_AUTO_RECALL_RESULT_CAP = 3;
 const DUPLICATE_SEARCH_LIMIT = 5;
+const METADATA_STORE_VERSION = 2;
+const SUPPORT_DIRNAME = "_openclaw";
+const METADATA_STORE_FILENAME = "memory-metadata.json";
+const QUALITY_LOG_FILENAME = "recall-quality.jsonl";
+const MAX_FEEDBACK_NOTES_CHARS = 500;
+const MAX_QUALITY_LOG_QUERY_SNIPPET_CHARS = 200;
+const FEEDBACK_KINDS = ["useful", "wrong", "missing", "correction"] as const;
+type FeedbackKind = (typeof FEEDBACK_KINDS)[number];
+
+const PROJECT_HINT_DEFINITIONS = [
+  {
+    key: "openclaw-model-router",
+    patterns: [/openclaw-model-router/i, /model router/i],
+  },
+  {
+    key: "options-trading-workstation",
+    patterns: [/options-trading-workstation/i, /options trading workstation/i, /\botw\b/i],
+  },
+  {
+    key: "elliott-wave-trader",
+    patterns: [/elliott-wave-trader/i, /elliott wave trader/i, /\bewt\b/i],
+  },
+  {
+    key: "openclaw",
+    patterns: [/\bopenclaw\b/i],
+  },
+] as const;
+
+const QUERY_STOP_WORDS = new Set([
+  "a",
+  "about",
+  "after",
+  "all",
+  "also",
+  "am",
+  "an",
+  "and",
+  "any",
+  "are",
+  "as",
+  "at",
+  "be",
+  "because",
+  "been",
+  "before",
+  "but",
+  "by",
+  "can",
+  "could",
+  "did",
+  "do",
+  "does",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "how",
+  "i",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "just",
+  "latest",
+  "me",
+  "more",
+  "most",
+  "my",
+  "need",
+  "now",
+  "of",
+  "on",
+  "or",
+  "our",
+  "please",
+  "recent",
+  "remember",
+  "right",
+  "show",
+  "that",
+  "the",
+  "their",
+  "them",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "to",
+  "today",
+  "us",
+  "use",
+  "was",
+  "we",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "why",
+  "with",
+  "would",
+  "yesterday",
+  "you",
+  "your",
+]);
+
+const RECENT_QUERY_PATTERN =
+  /\b(today|yesterday|recent|latest|last\s+\d+|last\s+(day|week|month)|current|now|newest)\b/i;
+const DURABLE_QUERY_PATTERN =
+  /\b(prefer|preference|favorite|favourite|decision|decided|rule|standing|policy|host|runtime|project|path|workflow)\b/i;
 
 function parsePositiveIntegerOption(value: string | undefined, flag: string): number | undefined {
   if (value === undefined) {
@@ -360,6 +521,561 @@ class MemoryDB {
   }
 }
 
+function createEmptyMetadataStore(): MemoryMetadataStore {
+  return {
+    version: METADATA_STORE_VERSION,
+    entries: {},
+    backfill: null,
+  };
+}
+
+function resolveSupportPaths(resolvedDbPath: string): {
+  supportDir: string;
+  metadataPath: string;
+  qualityLogPath: string;
+} {
+  const supportDir = join(resolvedDbPath, SUPPORT_DIRNAME);
+  return {
+    supportDir,
+    metadataPath: join(supportDir, METADATA_STORE_FILENAME),
+    qualityLogPath: join(supportDir, QUALITY_LOG_FILENAME),
+  };
+}
+
+async function ensureParentDir(filePath: string): Promise<void> {
+  await fs.mkdir(dirname(filePath), {
+    recursive: true,
+    mode: 0o700,
+  });
+}
+
+async function loadMetadataStore(metadataPath: string): Promise<MemoryMetadataStore> {
+  try {
+    const raw = JSON.parse(await fs.readFile(metadataPath, "utf8")) as unknown;
+    const rawRecord = asRecord(raw);
+    return {
+      version: METADATA_STORE_VERSION,
+      entries: (asRecord(rawRecord?.entries) ?? {}) as Record<string, MemoryMetadata>,
+      backfill: (asRecord(rawRecord?.backfill) as MemoryMetadataStore["backfill"]) ?? null,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return createEmptyMetadataStore();
+    }
+    throw error;
+  }
+}
+
+async function saveMetadataStore(metadataPath: string, state: MemoryMetadataStore): Promise<void> {
+  await ensureParentDir(metadataPath);
+  await fs.writeFile(`${metadataPath}.tmp`, `${JSON.stringify(state, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await fs.rename(`${metadataPath}.tmp`, metadataPath);
+}
+
+async function appendJsonLine(filePath: string, value: Record<string, unknown>): Promise<void> {
+  await ensureParentDir(filePath);
+  await fs.appendFile(filePath, `${JSON.stringify(value)}\n`, {
+    mode: 0o600,
+  });
+}
+
+function normalizeSearchText(text: string): string {
+  return text.toLocaleLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function extractQueryKeywords(queryText: string): string[] {
+  const normalized = normalizeSearchText(queryText);
+  const tokens = normalized.match(/[\p{L}\p{N}_-]{3,}/gu) ?? [];
+  return Array.from(new Set(tokens.filter((token) => !QUERY_STOP_WORDS.has(token)))).slice(0, 12);
+}
+
+function inferProjectHint(text: string): string | null {
+  for (const definition of PROJECT_HINT_DEFINITIONS) {
+    if (definition.patterns.some((pattern) => pattern.test(text))) {
+      return definition.key;
+    }
+  }
+  return null;
+}
+
+function timestampFromMemorySourcePath(sourcePath: string): number | null {
+  const match = basename(sourcePath).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) {
+    return null;
+  }
+  const timestamp = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function normalizeSourcePath(sourcePath: string, api?: OpenClawPluginApi): string {
+  if (sourcePath.startsWith("~/") && api) {
+    return api.resolvePath(sourcePath);
+  }
+  if (sourcePath.startsWith("/")) {
+    return sourcePath;
+  }
+  return sourcePath;
+}
+
+function buildSourceMetadataFromPath(sourcePath: string, text = ""): MemoryMetadata {
+  const normalizedPath = sourcePath.replace(/\\/g, "/");
+  const segments = normalizedPath.split("/").filter(Boolean);
+  const memoryIndex = segments.lastIndexOf("memory");
+  const workspaceIndex = segments.lastIndexOf("workspace");
+  const workspacesIndex = segments.lastIndexOf("workspaces");
+  let agentId: string | null = null;
+  let workspace: string | null = "main";
+  if (workspaceIndex !== -1 && memoryIndex === workspaceIndex + 2) {
+    agentId = segments[workspaceIndex + 1]?.toLocaleLowerCase() ?? null;
+  } else if (workspacesIndex !== -1 && memoryIndex === workspacesIndex + 2) {
+    workspace = segments[workspacesIndex + 1] ?? null;
+    agentId = workspace?.toLocaleLowerCase() ?? null;
+  } else if (normalizedPath.endsWith("/MEMORY.md")) {
+    agentId = "main";
+  }
+
+  const sourceType = normalizedPath.endsWith("/MEMORY.md")
+    ? "curated_memory"
+    : memoryIndex !== -1
+      ? "daily_memory"
+      : "memory_file";
+  const project = inferProjectHint([sourcePath, text].filter(Boolean).join("\n"));
+
+  return {
+    sourcePath,
+    sourceType,
+    workspace,
+    project,
+    sourceTimestamp: timestampFromMemorySourcePath(sourcePath),
+    agentId,
+  };
+}
+
+function extractInlineMemoryMetadata(text: string, api?: OpenClawPluginApi): MemoryMetadata | null {
+  const agentMatch = text.match(/^\[agent:([^\]]+)\]\s+\[source:([^\]]+)\]/);
+  if (!agentMatch) {
+    return null;
+  }
+  const sourcePath = normalizeSourcePath(agentMatch[2] ?? "", api);
+  return {
+    ...buildSourceMetadataFromPath(sourcePath, text),
+    agentId: agentMatch[1]?.trim().toLocaleLowerCase() ?? null,
+  };
+}
+
+async function walkMarkdownFiles(root: string): Promise<string[]> {
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".") || entry.name === "node_modules") {
+      continue;
+    }
+    const fullPath = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await walkMarkdownFiles(fullPath)));
+    } else if (entry.isFile() && entry.name.toLocaleLowerCase().endsWith(".md")) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+async function collectBackfillSources(api: OpenClawPluginApi): Promise<string[]> {
+  const homeDir = process.env.HOME ?? "";
+  const candidates = [
+    api.resolvePath("~/.openclaw/workspace/MEMORY.md"),
+    api.resolvePath("~/.openclaw/workspace/memory"),
+    api.resolvePath("~/.openclaw/workspaces"),
+    ...(homeDir
+      ? [
+          join(homeDir, ".openclaw", "workspace", "MEMORY.md"),
+          join(homeDir, ".openclaw", "workspace", "memory"),
+          join(homeDir, ".openclaw", "workspaces"),
+        ]
+      : []),
+  ].filter((candidate) => typeof candidate === "string" && candidate.trim().length > 0);
+  const files: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      const stat = await fs.stat(candidate);
+      if (stat.isDirectory()) {
+        files.push(...(await walkMarkdownFiles(candidate)));
+      } else if (stat.isFile() && candidate.toLocaleLowerCase().endsWith(".md")) {
+        files.push(candidate);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+  return Array.from(new Set(files));
+}
+
+async function buildBackfillSources(api: OpenClawPluginApi): Promise<
+  Array<{
+    path: string;
+    text: string;
+    normalizedText: string;
+    metadata: MemoryMetadata;
+  }>
+> {
+  const files = await collectBackfillSources(api);
+  const sources: Array<{
+    path: string;
+    text: string;
+    normalizedText: string;
+    metadata: MemoryMetadata;
+  }> = [];
+  for (const filePath of files) {
+    try {
+      const text = await fs.readFile(filePath, "utf8");
+      sources.push({
+        path: filePath,
+        text,
+        normalizedText: normalizeSearchText(text),
+        metadata: buildSourceMetadataFromPath(filePath, text),
+      });
+    } catch (error) {
+      api.logger.warn?.(
+        `memory-lancedb: failed to read memory source ${filePath}: ${String(error)}`,
+      );
+    }
+  }
+  return sources;
+}
+
+function resolveResultTimestamp(
+  result: MemorySearchResultWithMetadata,
+  metadata: MemoryMetadata | null | undefined,
+): number | null {
+  if (
+    typeof metadata?.sourceTimestamp === "number" &&
+    Number.isFinite(metadata.sourceTimestamp) &&
+    metadata.sourceTimestamp > 0
+  ) {
+    return metadata.sourceTimestamp;
+  }
+  return typeof result.entry.createdAt === "number" &&
+    Number.isFinite(result.entry.createdAt) &&
+    result.entry.createdAt > 0
+    ? result.entry.createdAt
+    : null;
+}
+
+function computeRecencyBoost(timestamp: number, queryText: string): number {
+  const ageDays = Math.max(0, (Date.now() - timestamp) / 86_400_000);
+  const wantsRecent = RECENT_QUERY_PATTERN.test(queryText);
+  const halfLifeDays = wantsRecent ? 14 : 45;
+  const freshness = Math.exp(-ageDays / halfLifeDays);
+  return wantsRecent ? 0.85 + freshness * 0.35 : 0.95 + freshness * 0.12;
+}
+
+function scoreKeywordOverlap(
+  queryKeywords: string[],
+  text: string,
+  metadata: MemoryMetadata | null | undefined,
+): number {
+  if (queryKeywords.length === 0) {
+    return 0;
+  }
+  const haystack = normalizeSearchText(
+    [
+      text,
+      metadata?.project,
+      metadata?.workspace,
+      metadata?.sourceType,
+      basename(metadata?.sourcePath ?? ""),
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+  let overlap = 0;
+  for (const keyword of queryKeywords) {
+    if (haystack.includes(keyword)) {
+      overlap += 1;
+    }
+  }
+  return Math.min(0.12, overlap * 0.03);
+}
+
+function rerankMemoryResults(
+  results: MemorySearchResultWithMetadata[],
+  params: { queryText?: string; agentId?: string; workspaceHint?: string | null },
+): RerankedMemorySearchResult[] {
+  const queryText = params.queryText ?? "";
+  const queryKeywords = extractQueryKeywords(queryText);
+  const projectHint = inferProjectHint(queryText);
+  const recentBias = RECENT_QUERY_PATTERN.test(queryText);
+  const durableBias = DURABLE_QUERY_PATTERN.test(queryText);
+  return results
+    .map((result) => {
+      const metadata = result.metadata ?? null;
+      let adjustedScore = result.score;
+      if (projectHint) {
+        if (metadata?.project === projectHint) {
+          adjustedScore += 0.18;
+        } else if (
+          PROJECT_HINT_DEFINITIONS.find(
+            (definition) => definition.key === projectHint,
+          )?.patterns.some((pattern) => pattern.test(result.entry.text))
+        ) {
+          adjustedScore += 0.08;
+        }
+      }
+      if (metadata?.sourceType === "daily_memory" && recentBias) {
+        adjustedScore += 0.08;
+      }
+      if (
+        (metadata?.sourceType === "curated_memory" ||
+          metadata?.sourceType === "manual_store" ||
+          metadata?.sourceType === "auto_capture") &&
+        durableBias
+      ) {
+        adjustedScore += 0.05;
+      }
+      if (metadata?.agentId && params.agentId && metadata.agentId === params.agentId) {
+        adjustedScore += 0.03;
+      }
+      if (
+        metadata?.workspace &&
+        params.workspaceHint &&
+        metadata.workspace === params.workspaceHint
+      ) {
+        adjustedScore += 0.02;
+      }
+      adjustedScore += scoreKeywordOverlap(queryKeywords, result.entry.text, metadata);
+      const timestamp = resolveResultTimestamp(result, metadata);
+      if (timestamp) {
+        adjustedScore *= computeRecencyBoost(timestamp, queryText);
+      }
+      return {
+        ...result,
+        adjustedScore,
+      };
+    })
+    .sort((a, b) => {
+      if (b.adjustedScore !== a.adjustedScore) {
+        return b.adjustedScore - a.adjustedScore;
+      }
+      return b.score - a.score;
+    });
+}
+
+function summarizeQueryForQualityLog(query: string | null | undefined): {
+  queryHash?: string;
+  querySnippet?: string;
+} {
+  const normalized = normalizeRecallQuery(String(query ?? ""), MAX_QUALITY_LOG_QUERY_SNIPPET_CHARS);
+  if (!normalized) {
+    return {};
+  }
+  return {
+    queryHash: createHash("sha256").update(normalized).digest("hex").slice(0, 16),
+    querySnippet: normalized,
+  };
+}
+
+function buildResultSummary(results: RerankedMemorySearchResult[]): Array<Record<string, unknown>> {
+  return results.slice(0, 5).map((result) => ({
+    id: result.entry.id,
+    score: Number(result.score.toFixed(6)),
+    adjustedScore: Number(result.adjustedScore.toFixed(6)),
+    rerankerScore:
+      typeof result.rerankerScore === "number" ? Number(result.rerankerScore.toFixed(6)) : null,
+    category: result.entry.category,
+    project: result.metadata?.project ?? null,
+    sourceType: result.metadata?.sourceType ?? null,
+    sourcePath: result.metadata?.sourcePath ?? null,
+  }));
+}
+
+const DEFAULT_RERANKER_SYSTEM_PROMPT =
+  "You rerank memory retrieval candidates for relevance to a user query. Return only JSON that matches the schema.";
+const DEFAULT_RERANKER_TEMPERATURE = 0;
+
+type ChatCompletionResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+    };
+  }>;
+};
+
+function normalizeScoreForBlend(score: number): number {
+  if (!Number.isFinite(score) || score <= 0) {
+    return 0;
+  }
+  return score / (1 + score);
+}
+
+function buildRerankerPrompt(params: {
+  queryText: string;
+  candidates: RerankedMemorySearchResult[];
+  maxDocumentChars: number;
+}): string {
+  const sections = [`Query:\n${normalizeRecallQuery(params.queryText, DEFAULT_RECALL_MAX_CHARS)}`];
+  const candidateLines = params.candidates.map((result, index) => {
+    const sourceHints = [
+      result.entry.category,
+      result.metadata?.project,
+      result.metadata?.sourceType,
+      basename(result.metadata?.sourcePath ?? ""),
+    ]
+      .filter(Boolean)
+      .join(" | ");
+    const text = normalizeRecallQuery(result.entry.text, params.maxDocumentChars);
+    return `${index + 1}. ${sourceHints ? `[${sourceHints}] ` : ""}${text}`;
+  });
+  sections.push(`Candidates:\n${candidateLines.join("\n")}`);
+  return sections.join("\n\n");
+}
+
+function parseModelRerankResponse(
+  response: ChatCompletionResponse,
+  expectedCandidates: number,
+): Map<number, number> {
+  const content = response.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !content.trim()) {
+    throw new Error("reranker response did not include JSON content");
+  }
+  const parsed = JSON.parse(content) as unknown;
+  const ranking = asRecord(parsed)?.ranking;
+  if (!Array.isArray(ranking) || ranking.length !== expectedCandidates) {
+    throw new Error(
+      `reranker returned ${Array.isArray(ranking) ? ranking.length : 0} scores for ${expectedCandidates} candidates`,
+    );
+  }
+  const rawScores: Array<{ index: number; score: number }> = [];
+  for (const item of ranking) {
+    const index = asRecord(item)?.index;
+    const score = asRecord(item)?.score;
+    if (
+      typeof index !== "number" ||
+      !Number.isInteger(index) ||
+      index < 1 ||
+      index > expectedCandidates
+    ) {
+      throw new Error(`reranker returned invalid candidate index: ${String(index)}`);
+    }
+    if (typeof score !== "number" || !Number.isFinite(score) || score < 0) {
+      throw new Error(`reranker returned invalid score for candidate ${index}`);
+    }
+    if (rawScores.some((entry) => entry.index === index)) {
+      throw new Error(`reranker returned duplicate score for candidate ${index}`);
+    }
+    rawScores.push({ index, score });
+  }
+  if (rawScores.length !== expectedCandidates) {
+    throw new Error("reranker response was missing candidate scores");
+  }
+  const maxScore = Math.max(...rawScores.map((entry) => entry.score), 1);
+  const scores = new Map<number, number>();
+  for (const entry of rawScores) {
+    scores.set(entry.index, Math.min(1, entry.score / maxScore));
+  }
+  return scores;
+}
+
+async function rerankMemoryResultsWithModel(params: {
+  client: OpenAiCompatibleHttpClient;
+  model: string;
+  queryText: string;
+  results: RerankedMemorySearchResult[];
+  timeoutMs?: number;
+  maxCandidates?: number;
+  maxDocumentChars?: number;
+}): Promise<RerankedMemorySearchResult[]> {
+  if (params.results.length < 2) {
+    return params.results;
+  }
+
+  const candidateLimit = Math.max(
+    2,
+    Math.min(params.results.length, params.maxCandidates ?? DEFAULT_RERANKER_MAX_CANDIDATES),
+  );
+  const candidates = params.results.slice(0, candidateLimit);
+  const maxDocumentChars = params.maxDocumentChars ?? DEFAULT_RERANKER_MAX_DOCUMENT_CHARS;
+  const responseFormat = {
+    type: "json_schema",
+    json_schema: {
+      name: "memory_rerank_result",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ranking: {
+            type: "array",
+            minItems: candidateLimit,
+            maxItems: candidateLimit,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                index: { type: "integer", minimum: 1, maximum: candidateLimit },
+                score: { type: "number", minimum: 0, maximum: 1 },
+              },
+              required: ["index", "score"],
+            },
+          },
+        },
+        required: ["ranking"],
+      },
+    },
+  } as const;
+
+  ensureGlobalUndiciEnvProxyDispatcher();
+  const response = await params.client.post<ChatCompletionResponse>("/chat/completions", {
+    body: {
+      model: params.model,
+      messages: [
+        { role: "system", content: DEFAULT_RERANKER_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: buildRerankerPrompt({
+            queryText: params.queryText,
+            candidates,
+            maxDocumentChars,
+          }),
+        },
+      ],
+      temperature: DEFAULT_RERANKER_TEMPERATURE,
+      max_tokens: candidateLimit * 24 + 64,
+      response_format: responseFormat,
+    },
+    ...(params.timeoutMs ? { timeout: params.timeoutMs, maxRetries: 0 } : {}),
+  });
+
+  const scoreByIndex = parseModelRerankResponse(response, candidateLimit);
+  const reranked = candidates
+    .map((result, index) => {
+      const rerankerScore = scoreByIndex.get(index + 1);
+      if (typeof rerankerScore !== "number") {
+        return result;
+      }
+      return {
+        ...result,
+        rerankerScore,
+        adjustedScore: rerankerScore * 0.8 + normalizeScoreForBlend(result.adjustedScore) * 0.2,
+      };
+    })
+    .sort((a, b) => {
+      const rerankerA = typeof a.rerankerScore === "number" ? a.rerankerScore : -1;
+      const rerankerB = typeof b.rerankerScore === "number" ? b.rerankerScore : -1;
+      if (rerankerB !== rerankerA) {
+        return rerankerB - rerankerA;
+      }
+      if (b.adjustedScore !== a.adjustedScore) {
+        return b.adjustedScore - a.adjustedScore;
+      }
+      return b.score - a.score;
+    });
+
+  return [...reranked, ...params.results.slice(candidateLimit)];
+}
+
 // ============================================================================
 // Embeddings
 // ============================================================================
@@ -369,7 +1085,7 @@ type Embeddings = {
 };
 
 class OpenAiCompatibleEmbeddings implements Embeddings {
-  private clientPromise: Promise<OpenAiEmbeddingClient>;
+  private clientPromise: Promise<OpenAiCompatibleHttpClient>;
 
   constructor(
     apiKey: string,
@@ -377,9 +1093,7 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
     baseUrl?: string,
     private dimensions?: number,
   ) {
-    this.clientPromise = loadOpenAiModule().then(
-      ({ default: OpenAI }) => new OpenAI({ apiKey, baseURL: baseUrl }) as OpenAiEmbeddingClient,
-    );
+    this.clientPromise = createOpenAiCompatibleClient(apiKey, baseUrl);
   }
 
   async embed(text: string, options?: { timeoutMs?: number }): Promise<number[]> {
@@ -536,6 +1250,12 @@ class MemoryRecallEmbeddingError extends Error {
 
 export const testing = {
   runWithTimeout,
+  buildSourceMetadataFromPath,
+  extractInlineMemoryMetadata,
+  parseModelRerankResponse,
+  rerankMemoryResults,
+  rerankMemoryResultsWithModel,
+  summarizeQueryForQualityLog,
 } as const;
 
 function createEmbeddings(api: OpenClawPluginApi, cfg: MemoryConfig): Embeddings {
@@ -544,6 +1264,55 @@ function createEmbeddings(api: OpenClawPluginApi, cfg: MemoryConfig): Embeddings
     return new OpenAiCompatibleEmbeddings(apiKey, model, baseUrl, dimensions);
   }
   return new ProviderAdapterEmbeddings(api, cfg.embedding);
+}
+
+function resolveToolRecallSearchLimit(limit: number, cfg: MemoryConfig): number {
+  return Math.max(
+    limit + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA,
+    cfg.reranker?.enabled ? cfg.reranker.maxCandidates : 0,
+  );
+}
+
+function resolveAutoRecallSearchLimit(cfg: MemoryConfig): number {
+  return Math.max(
+    DEFAULT_AUTO_RECALL_OVERFETCH_LIMIT,
+    cfg.reranker?.enabled ? cfg.reranker.maxCandidates : 0,
+  );
+}
+
+async function applyConfiguredModelReranker(params: {
+  cfg: MemoryConfig;
+  logger: OpenClawPluginApi["logger"];
+  queryText: string;
+  results: RerankedMemorySearchResult[];
+}): Promise<RerankedMemorySearchResult[]> {
+  const rerankerCfg = params.cfg.reranker;
+  if (!rerankerCfg?.enabled || params.results.length < 2) {
+    return params.results;
+  }
+  const apiKey = rerankerCfg.apiKey ?? params.cfg.embedding.apiKey;
+  const baseUrl = rerankerCfg.baseUrl ?? params.cfg.embedding.baseUrl;
+  if (!apiKey) {
+    params.logger.warn?.("memory-lancedb: reranker skipped because no API key is configured");
+    return params.results;
+  }
+  try {
+    const client = await createOpenAiCompatibleClient(apiKey, baseUrl);
+    return await rerankMemoryResultsWithModel({
+      client,
+      model: rerankerCfg.model,
+      queryText: params.queryText,
+      results: params.results,
+      timeoutMs: rerankerCfg.timeoutMs ?? DEFAULT_RERANKER_TIMEOUT_MS,
+      maxCandidates: rerankerCfg.maxCandidates ?? DEFAULT_RERANKER_MAX_CANDIDATES,
+      maxDocumentChars: rerankerCfg.maxDocumentChars ?? DEFAULT_RERANKER_MAX_DOCUMENT_CHARS,
+    });
+  } catch (error) {
+    params.logger.warn?.(
+      `memory-lancedb: reranker failed, using heuristic order: ${String(error)}`,
+    );
+    return params.results;
+  }
 }
 
 type EmbeddingCreateResponse = {
@@ -842,8 +1611,8 @@ const INBOUND_ENVELOPE_PREFIX_RE =
  * known-channel detector is disabled and only the marker-aware regex above
  * applies.
  */
-const ENVELOPE_KNOWN_CHANNEL_PATTERN = BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES.map((prefix) =>
-  prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+const ENVELOPE_KNOWN_CHANNEL_PATTERN = BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES.map(
+  (prefix: string) => prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
 ).join("|");
 const INBOUND_ENVELOPE_KNOWN_CHANNEL_PREFIX_RE: RegExp | null = ENVELOPE_KNOWN_CHANNEL_PATTERN
   ? new RegExp(
@@ -1447,8 +2216,124 @@ export default definePluginEntry({
     const vectorDim = dimensions ?? vectorDimsForModel(model);
     const db = new MemoryDB(resolvedDbPath, vectorDim, cfg.storageOptions);
     const embeddings = createEmbeddings(api, cfg);
+    const { metadataPath, qualityLogPath } = resolveSupportPaths(resolvedDbPath);
     const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
+    let metadataState: MemoryMetadataStore | null = null;
+    let metadataLoadPromise: Promise<MemoryMetadataStore> | undefined;
+    let metadataBackfillPromise: Promise<MemoryMetadataStore> | undefined;
     let memoryRecallCooldown: { until: number; error: string } | undefined;
+    const getMetadataState = async (): Promise<MemoryMetadataStore> => {
+      if (metadataState) {
+        return metadataState;
+      }
+      metadataLoadPromise ??= loadMetadataStore(metadataPath)
+        .then((loaded) => {
+          metadataState = loaded;
+          return loaded;
+        })
+        .catch((error: unknown) => {
+          metadataLoadPromise = undefined;
+          throw error;
+        });
+      return await metadataLoadPromise;
+    };
+    const persistMetadataState = async (): Promise<void> => {
+      const state = await getMetadataState();
+      await saveMetadataStore(metadataPath, state);
+    };
+    const ensureMetadataBackfill = async (): Promise<MemoryMetadataStore> => {
+      const state = await getMetadataState();
+      if (state.backfill?.version === METADATA_STORE_VERSION) {
+        return state;
+      }
+      metadataBackfillPromise ??= (async () => {
+        const nextState = await getMetadataState();
+        const sources = await buildBackfillSources(api);
+        const entries = await db.list(undefined);
+        let matched = 0;
+        for (const entry of entries) {
+          if (nextState.entries[entry.id]?.sourcePath) {
+            continue;
+          }
+          const inlineMetadata = extractInlineMemoryMetadata(entry.text, api);
+          if (inlineMetadata) {
+            nextState.entries[entry.id] = inlineMetadata;
+            matched += 1;
+            continue;
+          }
+          const cleaned = sanitizeRecallMemoryText(entry.text);
+          if (!cleaned) {
+            continue;
+          }
+          const normalized = normalizeSearchText(cleaned);
+          const match = sources.find(
+            (source) => source.text.includes(cleaned) || source.normalizedText.includes(normalized),
+          );
+          if (!match) {
+            continue;
+          }
+          nextState.entries[entry.id] = { ...match.metadata };
+          matched += 1;
+        }
+        nextState.backfill = {
+          version: METADATA_STORE_VERSION,
+          completedAt: Date.now(),
+          scannedSources: sources.length,
+          matchedEntries: matched,
+        };
+        await persistMetadataState();
+        api.logger.info?.(
+          `memory-lancedb: metadata backfill complete (${matched}/${entries.length} matched)`,
+        );
+        return nextState;
+      })().finally(() => {
+        metadataBackfillPromise = undefined;
+      });
+      return await metadataBackfillPromise;
+    };
+    const storeMemoryMetadata = async (
+      memoryId: string,
+      metadata: MemoryMetadata,
+    ): Promise<void> => {
+      const state = await getMetadataState();
+      state.entries[memoryId] = {
+        ...(state.entries[memoryId] ?? {}),
+        ...metadata,
+      };
+      await persistMetadataState();
+    };
+    const attachMetadataToResults = async (
+      results: MemorySearchResult[],
+    ): Promise<MemorySearchResultWithMetadata[]> => {
+      try {
+        await ensureMetadataBackfill();
+        const state = await getMetadataState();
+        return results.map((result) => ({
+          ...result,
+          metadata: state.entries[result.entry.id] ?? null,
+        }));
+      } catch (error) {
+        api.logger.warn?.(`memory-lancedb: metadata attach failed: ${String(error)}`);
+        return results.map((result) => ({
+          ...result,
+          metadata: null,
+        }));
+      }
+    };
+    const logRecallQuality = async (
+      payload: Record<string, unknown> & { query?: string | null },
+    ): Promise<void> => {
+      const { query, ...rest } = payload;
+      try {
+        await appendJsonLine(qualityLogPath, {
+          ts: new Date().toISOString(),
+          ...rest,
+          ...summarizeQueryForQualityLog(query),
+        });
+      } catch (error) {
+        api.logger.warn?.(`memory-lancedb: recall quality log write failed: ${String(error)}`);
+      }
+    };
     const resolveCurrentHookConfig = () => {
       const runtimePluginConfig = resolveLivePluginConfigObject(
         api.runtime.config?.current
@@ -1460,7 +2345,12 @@ export default definePluginEntry({
       if (!runtimePluginConfig) {
         return disabledHookCfg;
       }
+      const runtimeConfigRecord = asRecord(runtimePluginConfig) ?? {};
+      const runtimeEmbedding = asRecord(runtimeConfigRecord.embedding) ?? {};
+      const runtimeReranker = asRecord(runtimeConfigRecord.reranker);
       return memoryConfigSchema.parse({
+        ...cfg,
+        ...runtimeConfigRecord,
         embedding: {
           provider: cfg.embedding.provider,
           apiKey: cfg.embedding.apiKey,
@@ -1469,16 +2359,16 @@ export default definePluginEntry({
           ...(typeof cfg.embedding.dimensions === "number"
             ? { dimensions: cfg.embedding.dimensions }
             : {}),
-          ...asRecord(asRecord(runtimePluginConfig)?.embedding),
+          ...runtimeEmbedding,
         },
-        ...(cfg.dreaming ? { dreaming: cfg.dreaming } : {}),
-        dbPath: cfg.dbPath,
-        autoCapture: cfg.autoCapture,
-        autoRecall: cfg.autoRecall,
-        captureMaxChars: cfg.captureMaxChars,
-        recallMaxChars: cfg.recallMaxChars,
-        ...(cfg.storageOptions ? { storageOptions: cfg.storageOptions } : {}),
-        ...asRecord(runtimePluginConfig),
+        ...(cfg.reranker || runtimeReranker
+          ? {
+              reranker: {
+                ...(cfg.reranker ?? {}),
+                ...(runtimeReranker ?? {}),
+              },
+            }
+          : {}),
       });
     };
     const readMemoryRecallCooldown = (): { error: string } | undefined => {
@@ -1546,7 +2436,11 @@ export default definePluginEntry({
                 } catch (error) {
                   throw new MemoryRecallEmbeddingError(error);
                 }
-                return await db.search(vector, limit + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA, 0.1);
+                return await db.search(
+                  vector,
+                  resolveToolRecallSearchLimit(limit, currentCfg),
+                  0.1,
+                );
               },
             });
           } catch (error) {
@@ -1558,6 +2452,12 @@ export default definePluginEntry({
             api.logger.warn?.(
               `memory-lancedb: memory_recall failed: ${message}; returning unavailable memory result`,
             );
+            await logRecallQuality({
+              eventType: "tool_recall",
+              status: "unavailable",
+              query,
+              error: message,
+            });
             return buildMemoryRecallUnavailableResult(message);
           }
           if (recall.status === "timeout") {
@@ -1566,11 +2466,42 @@ export default definePluginEntry({
             api.logger.warn?.(
               `memory-lancedb: memory_recall timed out after ${DEFAULT_TOOL_RECALL_TIMEOUT_MS}ms; returning unavailable memory result`,
             );
+            await logRecallQuality({
+              eventType: "tool_recall",
+              status: "timeout",
+              query,
+              error: message,
+            });
             return buildMemoryRecallUnavailableResult(message);
           }
-          const results = cleanMemorySearchResults(recall.value).slice(0, limit);
+          const heuristicResults = rerankMemoryResults(
+            await attachMetadataToResults(
+              cleanMemorySearchResults(recall.value).map(({ result, text }) => ({
+                ...result,
+                entry: {
+                  ...result.entry,
+                  text,
+                },
+              })),
+            ),
+            { queryText: query },
+          );
+          const results = (
+            await applyConfiguredModelReranker({
+              cfg: currentCfg,
+              logger: api.logger,
+              queryText: query,
+              results: heuristicResults,
+            })
+          ).slice(0, limit);
 
           if (results.length === 0) {
+            await logRecallQuality({
+              eventType: "tool_recall",
+              status: "no_result",
+              query,
+              resultCount: 0,
+            });
             return {
               content: [{ type: "text", text: "No relevant memories found." }],
               details: { count: 0 },
@@ -1578,20 +2509,34 @@ export default definePluginEntry({
           }
 
           const text = results
-            .map(({ result, text: memoryText }, i) => {
-              const escapedText = escapeMemoryForPrompt(memoryText);
-              return `${i + 1}. [${result.entry.category}] ${escapedText} (${(result.score * 100).toFixed(0)}%)`;
+            .map((result, i) => {
+              const escapedText = escapeMemoryForPrompt(result.entry.text);
+              const sourceLabel = [result.metadata?.project, result.metadata?.sourceType]
+                .filter(Boolean)
+                .join("|");
+              return `${i + 1}. [${result.entry.category}${sourceLabel ? `|${sourceLabel}` : ""}] ${escapedText} (${(result.adjustedScore * 100).toFixed(0)}%)`;
             })
             .join("\n");
 
           // Strip vector data for serialization (typed arrays can't be cloned)
-          const sanitizedResults = results.map(({ result, text: memoryText }) => ({
+          const sanitizedResults = results.map((result) => ({
             id: result.entry.id,
-            text: memoryText,
+            text: result.entry.text,
             category: result.entry.category,
             importance: result.entry.importance,
             score: result.score,
+            adjustedScore: result.adjustedScore,
+            rerankerScore: result.rerankerScore,
+            metadata: result.metadata,
           }));
+
+          await logRecallQuality({
+            eventType: "tool_recall",
+            status: "ok",
+            query,
+            resultCount: results.length,
+            results: buildResultSummary(results),
+          });
 
           return {
             content: [
@@ -1678,6 +2623,17 @@ export default definePluginEntry({
             importance,
             category,
           });
+          await storeMemoryMetadata(entry.id, {
+            sourceType: "manual_store",
+            sourcePath: null,
+            workspace: null,
+            project: inferProjectHint(text),
+            agentId: null,
+            sessionKey: null,
+            messageProvider: null,
+            channelId: null,
+            sourceTimestamp: entry.createdAt,
+          });
 
           return {
             content: [{ type: "text", text: `Stored: "${text.slice(0, 100)}..."` }],
@@ -1686,6 +2642,84 @@ export default definePluginEntry({
         },
       },
       { name: "memory_store" },
+    );
+
+    api.registerTool(
+      {
+        name: "memory_feedback",
+        label: "Memory Feedback",
+        description:
+          "Record whether memory retrieval was useful, wrong, missing, or corrected so retrieval quality can improve over time.",
+        parameters: Type.Object({
+          feedback: Type.Unsafe<FeedbackKind>({
+            type: "string",
+            enum: [...FEEDBACK_KINDS],
+          }),
+          query: Type.Optional(Type.String({ description: "Original memory lookup query" })),
+          memoryId: Type.Optional(
+            Type.String({
+              description: "Memory id if a specific recalled memory was wrong or useful",
+            }),
+          ),
+          notes: Type.Optional(Type.String({ description: "Optional short note or correction" })),
+        }),
+        async execute(_toolCallId, params) {
+          const typedParams = params as {
+            feedback?: string;
+            query?: string;
+            memoryId?: string;
+            notes?: string;
+          };
+          const feedback = typedParams.feedback;
+          const query = typeof typedParams.query === "string" ? typedParams.query.trim() : "";
+          const memoryId =
+            typeof typedParams.memoryId === "string" ? typedParams.memoryId.trim() : "";
+          const notes =
+            typeof typedParams.notes === "string"
+              ? typedParams.notes.trim().slice(0, MAX_FEEDBACK_NOTES_CHARS)
+              : "";
+
+          if (!FEEDBACK_KINDS.includes(feedback as FeedbackKind)) {
+            return {
+              content: [{ type: "text", text: `Unsupported feedback kind: ${String(feedback)}` }],
+              details: {
+                action: "rejected",
+                reason: "invalid_feedback",
+              },
+            };
+          }
+          if (!query && !memoryId && !notes) {
+            return {
+              content: [
+                { type: "text", text: "Provide query, memoryId, or notes with the feedback." },
+              ],
+              details: {
+                action: "rejected",
+                reason: "missing_context",
+              },
+            };
+          }
+
+          await logRecallQuality({
+            eventType: "feedback",
+            status: feedback,
+            query: query || null,
+            memoryId: memoryId || null,
+            notes: notes || null,
+          });
+
+          return {
+            content: [{ type: "text", text: `Recorded memory feedback: ${feedback}.` }],
+            details: {
+              action: "recorded",
+              feedback,
+              query: query || undefined,
+              memoryId: memoryId || undefined,
+            },
+          };
+        },
+      },
+      { name: "memory_feedback" },
     );
 
     api.registerTool(
@@ -1789,18 +2823,68 @@ export default definePluginEntry({
           .argument("<query>", "Search query")
           .option("--limit <n>", "Max results", "5")
           .action(async (query, opts) => {
-            const vector = await embeddings.embed(normalizeRecallQuery(query, cfg.recallMaxChars));
-            const limit = parsePositiveIntegerOption(opts.limit, "--limit");
-            const results = await db.search(vector, limit, 0.3);
-            // Strip vectors for output
-            const output = results.map((r) => ({
-              id: r.entry.id,
-              text: r.entry.text,
-              category: r.entry.category,
-              importance: r.entry.importance,
-              score: r.score,
-            }));
+            const currentCfg = resolveCurrentHookConfig();
+            const vector = await embeddings.embed(
+              normalizeRecallQuery(query, currentCfg.recallMaxChars),
+            );
+            const limit = parsePositiveIntegerOption(opts.limit, "--limit") ?? 5;
+            const heuristicResults = rerankMemoryResults(
+              await attachMetadataToResults(
+                await db.search(vector, resolveToolRecallSearchLimit(limit, currentCfg), 0.3),
+              ),
+              { queryText: query },
+            );
+            const output = (
+              await applyConfiguredModelReranker({
+                cfg: currentCfg,
+                logger: api.logger,
+                queryText: query,
+                results: heuristicResults,
+              })
+            )
+              .slice(0, limit)
+              .map((r) => ({
+                id: r.entry.id,
+                text: r.entry.text,
+                category: r.entry.category,
+                importance: r.entry.importance,
+                score: r.score,
+                adjustedScore: r.adjustedScore,
+                rerankerScore: r.rerankerScore,
+                metadata: r.metadata,
+              }));
             console.log(JSON.stringify(output, null, 2));
+          });
+
+        memory
+          .command("feedback")
+          .description("Record retrieval quality feedback")
+          .requiredOption("--kind <kind>", "Feedback kind: useful, wrong, missing, correction")
+          .option("--query <query>", "Original recall query")
+          .option("--memory-id <id>", "Specific memory id")
+          .option("--notes <notes>", "Short note or correction")
+          .action(async (opts) => {
+            const kind = String(opts.kind ?? "").trim();
+            if (!FEEDBACK_KINDS.includes(kind as FeedbackKind)) {
+              throw new Error(`Unsupported feedback kind: ${kind}`);
+            }
+            await logRecallQuality({
+              eventType: "feedback",
+              status: kind,
+              query: opts.query ? String(opts.query) : null,
+              memoryId: opts.memoryId ? String(opts.memoryId) : null,
+              notes: opts.notes ? String(opts.notes).slice(0, MAX_FEEDBACK_NOTES_CHARS) : null,
+            });
+            console.log(
+              JSON.stringify(
+                {
+                  action: "recorded",
+                  feedback: kind,
+                },
+                null,
+                2,
+              ),
+            );
           });
 
         memory
@@ -1884,7 +2968,7 @@ export default definePluginEntry({
     // ========================================================================
 
     // Auto-recall: inject relevant memories during prompt build
-    api.on("before_prompt_build", async (event) => {
+    api.on("before_prompt_build", async (event, ctx) => {
       const currentCfg = resolveCurrentHookConfig();
       if (!currentCfg.autoRecall) {
         return undefined;
@@ -1907,7 +2991,7 @@ export default definePluginEntry({
             });
             // Overfetch to compensate for sludge filtering: if contaminated
             // entries occupy the top slots we still surface enough clean ones.
-            return await db.search(vector, DEFAULT_AUTO_RECALL_OVERFETCH_LIMIT, 0.3);
+            return await db.search(vector, resolveAutoRecallSearchLimit(currentCfg), 0.3);
           },
         });
         if (recall.status === "timeout") {
@@ -1917,9 +3001,28 @@ export default definePluginEntry({
           return undefined;
         }
 
-        // Filter contaminated memories, then cap at the prompt-budget bound.
-        const cleanResults = cleanMemorySearchResults(recall.value)
-          .map(({ result, text }) => ({ category: result.entry.category, text }))
+        // Filter contaminated memories, rank with metadata, then cap at the prompt-budget bound.
+        const heuristicResults = rerankMemoryResults(
+          await attachMetadataToResults(
+            cleanMemorySearchResults(recall.value).map(({ result, text }) => ({
+              ...result,
+              entry: {
+                ...result.entry,
+                text,
+              },
+            })),
+          ),
+          { queryText: recallQuery, agentId: String(asRecord(ctx)?.agentId ?? "") || undefined },
+        );
+        const cleanResults = (
+          await applyConfiguredModelReranker({
+            cfg: currentCfg,
+            logger: api.logger,
+            queryText: recallQuery,
+            results: heuristicResults,
+          })
+        )
+          .map((result) => ({ category: result.entry.category, text: result.entry.text }))
           .slice(0, DEFAULT_AUTO_RECALL_RESULT_CAP);
 
         if (cleanResults.length === 0) {
@@ -1990,11 +3093,25 @@ export default definePluginEntry({
                 continue;
               }
 
-              await db.store({
+              const storedEntry = await db.store({
                 text: sanitized,
                 vector,
                 importance: 0.7,
                 category,
+              });
+              await storeMemoryMetadata(storedEntry.id, {
+                sourceType: "auto_capture",
+                sourcePath: null,
+                workspace: null,
+                project: inferProjectHint(sanitized),
+                agentId:
+                  typeof asRecord(ctx)?.agentId === "string"
+                    ? String(asRecord(ctx)?.agentId)
+                    : null,
+                sessionKey: typeof ctx.sessionKey === "string" ? ctx.sessionKey : null,
+                messageProvider: null,
+                channelId: null,
+                sourceTimestamp: storedEntry.createdAt,
               });
               stored++;
             }
