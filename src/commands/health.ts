@@ -43,7 +43,6 @@ import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { buildChannelAccountBindings, resolvePreferredAccountId } from "../routing/bindings.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
-import { getRemoteCapabilitySnapshot } from "../skills/runtime/remote.js";
 import {
   buildCredentialsRequiredHealthDiagnostic,
   GATEWAY_HEALTH_REACHABLE_LINE,
@@ -54,6 +53,10 @@ import {
   formatLocalCapabilityLines,
   getHealthLocalCapabilitiesSnapshot,
 } from "./health.local-capabilities.js";
+import {
+  formatRemoteCapabilityLines,
+  getHealthRemoteCapabilitiesSnapshot,
+} from "./health.remote-capabilities.js";
 import type {
   AgentHealthSummary,
   ChannelAccountHealthSummary,
@@ -248,11 +251,6 @@ export function formatContextEngineHealthLine(summary: HealthSummary): string | 
   }
   const engines = quarantined.map((entry) => entry.engineId).join(", ");
   return `Context engine: warning (${quarantined.length} quarantined; downgraded to legacy: ${engines})`;
-}
-
-function formatRemoteCapabilityLine(summary: HealthSummary): string | null {
-  const detail = summary.remoteCapabilities?.detail?.trim();
-  return detail ? `Remote nodes: ${detail}` : null;
 }
 
 const resolveHeartbeatSummary = (cfg: OpenClawConfig, agentId: string) =>
@@ -664,11 +662,16 @@ export async function getHealthSnapshot(params?: {
 
   const pluginHealth = buildPluginHealthSummary();
   const contextEngineHealth = buildContextEngineHealthSummary();
-  const localCapabilities = await getHealthLocalCapabilitiesSnapshot({
-    cfg,
-    defaultAgentId,
-  });
-  const remoteCapabilities = getRemoteCapabilitySnapshot();
+  const [localCapabilities, remoteCapabilities] = await Promise.all([
+    getHealthLocalCapabilitiesSnapshot({
+      cfg,
+      defaultAgentId,
+    }),
+    getHealthRemoteCapabilitiesSnapshot({
+      cfg,
+      defaultAgentId,
+    }),
+  ]);
   const summary: HealthSummary = {
     ok: true,
     ts: Date.now(),
@@ -678,7 +681,7 @@ export async function getHealthSnapshot(params?: {
     ...(contextEngineHealth ? { contextEngines: contextEngineHealth } : {}),
     modelPricing: getGatewayModelPricingHealth({ enabled: isGatewayModelPricingEnabled(cfg) }),
     localCapabilities,
-    ...(remoteCapabilities ? { remoteCapabilities } : {}),
+    remoteCapabilities,
     channels,
     channelOrder,
     channelLabels,
@@ -910,9 +913,8 @@ export async function healthCommand(
     for (const line of formatLocalCapabilityLines(summary.localCapabilities)) {
       runtime.log(styleHealthChannelLine(line, rich));
     }
-    const remoteCapabilityLine = formatRemoteCapabilityLine(summary);
-    if (remoteCapabilityLine) {
-      runtime.log(styleHealthChannelLine(remoteCapabilityLine, rich));
+    for (const line of formatRemoteCapabilityLines(summary.remoteCapabilities)) {
+      runtime.log(styleHealthChannelLine(line, rich));
     }
     for (const plugin of displayPlugins) {
       const channelSummary = summary.channels?.[plugin.id];

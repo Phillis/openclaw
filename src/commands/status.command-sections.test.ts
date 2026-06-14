@@ -255,6 +255,15 @@ describe("status.command-sections", () => {
         },
         remoteCapabilities: {
           checkedAt: Date.now(),
+          modelEndpoints: {
+            state: "ok",
+            detail: "1/1 reachable · memory embeddings: http://127.0.0.1:1234/v1 reachable",
+            probes: [],
+          },
+          gateway: {
+            state: "off",
+            detail: "not configured",
+          },
           state: "ok",
           detail: "1 connected · 1 macOS exec node · 2 probed bins · Mac Studio",
           connectedNodes: 1,
@@ -300,6 +309,16 @@ describe("status.command-sections", () => {
         Item: "Agent runtimes",
         Status: "ok(OK)",
         Detail: "openclaw yes · codex yes · claude no · opencode no",
+      },
+      {
+        Item: "Remote models",
+        Status: "ok(OK)",
+        Detail: "1/1 reachable · memory embeddings: http://127.0.0.1:1234/v1 reachable",
+      },
+      {
+        Item: "Remote gateway",
+        Status: "muted(OFF)",
+        Detail: "not configured",
       },
       {
         Item: "Remote nodes",

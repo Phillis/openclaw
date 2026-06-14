@@ -347,10 +347,24 @@ export function buildStatusHealthRows(params: {
       Detail: params.health.localCapabilities.agentRuntimes.detail,
     });
   }
-  if (params.health.remoteCapabilities) {
+  if (params.health.remoteCapabilities?.modelEndpoints) {
+    rows.push({
+      Item: "Remote models",
+      Status: renderCapabilityState(params.health.remoteCapabilities.modelEndpoints.state, params),
+      Detail: params.health.remoteCapabilities.modelEndpoints.detail,
+    });
+  }
+  if (params.health.remoteCapabilities?.gateway) {
+    rows.push({
+      Item: "Remote gateway",
+      Status: renderCapabilityState(params.health.remoteCapabilities.gateway.state, params),
+      Detail: params.health.remoteCapabilities.gateway.detail,
+    });
+  }
+  if (params.health.remoteCapabilities?.detail) {
     rows.push({
       Item: "Remote nodes",
-      Status: renderCapabilityState(params.health.remoteCapabilities.state, params),
+      Status: renderCapabilityState(params.health.remoteCapabilities.state ?? "unknown", params),
       Detail: params.health.remoteCapabilities.detail,
     });
   }

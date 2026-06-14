@@ -143,6 +143,37 @@ describe("openai responses payload policy", () => {
     expect(payload).not.toHaveProperty("prompt_cache_retention");
   });
 
+  it("uses remote capability probe results for responses payload stripping", () => {
+    const policy = resolveOpenAIResponsesPayloadPolicy(
+      {
+        api: "openai-responses",
+        provider: "openai",
+        baseUrl: "https://proxy.example.com/v1",
+        compat: {
+          remoteCapabilityProbe: {
+            supportsPromptCacheKey: true,
+            supportsResponsesStore: false,
+          },
+        },
+      },
+      {
+        enablePromptCacheStripping: true,
+        storeMode: "provider-policy",
+      },
+    );
+    const payload = {
+      store: false,
+      prompt_cache_key: "session-123",
+      prompt_cache_retention: "24h",
+    } satisfies Record<string, unknown>;
+
+    applyOpenAIResponsesPayloadPolicy(payload, policy);
+
+    expect(payload).not.toHaveProperty("store");
+    expect(payload.prompt_cache_key).toBe("session-123");
+    expect(payload.prompt_cache_retention).toBe("24h");
+  });
+
   it("keeps disabled reasoning payloads on native OpenAI responses models that support none", () => {
     const payload = {
       reasoning: {

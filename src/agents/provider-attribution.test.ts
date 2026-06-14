@@ -1053,6 +1053,51 @@ describe("provider attribution", () => {
     );
   });
 
+  it("uses remote capability probe results when static compat flags are unset", () => {
+    expectRecordFields(
+      resolveProviderRequestCapabilities({
+        provider: "custom-proxy",
+        api: "openai-responses",
+        baseUrl: "https://proxy.example.com/v1",
+        capability: "llm",
+        transport: "stream",
+        compat: {
+          remoteCapabilityProbe: {
+            supportsPromptCacheKey: true,
+            supportsResponsesStore: false,
+          },
+        },
+      }),
+      {
+        endpointClass: "custom",
+        supportsResponsesStoreField: false,
+        allowsResponsesStore: false,
+        shouldStripResponsesPromptCache: false,
+      },
+    );
+
+    expectRecordFields(
+      resolveProviderRequestCapabilities({
+        provider: "custom-proxy",
+        api: "openai-responses",
+        baseUrl: "https://proxy.example.com/v1",
+        capability: "llm",
+        transport: "stream",
+        compat: {
+          supportsPromptCacheKey: false,
+          remoteCapabilityProbe: {
+            supportsPromptCacheKey: true,
+            supportsResponsesStore: true,
+          },
+        },
+      }),
+      {
+        supportsResponsesStoreField: true,
+        shouldStripResponsesPromptCache: true,
+      },
+    );
+  });
+
   it("resolves shared compat families and native streaming-usage gates", () => {
     expectRecordFields(
       resolveProviderRequestCapabilities({

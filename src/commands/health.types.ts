@@ -118,6 +118,33 @@ export type HealthLocalCapabilitiesSummary = {
   agentRuntimes?: HealthAgentRuntimesCapabilitySummary;
 };
 
+/** One remote endpoint probe included in the capability cache. */
+export type HealthRemoteEndpointProbeSummary = {
+  id: string;
+  label: string;
+  state: HealthCapabilityState;
+  detail: string;
+  url?: string;
+  status?: number;
+  elapsedMs?: number;
+};
+
+/** Remote model/embedding/reranker endpoint rollup surfaced in health output. */
+export type HealthRemoteModelEndpointsCapabilitySummary = {
+  state: HealthCapabilityState;
+  detail: string;
+  probes: HealthRemoteEndpointProbeSummary[];
+};
+
+/** Configured remote Gateway reachability surfaced in health output. */
+export type HealthRemoteGatewayCapabilitySummary = {
+  state: HealthCapabilityState;
+  detail: string;
+  url?: string;
+  status?: number;
+  elapsedMs?: number;
+};
+
 /** One remote node capability snapshot derived from connected node probes. */
 export type HealthRemoteNodeCapabilitySummary = {
   nodeId: string;
@@ -134,12 +161,16 @@ export type HealthRemoteNodeCapabilitySummary = {
 /** Cached remote capability snapshot for connected node surfaces and probed bins. */
 export type HealthRemoteCapabilitiesSummary = {
   checkedAt: number;
-  state: HealthCapabilityState;
-  detail: string;
-  connectedNodes: number;
-  eligibleNodes: number;
-  probedBins: number;
-  nodes: HealthRemoteNodeCapabilitySummary[];
+  /** Network dependency probes used by health/status. */
+  modelEndpoints?: HealthRemoteModelEndpointsCapabilitySummary;
+  gateway?: HealthRemoteGatewayCapabilitySummary;
+  /** Legacy remote-node skill probe rollup kept for runtime helper compatibility. */
+  state?: HealthCapabilityState;
+  detail?: string;
+  connectedNodes?: number;
+  eligibleNodes?: number;
+  probedBins?: number;
+  nodes?: HealthRemoteNodeCapabilitySummary[];
 };
 
 /** Full gateway health payload consumed by `openclaw health`. */

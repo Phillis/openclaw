@@ -220,6 +220,13 @@ const ModelCompatSchema = z
     supportsStrictMode: z.boolean().optional(),
     requiresStringContent: z.boolean().optional(),
     strictMessageKeys: z.boolean().optional(),
+    remoteCapabilityProbe: z
+      .object({
+        supportsResponsesStore: z.boolean().optional(),
+        supportsPromptCacheKey: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     visibleReasoningDetailTypes: z.array(z.string().min(1)).optional(),
     supportedReasoningEfforts: z.array(z.string().min(1)).optional(),
     reasoningEffortMap: z.record(z.string().min(1), z.string().min(1)).optional(),

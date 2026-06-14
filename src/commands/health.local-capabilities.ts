@@ -183,8 +183,8 @@ async function buildMemorySummary(params: {
 
   if (!memory) {
     return {
-      state: "warn",
-      detail: `enabled${memoryPlugin.slot ? ` (${memoryPlugin.slot})` : ""} but unavailable`,
+      state: "unknown",
+      detail: `enabled${memoryPlugin.slot ? ` (${memoryPlugin.slot})` : ""}; status not checked`,
       pluginSlot: memoryPlugin.slot,
     };
   }

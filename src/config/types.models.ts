@@ -61,6 +61,14 @@ export type SupportedThinkingFormat =
   | "openrouter"
   | "together";
 
+/** Sanitized feature support discovered by a remote provider probe. */
+export type RemoteCapabilityProbeConfig = {
+  /** Whether the remote endpoint accepted the Responses store field. */
+  supportsResponsesStore?: boolean;
+  /** Whether the remote endpoint accepted prompt-cache/session affinity keys. */
+  supportsPromptCacheKey?: boolean;
+};
+
 /** Thinking/reasoning payload dialects emitted by OpenAI-compatible providers. */
 export const MODEL_THINKING_FORMATS = [
   "openai",
@@ -93,6 +101,8 @@ export type ModelCompatConfig = SupportedOpenAICompatFields &
     supportsTools?: boolean;
     /** Whether provider accepts prompt-cache/session affinity keys. */
     supportsPromptCacheKey?: boolean;
+    /** Sanitized remote probe result used when static compat flags are not set. */
+    remoteCapabilityProbe?: RemoteCapabilityProbeConfig;
     /** Whether all message parts must be coerced to plain strings. */
     requiresStringContent?: boolean;
     /** Whether unknown message payload keys must be stripped before requests. */

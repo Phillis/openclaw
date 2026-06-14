@@ -140,6 +140,20 @@ function readCompatBoolean(
   return asBoolean((compat as Record<string, unknown>)[key]);
 }
 
+function readRemoteCapabilityProbeBoolean(
+  compat: unknown,
+  key: "supportsResponsesStore" | "supportsPromptCacheKey",
+): boolean | undefined {
+  if (!compat || typeof compat !== "object") {
+    return undefined;
+  }
+  const probe = (compat as Record<string, unknown>).remoteCapabilityProbe;
+  if (!probe || typeof probe !== "object" || Array.isArray(probe)) {
+    return undefined;
+  }
+  return asBoolean((probe as Record<string, unknown>)[key]);
+}
+
 const OPENCLAW_ATTRIBUTION_PRODUCT = "OpenClaw";
 const OPENCLAW_ATTRIBUTION_ORIGINATOR = "openclaw";
 const OPENROUTER_ATTRIBUTION_CATEGORIES =
@@ -735,7 +749,12 @@ export function resolveProviderRequestCapabilities(
   const compatibilityFamily = manifestProviderRequest?.compatibilityFamily;
 
   const isResponsesApi = isOpenAIResponsesApi(api);
-  const promptCacheKeySupport = readCompatBoolean(input.compat, "supportsPromptCacheKey");
+  const promptCacheKeySupport =
+    readCompatBoolean(input.compat, "supportsPromptCacheKey") ??
+    readRemoteCapabilityProbeBoolean(input.compat, "supportsPromptCacheKey");
+  const responsesStoreSupport =
+    readCompatBoolean(input.compat, "supportsStore") ??
+    readRemoteCapabilityProbeBoolean(input.compat, "supportsResponsesStore");
   // Default strip behavior (proxy-like endpoints with responses APIs) is
   // preserved as a safety net for providers that reject prompt_cache_key,
   // see #48155 (Volcano Engine DeepSeek). Operators running their payload
@@ -778,10 +797,9 @@ export function resolveProviderRequestCapabilities(
       (endpointClass === "default" || endpointClass === "anthropic-public"),
     // This is intentionally the gate for emitting `store: false` on Responses
     // transports, not just a statement about vendor support in the abstract.
-    supportsResponsesStoreField:
-      readCompatBoolean(input.compat, "supportsStore") !== false && isResponsesApi,
+    supportsResponsesStoreField: responsesStoreSupport !== false && isResponsesApi,
     allowsResponsesStore:
-      readCompatBoolean(input.compat, "supportsStore") !== false &&
+      responsesStoreSupport !== false &&
       provider !== undefined &&
       isResponsesApi &&
       OPENAI_RESPONSES_PROVIDERS.has(provider) &&

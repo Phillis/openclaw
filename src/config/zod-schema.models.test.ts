@@ -50,4 +50,28 @@ describe("ModelsConfigSchema", () => {
 
     expect(result.success).toBe(true);
   });
+
+  it("accepts compat.remoteCapabilityProbe for sanitized remote probe results", () => {
+    const result = ModelsConfigSchema.safeParse({
+      providers: {
+        "my-proxy": {
+          baseUrl: "https://my-proxy.example.com/v1",
+          models: [
+            {
+              id: "gpt-compatible",
+              name: "GPT Compatible",
+              compat: {
+                remoteCapabilityProbe: {
+                  supportsResponsesStore: false,
+                  supportsPromptCacheKey: true,
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
 });

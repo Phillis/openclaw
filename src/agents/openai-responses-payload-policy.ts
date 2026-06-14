@@ -223,6 +223,20 @@ function readCompatPayloadBoolean(
   return asBoolean((compat as Record<string, unknown>)[key]);
 }
 
+function readRemoteCapabilityProbeBoolean(
+  compat: unknown,
+  key: "supportsResponsesStore" | "supportsPromptCacheKey",
+): boolean | undefined {
+  if (!compat || typeof compat !== "object") {
+    return undefined;
+  }
+  const probe = (compat as Record<string, unknown>).remoteCapabilityProbe;
+  if (!probe || typeof probe !== "object" || Array.isArray(probe)) {
+    return undefined;
+  }
+  return asBoolean((probe as Record<string, unknown>)[key]);
+}
+
 function resolveOpenAIResponsesPayloadCapabilities(
   model: OpenAIResponsesPayloadModel,
 ): OpenAIResponsesPayloadCapabilities {
@@ -239,7 +253,9 @@ function resolveOpenAIResponsesPayloadCapabilities(
   const usesKnownNativeOpenAIRoute =
     endpointClass === "default" ? provider === "openai" : usesKnownNativeOpenAIEndpoint;
   const usesExplicitProxyLikeEndpoint = usesConfiguredBaseUrl && !usesKnownNativeOpenAIEndpoint;
-  const promptCacheKeySupport = readCompatPayloadBoolean(model.compat, "supportsPromptCacheKey");
+  const promptCacheKeySupport =
+    readCompatPayloadBoolean(model.compat, "supportsPromptCacheKey") ??
+    readRemoteCapabilityProbeBoolean(model.compat, "supportsPromptCacheKey");
   const shouldStripResponsesPromptCache =
     promptCacheKeySupport === true
       ? false
@@ -247,7 +263,9 @@ function resolveOpenAIResponsesPayloadCapabilities(
         ? isResponsesApi
         : isResponsesApi && usesExplicitProxyLikeEndpoint;
   const supportsResponsesStoreField =
-    readCompatPayloadBoolean(model.compat, "supportsStore") !== false && isResponsesApi;
+    (readCompatPayloadBoolean(model.compat, "supportsStore") ??
+      readRemoteCapabilityProbeBoolean(model.compat, "supportsResponsesStore")) !== false &&
+    isResponsesApi;
 
   return {
     allowsOpenAIServiceTier:
@@ -331,6 +349,9 @@ export function resolveOpenAIResponsesPayloadPolicy(
   options: OpenAIResponsesPayloadPolicyOptions = {},
 ): OpenAIResponsesPayloadPolicy {
   const capabilities = resolveOpenAIResponsesPayloadCapabilities(model);
+  const responsesStoreSupport =
+    readCompatPayloadBoolean(model.compat, "supportsStore") ??
+    readRemoteCapabilityProbeBoolean(model.compat, "supportsResponsesStore");
   const storeMode = options.storeMode ?? "provider-policy";
   const explicitStore =
     storeMode === "preserve"
@@ -356,10 +377,7 @@ export function resolveOpenAIResponsesPayloadPolicy(
     shouldStripDisabledReasoningPayload,
     shouldStripPromptCache:
       options.enablePromptCacheStripping === true && capabilities.shouldStripResponsesPromptCache,
-    shouldStripStore:
-      explicitStore !== true &&
-      readCompatPayloadBoolean(model.compat, "supportsStore") === false &&
-      isResponsesApi,
+    shouldStripStore: explicitStore !== true && responsesStoreSupport === false && isResponsesApi,
     useServerCompaction:
       options.enableServerCompaction === true &&
       shouldEnableOpenAIResponsesServerCompaction(
