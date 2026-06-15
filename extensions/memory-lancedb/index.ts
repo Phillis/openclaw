@@ -107,6 +107,41 @@ type VerificationRecipe = NonNullable<MemoryConfig["verificationRecipes"]>[numbe
 
 type RecallBudgetProfileId = "tiny" | "default" | "coding" | "broad";
 
+const MEMORY_QUERY_BASE_COLUMNS = ["id", "text", "importance", "category", "createdAt"] as const;
+const MEMORY_QUERY_METADATA_COLUMNS = [
+  "sourceType",
+  "sourcePath",
+  "workspace",
+  "project",
+  "agentId",
+  "sessionKey",
+  "messageProvider",
+  "channelId",
+  "sourceTimestamp",
+] as const;
+const MEMORY_QUERY_DEFAULT_COLUMNS = [
+  "id",
+  "text",
+  "importance",
+  "category",
+  "createdAt",
+  "project",
+  "sourceType",
+  "agentId",
+  "sourceTimestamp",
+] as const;
+type MemoryQueryBaseColumn = (typeof MEMORY_QUERY_BASE_COLUMNS)[number];
+type MemoryQueryMetadataColumn = (typeof MEMORY_QUERY_METADATA_COLUMNS)[number];
+type MemoryQuerySelectableColumn = MemoryQueryBaseColumn | MemoryQueryMetadataColumn | "metadata";
+const MEMORY_QUERY_SELECTABLE_COLUMNS = [
+  ...MEMORY_QUERY_BASE_COLUMNS,
+  ...MEMORY_QUERY_METADATA_COLUMNS,
+  "metadata",
+] as const;
+const MEMORY_QUERY_BASE_COLUMN_SET = new Set<string>(MEMORY_QUERY_BASE_COLUMNS);
+const MEMORY_QUERY_METADATA_COLUMN_SET = new Set<string>(MEMORY_QUERY_METADATA_COLUMNS);
+const MEMORY_QUERY_SELECTABLE_COLUMN_SET = new Set<string>(MEMORY_QUERY_SELECTABLE_COLUMNS);
+
 type RecallBudget = {
   profile: RecallBudgetProfileId;
   queryChars: number;
@@ -1041,6 +1076,98 @@ function normalizeScoreForBlend(score: number): number {
   return score / (1 + score);
 }
 
+function parseMemoryQueryColumns(input?: string): MemoryQuerySelectableColumn[] {
+  if (!input?.trim()) {
+    return [...MEMORY_QUERY_DEFAULT_COLUMNS];
+  }
+  const columns = input
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (columns.length === 0) {
+    throw new Error("At least one column must be selected");
+  }
+  const unknown = columns.filter((column) => !MEMORY_QUERY_SELECTABLE_COLUMN_SET.has(column));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unsupported columns: ${unknown.join(", ")}. Supported columns: ${MEMORY_QUERY_SELECTABLE_COLUMNS.join(", ")}`,
+    );
+  }
+  return columns as MemoryQuerySelectableColumn[];
+}
+
+function parseMemoryQueryOrderBy(
+  input: string | undefined,
+): { column: Exclude<MemoryQuerySelectableColumn, "metadata">; direction: 1 | -1 } | null {
+  if (!input?.trim()) {
+    return null;
+  }
+  const [columnRaw, directionRaw] = input.split(":");
+  const column = columnRaw?.trim();
+  if (!column) {
+    throw new Error("Order-by column must not be empty");
+  }
+  if (column === "metadata" || !MEMORY_QUERY_SELECTABLE_COLUMN_SET.has(column)) {
+    throw new Error(
+      `Unsupported order-by column: ${column}. Supported columns: ${MEMORY_QUERY_SELECTABLE_COLUMNS.filter((value) => value !== "metadata").join(", ")}`,
+    );
+  }
+  const direction = directionRaw?.trim().toLowerCase() === "desc" ? -1 : 1;
+  return {
+    column: column as Exclude<MemoryQuerySelectableColumn, "metadata">,
+    direction,
+  };
+}
+
+function resolveMemoryQueryColumnValue(
+  row: Record<string, unknown>,
+  metadata: MemoryMetadata | null,
+  column: Exclude<MemoryQuerySelectableColumn, "metadata">,
+): unknown {
+  if (MEMORY_QUERY_BASE_COLUMN_SET.has(column)) {
+    return row[column];
+  }
+  return metadata?.[column as keyof MemoryMetadata] ?? null;
+}
+
+function projectMemoryQueryRow(
+  row: Record<string, unknown>,
+  metadata: MemoryMetadata | null,
+  columns: MemoryQuerySelectableColumn[],
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const column of columns) {
+    if (column === "metadata") {
+      output.metadata = metadata;
+      continue;
+    }
+    output[column] = resolveMemoryQueryColumnValue(row, metadata, column);
+  }
+  return output;
+}
+
+function compareMemoryQueryValues(a: unknown, b: unknown): number {
+  if (a == null && b == null) {
+    return 0;
+  }
+  if (a == null) {
+    return 1;
+  }
+  if (b == null) {
+    return -1;
+  }
+  if (typeof a === "number" && typeof b === "number") {
+    return a - b;
+  }
+  return String(a).localeCompare(String(b));
+}
+
+function metadataColumnsUsedInFilter(filterCondition: string): MemoryQueryMetadataColumn[] {
+  return MEMORY_QUERY_METADATA_COLUMNS.filter((column) =>
+    new RegExp(`\\b${column}\\b`, "u").test(filterCondition),
+  );
+}
+
 function buildRerankerPrompt(params: {
   queryText: string;
   candidates: RerankedMemorySearchResult[];
@@ -1429,30 +1556,43 @@ async function applyConfiguredModelReranker(params: {
   }
   const apiKey = rerankerCfg.apiKey ?? params.cfg.embedding.apiKey;
   const baseUrl = rerankerCfg.baseUrl ?? params.cfg.embedding.baseUrl;
+  const maxCandidates = Math.min(
+    rerankerCfg.maxCandidates ?? DEFAULT_RERANKER_MAX_CANDIDATES,
+    params.budget?.rerankerCandidateCap ?? DEFAULT_RERANKER_MAX_CANDIDATES,
+  );
+  const maxDocumentChars = Math.min(
+    rerankerCfg.maxDocumentChars ?? DEFAULT_RERANKER_MAX_DOCUMENT_CHARS,
+    params.budget?.rerankerDocumentCharsCap ?? DEFAULT_RERANKER_MAX_DOCUMENT_CHARS,
+  );
+  const candidateCount = Math.min(params.results.length, maxCandidates);
   if (!apiKey) {
     params.logger.warn?.("memory-lancedb: reranker skipped because no API key is configured");
     return params.results;
   }
+  const startedAt = Date.now();
   try {
     const client = await createOpenAiCompatibleClient(apiKey, baseUrl);
-    return await rerankMemoryResultsWithModel({
+    const reranked = await rerankMemoryResultsWithModel({
       client,
       model: rerankerCfg.model,
       queryText: params.queryText,
       results: params.results,
       timeoutMs: rerankerCfg.timeoutMs ?? DEFAULT_RERANKER_TIMEOUT_MS,
-      maxCandidates: Math.min(
-        rerankerCfg.maxCandidates ?? DEFAULT_RERANKER_MAX_CANDIDATES,
-        params.budget?.rerankerCandidateCap ?? DEFAULT_RERANKER_MAX_CANDIDATES,
-      ),
-      maxDocumentChars: Math.min(
-        rerankerCfg.maxDocumentChars ?? DEFAULT_RERANKER_MAX_DOCUMENT_CHARS,
-        params.budget?.rerankerDocumentCharsCap ?? DEFAULT_RERANKER_MAX_DOCUMENT_CHARS,
-      ),
+      maxCandidates,
+      maxDocumentChars,
     });
+    const elapsedMs = Date.now() - startedAt;
+    const scoredCount = reranked
+      .slice(0, candidateCount)
+      .filter((result) => typeof result.rerankerScore === "number").length;
+    params.logger.info?.(
+      `memory-lancedb: reranker applied in ${elapsedMs}ms (profile=${params.budget?.profile ?? "default"}, candidates=${candidateCount}, scored=${scoredCount}, maxDocumentChars=${maxDocumentChars})`,
+    );
+    return reranked;
   } catch (error) {
+    const elapsedMs = Date.now() - startedAt;
     params.logger.warn?.(
-      `memory-lancedb: reranker failed, using heuristic order: ${String(error)}`,
+      `memory-lancedb: reranker failed after ${elapsedMs}ms, using heuristic order (profile=${params.budget?.profile ?? "default"}, candidates=${candidateCount}, maxDocumentChars=${maxDocumentChars}): ${String(error)}`,
     );
     return params.results;
   }
@@ -3083,29 +3223,32 @@ export default definePluginEntry({
         memory
           .command("query")
           .description("Query memories (non-vector search)")
-          .option("--cols <columns>", "Columns to select, comma-separated")
+          .option(
+            "--cols <columns>",
+            `Columns to select, comma-separated (${MEMORY_QUERY_SELECTABLE_COLUMNS.join(", ")})`,
+          )
           .option("--filter <condition>", "Filter condition")
           .option("--limit <n>", "Limit number of results", "10")
           .option("--order-by <order>", "Order by column and direction (e.g., createdAt:desc)")
           .action(async (opts) => {
             const table = await db.getTable();
             let query = table.query();
-            let sortColAdded = false;
-            let sortColName: string | undefined;
-            if (opts.cols) {
-              const columns = (opts.cols as string).split(",").map((c: string) => c.trim());
-              if (opts.orderBy) {
-                const [sortCol] = opts.orderBy.split(":");
-                sortColName = sortCol;
-                if (!columns.includes(sortCol)) {
-                  columns.push(sortCol);
-                  sortColAdded = true;
-                }
+            const requestedColumns = parseMemoryQueryColumns(
+              typeof opts.cols === "string" ? opts.cols : undefined,
+            );
+            const orderBy = parseMemoryQueryOrderBy(
+              typeof opts.orderBy === "string" ? opts.orderBy : undefined,
+            );
+            const selectColumns = new Set<MemoryQueryBaseColumn>(["id"]);
+            for (const column of requestedColumns) {
+              if (MEMORY_QUERY_BASE_COLUMN_SET.has(column)) {
+                selectColumns.add(column as MemoryQueryBaseColumn);
               }
-              query = query.select(columns);
-            } else {
-              query = query.select(["id", "text", "importance", "category", "createdAt"]);
             }
+            if (orderBy && MEMORY_QUERY_BASE_COLUMN_SET.has(orderBy.column)) {
+              selectColumns.add(orderBy.column as MemoryQueryBaseColumn);
+            }
+            query = query.select([...selectColumns]);
             if (opts.filter) {
               const filterCondition = String(opts.filter);
               if (filterCondition.length > 200) {
@@ -3114,35 +3257,51 @@ export default definePluginEntry({
               if (!/^[a-zA-Z0-9_\-\s='"><!.,()%*]+$/.test(filterCondition)) {
                 throw new Error("Filter condition contains invalid characters");
               }
+              const metadataColumns = metadataColumnsUsedInFilter(filterCondition);
+              if (metadataColumns.length > 0) {
+                throw new Error(
+                  `Filter condition references metadata-only columns: ${metadataColumns.join(", ")}. Filters currently support LanceDB columns only: ${MEMORY_QUERY_BASE_COLUMNS.join(", ")}`,
+                );
+              }
               query = query.where(filterCondition);
             }
             const limit = parsePositiveIntegerOption(opts.limit, "--limit") ?? 10;
 
             // Fetch all filtered rows first if we need to order them in memory
-            if (!opts.orderBy) {
+            if (!orderBy) {
               query = query.limit(limit);
             }
             let rows = await query.toArray();
-            if (opts.orderBy) {
-              const [col, dir] = opts.orderBy.split(":");
-              const direction = dir?.toLowerCase() === "desc" ? -1 : 1;
-              rows.sort((a, b) => {
-                if (a[col] < b[col]) {
-                  return -1 * direction;
-                }
-                if (a[col] > b[col]) {
-                  return direction;
-                }
-                return 0;
-              });
-              rows = rows.slice(0, limit);
-              if (sortColAdded && sortColName) {
-                for (const row of rows) {
-                  delete row[sortColName];
-                }
-              }
+            let metadataEntries: Record<string, MemoryMetadata> = {};
+            try {
+              await ensureMetadataBackfill();
+              metadataEntries = (await getMetadataState()).entries;
+            } catch (error) {
+              api.logger.warn?.(`memory-lancedb: query metadata attach failed: ${String(error)}`);
             }
-            console.log(JSON.stringify(rows, null, 2));
+            let outputRows = rows.map((row) => ({
+              row,
+              metadata: (metadataEntries[String(row.id)] ?? null) as MemoryMetadata | null,
+            }));
+            if (orderBy) {
+              outputRows.sort((left, right) => {
+                const comparison = compareMemoryQueryValues(
+                  resolveMemoryQueryColumnValue(left.row, left.metadata, orderBy.column),
+                  resolveMemoryQueryColumnValue(right.row, right.metadata, orderBy.column),
+                );
+                return comparison * orderBy.direction;
+              });
+              outputRows = outputRows.slice(0, limit);
+            }
+            console.log(
+              JSON.stringify(
+                outputRows.map(({ row, metadata }) =>
+                  projectMemoryQueryRow(row, metadata, requestedColumns),
+                ),
+                null,
+                2,
+              ),
+            );
           });
 
         memory

@@ -1171,7 +1171,131 @@ describe("memory plugin e2e", () => {
             }),
           }),
         );
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.stringContaining("memory-lancedb: reranker applied in"),
+        );
+        expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("profile=default"));
+        expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("candidates=3"));
+        expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("scored=3"));
         expect(logger.warn).not.toHaveBeenCalled();
+      },
+    });
+  });
+
+  test("logs reranker fallback timing when the configured reranker fails", async () => {
+    const ensureGlobalUndiciEnvProxyDispatcher = vi.fn();
+    const openAiPost = vi.fn((requestPath: string) => {
+      if (requestPath === "/embeddings") {
+        return Promise.resolve({ data: [{ embedding: [0.1, 0.2, 0.3] }] });
+      }
+      if (requestPath === "/chat/completions") {
+        return Promise.reject(new Error("reranker backend timed out"));
+      }
+      throw new Error(`Unexpected OpenAI-compatible path: ${requestPath}`);
+    });
+    const toArray = vi.fn(async () => [
+      {
+        id: "memory-1",
+        text: "Options Trading Workstation runtime host is 192.168.11.142",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.8,
+        category: "fact",
+        createdAt: 2,
+        _distance: 0.05,
+      },
+      {
+        id: "memory-2",
+        text: "OpenClaw model router is in /Users/phil/openclaw-model-router",
+        vector: [0.1, 0.2, 0.3],
+        importance: 0.5,
+        category: "other",
+        createdAt: 1,
+        _distance: 0.01,
+      },
+    ]);
+    const limit = vi.fn(() => ({ toArray }));
+    const vectorSearch = vi.fn(() => ({ limit }));
+    const queryToArray = vi.fn(async () => []);
+    const select = vi.fn(() => ({ toArray: queryToArray }));
+    const query = vi.fn(() => ({ select }));
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          vectorSearch,
+          query,
+          countRows: vi.fn(async () => 0),
+          add: vi.fn(async () => undefined),
+          delete: vi.fn(async () => undefined),
+        })),
+      })),
+    }));
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher,
+      openAiPost,
+      loadLanceDbModule,
+      run: async (dynamicMemoryPlugin) => {
+        const registeredTools: any[] = [];
+        const logger = {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
+        };
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: OPENAI_API_KEY,
+              baseUrl: "http://127.0.0.1:1234/v1",
+              model: "text-embedding-3-small",
+            },
+            reranker: {
+              model: "qwen.qwen3-reranker-4b",
+              maxCandidates: 4,
+              timeoutMs: 2500,
+              maxDocumentChars: 280,
+            },
+            dbPath: getDbPath(),
+            autoCapture: false,
+            autoRecall: false,
+          },
+          runtime: {},
+          logger,
+          registerTool: (tool: any, opts: any) => {
+            registeredTools.push({ tool, opts });
+          },
+          registerCli: vi.fn(),
+          registerService: vi.fn(),
+          on: vi.fn(),
+          resolvePath: (filePath: string) => filePath,
+        };
+
+        dynamicMemoryPlugin.register(mockApi as any);
+        const recallTool = registeredTools.find((t) => t.opts?.name === "memory_recall")?.tool;
+        if (!recallTool) {
+          throw new Error("memory_recall tool was not registered");
+        }
+
+        const result = await recallTool.execute("test-call-reranker-fallback", {
+          query: "Options Trading Workstation runtime host",
+          limit: 2,
+        });
+        const memories = result.details?.memories ?? [];
+
+        expect(memories).toHaveLength(2);
+        expect(memories[0]?.id).toBe("memory-1");
+        expect(memories[0]?.rerankerScore).toBeUndefined();
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("memory-lancedb: reranker failed after"),
+        );
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("using heuristic order"));
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("candidates=2"));
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("maxDocumentChars=280"));
       },
     });
   });
@@ -1432,6 +1556,146 @@ describe("memory plugin e2e", () => {
           await program.parseAsync(["node", "openclaw", "ltm", "list", "--limit", "+03"]);
 
           expect(limit).toHaveBeenCalledWith(3);
+        } finally {
+          log.mockRestore();
+        }
+      },
+    });
+  });
+
+  test("ltm query exposes metadata-backed columns and sorts them in memory", async () => {
+    const queryToArray = vi.fn(async () => [
+      {
+        id: "memory-1",
+        text: "First memory",
+        importance: 0.6,
+        category: "fact",
+        createdAt: 1,
+      },
+      {
+        id: "memory-2",
+        text: "Second memory",
+        importance: 0.7,
+        category: "decision",
+        createdAt: 2,
+      },
+    ]);
+    const select = vi.fn(() => ({ toArray: queryToArray }));
+    const query = vi.fn(() => ({ select }));
+    const loadLanceDbModule = vi.fn(async () => ({
+      connect: vi.fn(async () => ({
+        tableNames: vi.fn(async () => ["memories"]),
+        openTable: vi.fn(async () => ({
+          query,
+          countRows: vi.fn(async () => 0),
+          add: vi.fn(async () => undefined),
+          delete: vi.fn(async () => undefined),
+        })),
+      })),
+    }));
+
+    const metadataPath = path.join(getDbPath(), "_openclaw", "memory-metadata.json");
+    await fs.mkdir(path.dirname(metadataPath), { recursive: true });
+    await fs.writeFile(
+      metadataPath,
+      JSON.stringify(
+        {
+          version: 2,
+          entries: {
+            "memory-1": {
+              project: "options-trading-workstation",
+              sourceType: "daily_memory",
+              agentId: "main",
+              sourceTimestamp: 100,
+            },
+            "memory-2": {
+              project: "openclaw",
+              sourceType: "curated_memory",
+              agentId: "main",
+              sourceTimestamp: 200,
+            },
+          },
+          backfill: null,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher: vi.fn(),
+      embeddingsCreate: vi.fn(async () => ({
+        data: [{ embedding: [0.1, 0.2, 0.3] }],
+      })),
+      loadLanceDbModule,
+      run: async (dynamicMemoryPlugin) => {
+        const registerCli = vi.fn();
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: OPENAI_API_KEY,
+              model: "text-embedding-3-small",
+            },
+            dbPath: getDbPath(),
+            autoCapture: false,
+            autoRecall: false,
+          },
+          runtime: {},
+          logger: {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+          },
+          registerTool: vi.fn(),
+          registerCli,
+          registerService: vi.fn(),
+          on: vi.fn(),
+          resolvePath: (filePath: string) => filePath,
+        };
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        try {
+          dynamicMemoryPlugin.register(mockApi as any);
+          const registrar = firstMockArg(registerCli as unknown as MockCallSource, "cli registrar");
+          const program = new Command();
+          (registrar as (params: { program: Command }) => void)({ program });
+
+          await program.parseAsync([
+            "node",
+            "openclaw",
+            "ltm",
+            "query",
+            "--cols",
+            "id,project,sourceType,agentId,sourceTimestamp",
+            "--order-by",
+            "sourceTimestamp:desc",
+          ]);
+
+          const output = JSON.parse(String(log.mock.calls.at(-1)?.[0] ?? "[]")) as Array<
+            Record<string, unknown>
+          >;
+          expect(output).toEqual([
+            {
+              id: "memory-2",
+              project: "openclaw",
+              sourceType: "curated_memory",
+              agentId: "main",
+              sourceTimestamp: 200,
+            },
+            {
+              id: "memory-1",
+              project: "options-trading-workstation",
+              sourceType: "daily_memory",
+              agentId: "main",
+              sourceTimestamp: 100,
+            },
+          ]);
+          expect(select).toHaveBeenCalledWith(["id"]);
         } finally {
           log.mockRestore();
         }
