@@ -32,6 +32,12 @@ describe("runEmbeddedAgent Codex usage-limit fallback handoff", () => {
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
         assistantTexts: [],
+        codexAppServerFailure: {
+          kind: "client_closed_before_turn_completed",
+          transport: "websocket",
+          replaySafe: false,
+          replayBlockedReason: "assistant_output",
+        },
         promptError: rawUsageLimitError,
         promptErrorSource: "prompt",
       }),

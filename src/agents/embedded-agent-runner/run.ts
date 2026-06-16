@@ -2574,7 +2574,23 @@ async function runEmbeddedAgentInternal(
               !hasRecoverableCodexAppServerTimeoutOutcome &&
               !shouldSurfaceCodexCompletionTimeout
             ) {
-              throw toLintErrorObject(promptError, "Prompt failed");
+              const errorText = formatErrorMessage(promptError);
+              const normalizedPromptFailover = coerceToFailoverError(promptError, {
+                provider: activeErrorContext.provider,
+                model: activeErrorContext.model,
+                profileId: lastProfileId,
+                sessionId: sessionIdUsed,
+                lane: globalLane,
+              });
+              const promptFailoverReason =
+                (normalizedPromptFailover
+                  ? describeFailoverError(normalizedPromptFailover).reason
+                  : undefined) ?? classifyFailoverReason(errorText, { provider });
+              const shouldUsePromptFailoverHandling =
+                promptFailoverReason !== null || isFailoverErrorMessage(errorText, { provider });
+              if (!shouldUsePromptFailoverHandling) {
+                throw toLintErrorObject(promptError, "Prompt failed");
+              }
             }
           }
 
