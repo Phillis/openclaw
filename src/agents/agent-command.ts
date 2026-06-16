@@ -72,6 +72,7 @@ import {
   clearAutoFallbackPrimaryProbeSelection,
   entryMatchesAutoFallbackPrimaryProbe,
   hasLegacyAutoFallbackWithoutOrigin,
+  isStaleAutoFallbackOverrideForPrimary,
   hasSessionAutoModelFallbackProvenance,
   listAgentIds,
   markAutoFallbackPrimaryProbe,
@@ -1374,7 +1375,7 @@ async function agentCommandInternal(
       }
     }
 
-    const storedProviderOverride = hasLegacyAutoFallbackOverrideWithoutOrigin
+    let storedProviderOverride = hasLegacyAutoFallbackOverrideWithoutOrigin
       ? undefined
       : sessionEntry?.providerOverride?.trim();
     let storedModelOverride = hasLegacyAutoFallbackOverrideWithoutOrigin
@@ -1416,6 +1417,39 @@ async function agentCommandInternal(
       : null;
     const primaryProvider = normalizedChannelOverride?.provider ?? defaultProvider;
     const primaryModel = normalizedChannelOverride?.model ?? defaultModel;
+    const staleAutoFallbackOverrideForPrimary =
+      hasStoredOverride &&
+      isStaleAutoFallbackOverrideForPrimary({
+        entry: sessionEntry,
+        defaultProvider,
+        defaultModel,
+        primaryProvider,
+        primaryModel,
+      });
+    if (
+      staleAutoFallbackOverrideForPrimary &&
+      sessionEntry &&
+      sessionStore &&
+      sessionKey &&
+      !suppressVisibleSessionEffects
+    ) {
+      const { updated } = applyModelOverrideToSessionEntry({
+        entry: sessionEntry,
+        selection: { provider: primaryProvider, model: primaryModel, isDefault: true },
+        preserveAuthProfileOverride: true,
+      });
+      if (updated) {
+        storedProviderOverride = undefined;
+        storedModelOverride = undefined;
+        storedModelOverrideSource = undefined;
+        await persistSessionEntry({
+          sessionStore,
+          sessionKey,
+          storePath,
+          entry: sessionEntry,
+        });
+      }
+    }
     const hasEffectiveStoredOverride = Boolean(storedProviderOverride || storedModelOverride);
     if (normalizedChannelOverride && !hasEffectiveStoredOverride) {
       provider = normalizedChannelOverride.provider;

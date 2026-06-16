@@ -30,6 +30,11 @@ import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
 } from "./agent-scope-config.js";
+import {
+  modelKey,
+  normalizeModelRef,
+  resolvePersistedOverrideModelRef,
+} from "./model-selection.js";
 export {
   listAgentEntries,
   listAgentIds,
@@ -115,6 +120,59 @@ export function hasLegacyAutoFallbackWithoutOrigin(
     entry?.modelOverrideSource === "auto" &&
     (!normalizeOptionalString(entry.modelOverrideFallbackOriginProvider) ||
       !normalizeOptionalString(entry.modelOverrideFallbackOriginModel))
+  );
+}
+
+/** Detects auto fallback selections whose recorded origin no longer matches the current primary. */
+export function isStaleAutoFallbackOverrideForPrimary(params: {
+  entry:
+    | Pick<
+        SessionEntry,
+        | "modelOverrideSource"
+        | "modelOverrideFallbackOriginProvider"
+        | "modelOverrideFallbackOriginModel"
+        | "providerOverride"
+        | "modelOverride"
+      >
+    | null
+    | undefined;
+  defaultProvider: string;
+  defaultModel: string;
+  primaryProvider?: string;
+  primaryModel?: string;
+}): boolean {
+  const entry = params.entry;
+  if (!entry) {
+    return false;
+  }
+  const recoveredAutoFallbackOverride =
+    entry.modelOverrideSource === undefined && hasSessionAutoModelFallbackProvenance(entry);
+  if (entry.modelOverrideSource !== "auto" && !recoveredAutoFallbackOverride) {
+    return false;
+  }
+
+  const primaryRef = resolvePersistedOverrideModelRef({
+    defaultProvider: params.defaultProvider,
+    overrideProvider: params.primaryProvider ?? params.defaultProvider,
+    overrideModel: params.primaryModel ?? params.defaultModel,
+  });
+  if (!primaryRef) {
+    return false;
+  }
+  const originRef = resolvePersistedOverrideModelRef({
+    defaultProvider: params.defaultProvider,
+    overrideProvider: entry.modelOverrideFallbackOriginProvider,
+    overrideModel: entry.modelOverrideFallbackOriginModel,
+  });
+  if (!originRef) {
+    return false;
+  }
+
+  const normalizedPrimary = normalizeModelRef(primaryRef.provider, primaryRef.model);
+  const normalizedOrigin = normalizeModelRef(originRef.provider, originRef.model);
+  return (
+    modelKey(normalizedOrigin.provider, normalizedOrigin.model) !==
+    modelKey(normalizedPrimary.provider, normalizedPrimary.model)
   );
 }
 

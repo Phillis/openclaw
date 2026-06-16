@@ -1195,6 +1195,28 @@ describe("createModelSelectionState auto-failover overrides", () => {
     expect(sessionStore[sessionKey]?.modelOverrideSource).toBe("auto");
   });
 
+  it("clears auto-failover overrides when their origin no longer matches the current primary", async () => {
+    const { state, sessionStore } = await resolveStateWithOverride({
+      providerOverride: "openrouter",
+      modelOverride: "minimax/minimax-m2.7",
+      modelOverrideSource: "auto",
+      modelOverrideFallbackOriginProvider: defaultProvider,
+      modelOverrideFallbackOriginModel: defaultModel,
+      primaryProvider: "openai",
+      primaryModel: "gpt-5.5",
+      provider: "openai",
+      model: "gpt-5.5",
+    });
+
+    expect(state.provider).toBe("openai");
+    expect(state.model).toBe("gpt-5.5");
+    expect(state.resetModelOverride).toBe(true);
+    expect(state.resetModelOverrideRef).toBe("openrouter/minimax/minimax-m2.7");
+    expect(sessionStore[sessionKey]?.providerOverride).toBeUndefined();
+    expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
+    expect(sessionStore[sessionKey]?.modelOverrideSource).toBeUndefined();
+  });
+
   it("keeps a legacy auto pin when the current selection already matches it", async () => {
     const { state, sessionStore } = await resolveStateWithOverride({
       providerOverride: "openrouter",

@@ -4,6 +4,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import {
   hasLegacyAutoFallbackWithoutOrigin,
+  isStaleAutoFallbackOverrideForPrimary,
   resolveAutoFallbackPrimaryProbe,
   resolveAgentConfig,
   resolveAgentDir,
@@ -622,19 +623,31 @@ export async function getReplyFromConfig(
     primaryProvider,
     primaryModel,
   });
+  const staleAutoFallbackOverrideForPrimary =
+    storedModelOverride?.source === "session" &&
+    isStaleAutoFallbackOverrideForPrimary({
+      entry: sessionEntry,
+      defaultProvider,
+      defaultModel,
+      primaryProvider,
+      primaryModel,
+    });
   const staleLegacyAutoFallbackWithoutOrigin =
     storedModelOverride?.source === "session" && hasLegacyAutoFallbackWithoutOrigin(sessionEntry);
   if (
     storedModelOverride?.model &&
     !hasResolvedHeartbeatModelOverride &&
     !staleHeartbeatAutoFallbackOverride &&
+    !staleAutoFallbackOverrideForPrimary &&
     !staleLegacyAutoFallbackWithoutOrigin
   ) {
     provider = storedModelOverride.provider ?? defaultProvider;
     model = storedModelOverride.model;
   }
   const canApplyAutoFallbackPrimaryProbe =
-    !hasResolvedHeartbeatModelOverride && !staleHeartbeatAutoFallbackOverride;
+    !hasResolvedHeartbeatModelOverride &&
+    !staleHeartbeatAutoFallbackOverride &&
+    !staleAutoFallbackOverrideForPrimary;
   const autoFallbackPrimaryProbe = canApplyAutoFallbackPrimaryProbe
     ? resolveAutoFallbackPrimaryProbe({
         entry: sessionEntry,
@@ -646,6 +659,7 @@ export async function getReplyFromConfig(
   const hasEffectiveSessionModelOverride =
     hasSessionModelOverride &&
     !staleHeartbeatAutoFallbackOverride &&
+    !staleAutoFallbackOverrideForPrimary &&
     !staleLegacyAutoFallbackWithoutOrigin;
   if (
     !hasResolvedHeartbeatModelOverride &&

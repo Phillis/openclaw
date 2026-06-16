@@ -11,6 +11,7 @@ import {
   hasLegacyAutoFallbackWithoutOrigin,
   markAutoFallbackPrimaryProbe,
   hasConfiguredModelFallbacks,
+  isStaleAutoFallbackOverrideForPrimary,
   resolveAgentConfig,
   resolveDefaultAgentDir,
   resolveAgentDir,
@@ -722,6 +723,53 @@ describe("resolveAgentConfig", () => {
         probeState: new Map(),
       }),
     ).toMatchObject({ provider: "anthropic", model: "claude-sonnet-4-6" });
+  });
+
+  it("detects auto fallback selections whose origin no longer matches the primary", () => {
+    expect(
+      isStaleAutoFallbackOverrideForPrimary({
+        entry: {
+          providerOverride: "google",
+          modelOverride: "gemini-3-pro",
+          modelOverrideSource: "auto",
+          modelOverrideFallbackOriginProvider: "anthropic",
+          modelOverrideFallbackOriginModel: "claude-sonnet-4-6",
+        },
+        defaultProvider: "anthropic",
+        defaultModel: "claude-sonnet-4-6",
+        primaryProvider: "openai",
+        primaryModel: "gpt-5.5",
+      }),
+    ).toBe(true);
+    expect(
+      isStaleAutoFallbackOverrideForPrimary({
+        entry: {
+          providerOverride: "google",
+          modelOverride: "gemini-3-pro",
+          modelOverrideFallbackOriginProvider: "anthropic",
+          modelOverrideFallbackOriginModel: "claude-sonnet-4-6",
+        },
+        defaultProvider: "anthropic",
+        defaultModel: "claude-sonnet-4-6",
+        primaryProvider: "openai",
+        primaryModel: "gpt-5.5",
+      }),
+    ).toBe(true);
+    expect(
+      isStaleAutoFallbackOverrideForPrimary({
+        entry: {
+          providerOverride: "google",
+          modelOverride: "gemini-3-pro",
+          modelOverrideSource: "auto",
+          modelOverrideFallbackOriginProvider: "anthropic",
+          modelOverrideFallbackOriginModel: "claude-sonnet-4-6",
+        },
+        defaultProvider: "anthropic",
+        defaultModel: "claude-sonnet-4-6",
+        primaryProvider: "anthropic",
+        primaryModel: "claude-sonnet-4-6",
+      }),
+    ).toBe(false);
   });
 
   it("preserves legacy auto auth provenance on primary probes", () => {

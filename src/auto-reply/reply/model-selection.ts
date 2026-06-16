@@ -1,6 +1,7 @@
 /** Model selection state for reply runs, including catalog and override handling. */
 import {
   hasLegacyAutoFallbackWithoutOrigin,
+  isStaleAutoFallbackOverrideForPrimary,
   resolveAgentConfig,
 } from "../../agents/agent-scope.js";
 import { clearSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
@@ -238,10 +239,20 @@ export async function createModelSelectionState(params: {
     normalizedDirectOverride !== null &&
     modelKey(normalizedCurrentSelection.provider, normalizedCurrentSelection.model) !==
       modelKey(normalizedDirectOverride.provider, normalizedDirectOverride.model);
+  const staleAutoFallbackOverrideForPrimary =
+    directStoredModelOverride?.source === "session" &&
+    isStaleAutoFallbackOverrideForPrimary({
+      entry: sessionEntry,
+      defaultProvider,
+      defaultModel,
+      primaryProvider,
+      primaryModel,
+    });
   const staleDirectStoredOverride =
     staleHeartbeatAutoFallbackOverride ||
     staleLegacyOpenAICodexAutoOverride ||
-    staleLegacyAutoFallbackWithoutOrigin;
+    staleLegacyAutoFallbackWithoutOrigin ||
+    staleAutoFallbackOverrideForPrimary;
 
   if (needsModelCatalog) {
     modelCatalog = await (await loadModelCatalogRuntime()).loadModelCatalog({ config: cfg });

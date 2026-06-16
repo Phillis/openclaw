@@ -37,6 +37,7 @@ const state = vi.hoisted(() => ({
   ),
   resolveEffectiveModelFallbacksMock: vi.fn().mockReturnValue(undefined),
   hasLegacyAutoFallbackWithoutOriginMock: vi.fn((_entry: unknown) => false),
+  isStaleAutoFallbackOverrideForPrimaryMock: vi.fn((_params: unknown) => false),
   resolveAutoFallbackPrimaryProbeMock: vi.fn((_params: unknown) => undefined as unknown),
   resolveChannelModelOverrideMock: vi.fn((_params: unknown) => null as unknown),
   assertLifecycleCurrentMock: vi.fn(),
@@ -383,6 +384,8 @@ vi.mock("./agent-scope.js", () => ({
   entryMatchesAutoFallbackPrimaryProbe: () => true,
   hasLegacyAutoFallbackWithoutOrigin: (entry: unknown) =>
     state.hasLegacyAutoFallbackWithoutOriginMock(entry),
+  isStaleAutoFallbackOverrideForPrimary: (params: unknown) =>
+    state.isStaleAutoFallbackOverrideForPrimaryMock(params),
   hasSessionAutoModelFallbackProvenance: () => false,
   listAgentEntries: () => [],
   listAgentIds: () => ["default"],
@@ -957,6 +960,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     state.resolveAgentSkillsFilterMock.mockReturnValue(undefined);
     state.loadManifestModelCatalogMock.mockReturnValue([]);
     state.hasLegacyAutoFallbackWithoutOriginMock.mockReturnValue(false);
+    state.isStaleAutoFallbackOverrideForPrimaryMock.mockReturnValue(false);
     state.resolveAutoFallbackPrimaryProbeMock.mockReturnValue(undefined);
     state.resolveChannelModelOverrideMock.mockImplementation((params: unknown) => {
       const input = params as {
