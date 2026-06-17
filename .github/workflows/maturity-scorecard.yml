@@ -1,0 +1,113 @@
+name: Maturity scorecard
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Optional workflow run id containing qa-evidence.json artifacts
+        required: false
+        type: string
+      artifact_pattern:
+        description: Artifact name pattern to download from source_run_id
+        required: false
+        default: "*qa*"
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "taxonomy.yaml"
+      - "docs/maturity-scores.yaml"
+      - "docs/maturity-scorecard.md"
+      - "docs/taxonomy.md"
+      - "docs/taxonomy-outline.md"
+      - "scripts/render-maturity-docs.mjs"
+      - "package.json"
+      - ".github/workflows/maturity-scorecard.yml"
+  pull_request:
+    paths:
+      - "taxonomy.yaml"
+      - "docs/maturity-scores.yaml"
+      - "docs/maturity-scorecard.md"
+      - "docs/taxonomy.md"
+      - "docs/taxonomy-outline.md"
+      - "scripts/render-maturity-docs.mjs"
+      - "package.json"
+      - ".github/workflows/maturity-scorecard.yml"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ${{ format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_VERSION: "24.x"
+
+jobs:
+  render:
+    name: Render maturity docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+
+      - name: Check committed maturity docs
+        run: pnpm maturity:check
+
+      - name: Download QA evidence artifacts
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          ARTIFACT_PATTERN: ${{ inputs.artifact_pattern }}
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/maturity-evidence
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$ARTIFACT_PATTERN" \
+            --dir .artifacts/maturity-evidence
+          find .artifacts/maturity-evidence -name qa-evidence.json -print
+
+      - name: Render artifact docs
+        run: |
+          set -euo pipefail
+          args=(--output-dir .artifacts/maturity-docs)
+          if find .artifacts/maturity-evidence -name qa-evidence.json -print -quit 2>/dev/null | grep -q .; then
+            args+=(--evidence-dir .artifacts/maturity-evidence)
+          fi
+          pnpm maturity:render -- "${args[@]}"
+          {
+            echo "### Maturity scorecard docs"
+            echo
+            echo "- Committed docs check: passed"
+            echo "- Artifact docs: \`.artifacts/maturity-docs\`"
+            if find .artifacts/maturity-evidence -name qa-evidence.json -print -quit 2>/dev/null | grep -q .; then
+              echo "- QA evidence: included"
+            else
+              echo "- QA evidence: none downloaded"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload maturity docs artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: maturity-scorecard-docs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/maturity-docs/
+          retention-days: 30
+          if-no-files-found: error

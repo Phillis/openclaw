@@ -1548,6 +1548,8 @@
     "docs:list": "node scripts/docs-list.js",
     "docs:spellcheck": "bash scripts/docs-spellcheck.sh",
     "docs:spellcheck:fix": "bash scripts/docs-spellcheck.sh --write",
+    "maturity:check": "node scripts/render-maturity-docs.mjs --check",
+    "maturity:render": "node scripts/render-maturity-docs.mjs",
     "dup:check": "node scripts/check-duplicates.mjs",
     "dup:check:coverage": "node scripts/check-duplicates.mjs --coverage",
     "dup:check:json": "node scripts/check-duplicates.mjs --json",
