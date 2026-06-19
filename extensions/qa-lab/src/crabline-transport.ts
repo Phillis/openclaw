@@ -1,35 +1,37 @@
-// Qa Lab plugin module implements the Crabline-backed QA transport.
+// Qa Lab plugin module implements the Crabline-backed local mock QA transport.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { pathToFileURL } from "node:url";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { createQaBusState, type QaBusState } from "./bus-state.js";
 import type { QaCrablineChannelDriverSelection } from "./crabline-channel-driver.js";
-import { QaSuiteInfraError } from "./errors.js";
-import {
-  acquireQaCredentialLease,
-  startQaCredentialLeaseHeartbeat,
-} from "./live-transports/shared/credential-lease.runtime.js";
 import { QaStateBackedTransportAdapter } from "./qa-transport.js";
 import type {
   QaTransportActionName,
   QaTransportGatewayClient,
-  QaTransportGatewayConfig,
   QaTransportReportParams,
   QaTransportState,
 } from "./qa-transport.js";
 import type { QaBusInboundMessageInput, QaBusMessage } from "./runtime-api.js";
 
 const CRABLINE_TRANSPORT_ID = "crabline";
-const CRABLINE_TELEGRAM_CHANNEL_ID = "telegram";
-const CRABLINE_TELEGRAM_ACCOUNT_ID = "qa-crabline-sut";
-const CRABLINE_TELEGRAM_PROVIDER_ID = "telegram";
-const CRABLINE_TELEGRAM_FIXTURE_ID = "qa-crabline-telegram";
-const CRABLINE_TELEGRAM_USER_NAME = "openclaw-qa";
-const CRABLINE_TELEGRAM_OBSERVE_TIMEOUT_MS = 180_000;
-const CRABLINE_TELEGRAM_OBSERVE_IDLE_MS = 1_500;
+const CRABLINE_USER_NAME = "openclaw-qa";
+const CRABLINE_OBSERVE_TIMEOUT_MS = 5_000;
+const CRABLINE_OBSERVE_IDLE_MS = 100;
+
+const CRABLINE_WEBHOOK_DEFAULTS: Record<string, { path: string; port: number }> = {
+  discord: { path: "/discord/interactions", port: 8788 },
+  feishu: { path: "/feishu/webhook", port: 8795 },
+  googlechat: { path: "/googlechat/webhook", port: 8792 },
+  imessage: { path: "/imessage/webhook", port: 8796 },
+  matrix: { path: "/matrix/webhook", port: 8797 },
+  mattermost: { path: "/mattermost/webhook", port: 8793 },
+  msteams: { path: "/msteams/webhook", port: 8791 },
+  slack: { path: "/slack/events", port: 8787 },
+  telegram: { path: "/telegram/webhook", port: 8790 },
+  whatsapp: { path: "/whatsapp/webhook", port: 8789 },
+  zalo: { path: "/zalo/webhook", port: 8794 },
+};
 
 type CrablineInboundEnvelope = {
   id: string;
@@ -40,30 +42,34 @@ type CrablineInboundEnvelope = {
   threadId?: string;
 };
 
+type CrablineFixtureDefinition = {
+  env?: string[];
+  id: string;
+  inboundMatch?: Record<string, unknown>;
+  mode?: string;
+  provider: string;
+  retries?: number;
+  tags?: string[];
+  target: {
+    behavior?: string;
+    channelId?: string;
+    id: string;
+    metadata?: Record<string, unknown>;
+    threadId?: string;
+  };
+  timeoutMs?: number;
+};
+
 type CrablineManifestDefinition = {
   configVersion: number;
-  fixtures: Array<{
-    env?: string[];
-    id: string;
-    inboundMatch?: Record<string, unknown>;
-    mode?: string;
-    provider: string;
-    retries?: number;
-    tags?: string[];
-    target: {
-      channelId?: string;
-      id: string;
-      metadata?: Record<string, unknown>;
-    };
-    timeoutMs?: number;
-  }>;
+  fixtures: CrablineFixtureDefinition[];
   providers: Record<string, Record<string, unknown>>;
   userName: string;
 };
 
 type CrablineProviderContext = {
   config: Record<string, unknown>;
-  fixture: CrablineManifestDefinition["fixtures"][number];
+  fixture: CrablineFixtureDefinition;
   manifestPath: string;
   providerId: string;
   userName: string;
@@ -95,19 +101,6 @@ export type QaCrablineProviderAdapter = {
   ) => Promise<CrablineInboundEnvelope | null>;
 };
 
-type TelegramBotIdentity = {
-  id: number;
-  is_bot: boolean;
-  first_name: string;
-  username?: string;
-};
-
-type CrablineTelegramRuntime = {
-  fetchCredentialLease?: typeof fetch;
-  fetchTelegramBotIdentity: (token: string) => Promise<TelegramBotIdentity>;
-  provider?: QaCrablineProviderAdapter;
-};
-
 type CrablineRuntimeModule = {
   createRegistry: (
     manifest: CrablineManifestDefinition,
@@ -117,286 +110,136 @@ type CrablineRuntimeModule = {
   };
 };
 
-type CrablineTelegramCredentials = {
-  driverToken: string;
-  groupId: string;
-  sutToken: string;
+type CrablineRuntime = {
+  provider?: QaCrablineProviderAdapter;
 };
 
-type CrablineTelegramStateParams = {
-  driverIdentity: TelegramBotIdentity;
+type CrablineStateParams = {
   fixtureContext: CrablineProviderContext;
   observeIdleMs?: number;
   observeTimeoutMs?: number;
   provider: QaCrablineProviderAdapter;
+  selection: QaCrablineChannelDriverSelection;
   state: QaBusState;
 };
 
-function resolveRequiredEnv(env: NodeJS.ProcessEnv, name: string) {
-  const value = env[name]?.trim();
-  if (!value) {
-    throw new Error(`${name} is required for --channel-driver crabline telegram.`);
+async function loadCrablineRuntime(env: NodeJS.ProcessEnv): Promise<CrablineRuntimeModule> {
+  const explicitRuntime = env.OPENCLAW_QA_CRABLINE_RUNTIME?.trim();
+  if (explicitRuntime) {
+    return (await import(
+      pathToFileURL(path.resolve(explicitRuntime)).href
+    )) as CrablineRuntimeModule;
   }
-  return value;
-}
 
-function parseTelegramGroupId(value: string) {
-  if (!/^-?\d+$/u.test(value)) {
-    throw new Error("OPENCLAW_QA_TELEGRAM_GROUP_ID must be a numeric Telegram chat id.");
-  }
-  return value;
-}
-
-function resolveTelegramQaRuntimeEnv(env: NodeJS.ProcessEnv): CrablineTelegramCredentials {
-  return {
-    driverToken: resolveRequiredEnv(env, "OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN"),
-    groupId: parseTelegramGroupId(resolveRequiredEnv(env, "OPENCLAW_QA_TELEGRAM_GROUP_ID")),
-    sutToken: resolveRequiredEnv(env, "OPENCLAW_QA_TELEGRAM_SUT_BOT_TOKEN"),
-  };
-}
-
-function parseTelegramPayloadString(payload: Record<string, unknown>, key: string) {
-  const value = payload[key];
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`Telegram credential payload must include a non-empty string ${key}.`);
-  }
-  return value.trim();
-}
-
-function parseTelegramCredentialPayload(payload: unknown): CrablineTelegramCredentials {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error("Telegram credential payload must be an object.");
-  }
-  const record = payload as Record<string, unknown>;
-  return {
-    driverToken: parseTelegramPayloadString(record, "driverToken"),
-    groupId: parseTelegramGroupId(parseTelegramPayloadString(record, "groupId")),
-    sutToken: parseTelegramPayloadString(record, "sutToken"),
-  };
-}
-
-async function callTelegramApi<T>(
-  token: string,
-  method: string,
-  body?: Record<string, unknown>,
-): Promise<T> {
-  const { response, release } = await fetchWithSsrFGuard({
-    url: `https://api.telegram.org/bot${token}/${method}`,
-    init: {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: body ? JSON.stringify(body) : "{}",
-    },
-    timeoutMs: 15_000,
-    policy: { hostnameAllowlist: ["api.telegram.org"] },
-  });
-  try {
-    const payload = (await response.json()) as {
-      ok?: boolean;
-      result?: T;
-      description?: string;
-    };
-    if (!response.ok || payload.ok !== true || payload.result === undefined) {
-      throw new Error(
-        `Telegram ${method} failed (${response.status}): ${payload.description ?? response.statusText}`,
-      );
-    }
-    return payload.result;
-  } finally {
-    await release();
-  }
-}
-
-async function fetchTelegramBotIdentity(token: string) {
-  return await callTelegramApi<TelegramBotIdentity>(token, "getMe");
-}
-
-async function loadCrablineRuntime(): Promise<CrablineRuntimeModule> {
-  // Keep this non-static so production builds do not bundle Crabline; QA host
-  // runs resolve the devDependency at runtime only when this driver is selected.
   const packageName = ["crab", "line"].join("");
-  return (await import(packageName)) as CrablineRuntimeModule;
+  try {
+    return (await import(packageName)) as CrablineRuntimeModule;
+  } catch (error) {
+    throw new Error(
+      `Unable to load Crabline runtime package. Install crabline, add it as a dependency, or set OPENCLAW_QA_CRABLINE_RUNTIME to Crabline's dist/src/index.js. ${formatErrorMessage(error)}`,
+      { cause: error },
+    );
+  }
 }
 
-function createTelegramManifest(params: {
-  driverToken: string;
-  groupId: string;
-  outputDir: string;
-}) {
-  const recorderPath = path.join(
-    params.outputDir,
-    "artifacts",
-    "crabline",
-    "telegram-recorder.jsonl",
-  );
+function providerConfigForChannel(channel: string, outputDir: string) {
+  const webhook = CRABLINE_WEBHOOK_DEFAULTS[channel] ?? {
+    path: `/${channel}/webhook`,
+    port: 0,
+  };
   return {
+    adapter: channel,
+    capabilities: ["probe", "send", "roundtrip", "agent"],
+    env: [],
+    platform: channel,
+    status: "active",
+    [channel]: {
+      recorder: {
+        path: path.join(outputDir, "artifacts", "crabline", `${channel}-recorder.jsonl`),
+      },
+      webhook: {
+        host: "127.0.0.1",
+        path: webhook.path,
+        port: 0,
+      },
+    },
+  };
+}
+
+function createCrablineManifest(params: {
+  outputDir: string;
+  selection: QaCrablineChannelDriverSelection;
+}) {
+  const channel = params.selection.channel;
+  const fixtureId = `qa-crabline-${channel}`;
+  return {
+    fixtureId,
     manifest: {
       configVersion: 1,
       fixtures: [
         {
           env: [],
-          id: CRABLINE_TELEGRAM_FIXTURE_ID,
+          id: fixtureId,
           inboundMatch: {
             author: "assistant",
             nonce: "ignore",
             strategy: "contains",
           },
           mode: "agent",
-          provider: CRABLINE_TELEGRAM_PROVIDER_ID,
+          provider: channel,
           retries: 0,
           tags: [],
           target: {
-            channelId: params.groupId,
-            id: params.groupId,
+            id: `${channel}-default`,
             metadata: {},
           },
-          timeoutMs: CRABLINE_TELEGRAM_OBSERVE_TIMEOUT_MS,
+          timeoutMs: CRABLINE_OBSERVE_TIMEOUT_MS,
         },
       ],
       providers: {
-        [CRABLINE_TELEGRAM_PROVIDER_ID]: {
-          adapter: "telegram",
-          capabilities: ["probe", "send", "roundtrip", "agent"],
-          env: [],
-          platform: "telegram",
-          status: "active",
-          telegram: {
-            botToken: params.driverToken,
-            mode: "polling",
-            recorder: {
-              path: recorderPath,
-            },
-            webhook: {
-              host: "127.0.0.1",
-              path: "/telegram/webhook",
-              port: 0,
-            },
-          },
-        },
+        [channel]: providerConfigForChannel(channel, params.outputDir),
       },
-      userName: CRABLINE_TELEGRAM_USER_NAME,
+      userName: CRABLINE_USER_NAME,
     } satisfies CrablineManifestDefinition,
     manifestPath: path.join(params.outputDir, "crabline-runtime.json"),
   };
 }
 
 function createFixtureContext(params: {
+  fixtureId: string;
   manifest: CrablineManifestDefinition;
   manifestPath: string;
+  providerId: string;
 }): CrablineProviderContext {
-  const fixture = params.manifest.fixtures.find(
-    (entry) => entry.id === CRABLINE_TELEGRAM_FIXTURE_ID,
-  );
-  const config = params.manifest.providers[CRABLINE_TELEGRAM_PROVIDER_ID];
+  const fixture = params.manifest.fixtures.find((entry) => entry.id === params.fixtureId);
+  const config = params.manifest.providers[params.providerId];
   if (!fixture || !config) {
-    throw new Error("Crabline Telegram manifest is missing its runtime fixture/provider.");
+    throw new Error("Crabline manifest is missing its runtime fixture/provider.");
   }
   return {
     config,
     fixture,
     manifestPath: params.manifestPath,
-    providerId: CRABLINE_TELEGRAM_PROVIDER_ID,
+    providerId: params.providerId,
     userName: params.manifest.userName,
   };
-}
-
-async function waitForTelegramReady(params: {
-  accountId: string;
-  gateway: QaTransportGatewayClient;
-  timeoutMs?: number;
-  pollIntervalMs?: number;
-}) {
-  const timeoutMs = params.timeoutMs ?? 45_000;
-  const pollIntervalMs = params.pollIntervalMs ?? 500;
-  const startedAt = Date.now();
-  let lastAccountStatus = "no telegram accounts reported";
-  let lastProbeError: string | null = null;
-
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const payload = (await params.gateway.call(
-        "channels.status",
-        { probe: false, timeoutMs: 2_000 },
-        { timeoutMs: 5_000 },
-      )) as {
-        channelAccounts?: Record<
-          string,
-          Array<{
-            accountId?: string;
-            running?: boolean;
-            restartPending?: boolean;
-          }>
-        >;
-      };
-      const accounts = payload.channelAccounts?.[CRABLINE_TELEGRAM_CHANNEL_ID] ?? [];
-      const account = accounts.find((entry) => entry.accountId === params.accountId) ?? accounts[0];
-      lastProbeError = null;
-      lastAccountStatus = account
-        ? JSON.stringify({
-            accountId: account.accountId ?? null,
-            running: account.running ?? null,
-            restartPending: account.restartPending ?? null,
-          })
-        : "no telegram accounts reported";
-      if (account?.running && account.restartPending !== true) {
-        return;
-      }
-    } catch (error) {
-      lastProbeError = formatErrorMessage(error);
-    }
-    await sleep(pollIntervalMs);
-  }
-
-  throw new QaSuiteInfraError(
-    "transport_ready_timeout",
-    [
-      `timed out after ${timeoutMs}ms waiting for telegram ready`,
-      `last status: ${lastAccountStatus}`,
-      ...(lastProbeError ? [`last probe error: ${lastProbeError}`] : []),
-    ].join("; "),
-  );
 }
 
 function targetForConversation(message: QaBusMessage) {
   return `${message.conversation.kind === "direct" ? "dm" : "channel"}:${message.conversation.id}`;
 }
 
-function shouldIgnoreObservedMessage(params: {
-  accepted: CrablineSendResult;
-  driverIdentity: TelegramBotIdentity;
-  event: CrablineInboundEnvelope;
-  sentText: string;
-}) {
-  if (params.event.id === params.accepted.messageId) {
-    return true;
-  }
-  if (params.event.text === params.sentText) {
-    return true;
-  }
-  const raw = params.event.raw as
-    | {
-        author?: { id?: unknown };
-        from?: { id?: unknown };
-      }
-    | undefined;
-  const rawAuthorId = raw?.author?.id ?? raw?.from?.id;
-  if (
-    typeof rawAuthorId !== "string" &&
-    typeof rawAuthorId !== "number" &&
-    typeof rawAuthorId !== "bigint"
-  ) {
-    return false;
-  }
-  return String(rawAuthorId) === String(params.driverIdentity.id);
-}
-
-function textForTelegramSend(input: QaBusInboundMessageInput) {
-  if (input.conversation.kind !== "direct") {
-    return input.text;
-  }
-  return /(^|\s)@openclaw\b/iu.test(input.text) ? input.text : `@openclaw ${input.text}`;
+function withTarget(context: CrablineProviderContext, targetId: string): CrablineProviderContext {
+  return {
+    ...context,
+    fixture: {
+      ...context.fixture,
+      target: {
+        id: targetId,
+        metadata: {},
+      },
+    },
+  };
 }
 
 function addObservedOutbound(params: {
@@ -417,7 +260,7 @@ function addObservedOutbound(params: {
   });
 }
 
-function createCrablineTelegramState(params: CrablineTelegramStateParams): QaTransportState & {
+function createCrablineState(params: CrablineStateParams): QaTransportState & {
   cleanup: () => Promise<void>;
 } {
   const baseState = params.state;
@@ -425,14 +268,14 @@ function createCrablineTelegramState(params: CrablineTelegramStateParams): QaTra
   const pendingObservations = new Set<Promise<void>>();
   let closed = false;
 
-  const observeReplies = async (input: {
+  const observeReply = async (input: {
     accepted: CrablineSendResult;
+    context: CrablineProviderContext;
     inbound: QaBusMessage;
-    sentText: string;
     since: string;
   }) => {
-    const timeoutMs = params.observeTimeoutMs ?? CRABLINE_TELEGRAM_OBSERVE_TIMEOUT_MS;
-    const idleMs = params.observeIdleMs ?? CRABLINE_TELEGRAM_OBSERVE_IDLE_MS;
+    const timeoutMs = params.observeTimeoutMs ?? CRABLINE_OBSERVE_TIMEOUT_MS;
+    const idleMs = params.observeIdleMs ?? CRABLINE_OBSERVE_IDLE_MS;
     const deadline = Date.now() + timeoutMs;
     let sawReply = false;
     let lastReplyAt = 0;
@@ -447,7 +290,7 @@ function createCrablineTelegramState(params: CrablineTelegramStateParams): QaTra
       }
       const remainingMs = Math.max(1, deadline - Date.now());
       const event = await params.provider.waitForInbound({
-        ...params.fixtureContext,
+        ...input.context,
         nonce: input.inbound.id,
         since,
         threadId: input.accepted.threadId,
@@ -460,20 +303,10 @@ function createCrablineTelegramState(params: CrablineTelegramStateParams): QaTra
       if (Number.isFinite(sentAtMs)) {
         since = new Date(sentAtMs + 1).toISOString();
       }
-      if (seenObservedIds.has(event.id)) {
+      if (seenObservedIds.has(event.id) || event.id === input.accepted.messageId) {
         continue;
       }
       seenObservedIds.add(event.id);
-      if (
-        shouldIgnoreObservedMessage({
-          accepted: input.accepted,
-          driverIdentity: params.driverIdentity,
-          event,
-          sentText: input.sentText,
-        })
-      ) {
-        continue;
-      }
       addObservedOutbound({
         baseState,
         event,
@@ -499,21 +332,22 @@ function createCrablineTelegramState(params: CrablineTelegramStateParams): QaTra
       return baseState.reset();
     },
     getSnapshot: baseState.getSnapshot.bind(baseState),
-    async addInboundMessage(input) {
+    async addInboundMessage(input: QaBusInboundMessageInput) {
       const inbound = baseState.addInboundMessage(input);
-      const sentText = textForTelegramSend(input);
-      const since = new Date().toISOString();
+      const targetId = targetForConversation(inbound);
+      const context = withTarget(params.fixtureContext, targetId);
+      const since = new Date(Date.now() - 1).toISOString();
       const accepted = await params.provider.send({
-        ...params.fixtureContext,
+        ...context,
         mode: "agent",
         nonce: inbound.id,
-        text: sentText,
+        text: input.text,
       });
       trackObservation(
-        observeReplies({
+        observeReply({
           accepted,
+          context,
           inbound,
-          sentText,
           since,
         }),
       );
@@ -531,129 +365,57 @@ function createCrablineTelegramState(params: CrablineTelegramStateParams): QaTra
   };
 }
 
-function createCrablineTelegramGatewayConfig(params: {
-  driverIdentity: TelegramBotIdentity;
-  groupId: string;
-  sutToken: string;
-}): QaTransportGatewayConfig {
-  return {
-    channels: {
-      [CRABLINE_TELEGRAM_CHANNEL_ID]: {
-        enabled: true,
-        defaultAccount: CRABLINE_TELEGRAM_ACCOUNT_ID,
-        accounts: {
-          [CRABLINE_TELEGRAM_ACCOUNT_ID]: {
-            enabled: true,
-            botToken: params.sutToken,
-            dmPolicy: "disabled",
-            mentionPatterns: ["\\b@?openclaw\\b"],
-            replyToMode: "first",
-            groups: {
-              [params.groupId]: {
-                groupPolicy: "allowlist",
-                allowFrom: [String(params.driverIdentity.id)],
-                requireMention: true,
-              },
-            },
-          },
-        },
-      },
-    } as NonNullable<OpenClawConfig["channels"]>,
-    messages: {
-      groupChat: {
-        mentionPatterns: ["\\b@?openclaw\\b"],
-        visibleReplies: "automatic",
-      },
-    },
-  };
-}
-
-class QaCrablineTelegramTransport extends QaStateBackedTransportAdapter {
-  readonly #cleanupCredentialLease: () => Promise<void>;
-  readonly #driverIdentity: TelegramBotIdentity;
-  readonly #driverToken: string;
-  readonly #groupId: string;
-  readonly #sutToken: string;
+class QaCrablineLocalMockTransport extends QaStateBackedTransportAdapter {
+  readonly #selection: QaCrablineChannelDriverSelection;
   readonly #state: QaTransportState & { cleanup: () => Promise<void> };
 
   constructor(params: {
-    cleanupCredentialLease: () => Promise<void>;
-    driverIdentity: TelegramBotIdentity;
-    driverToken: string;
-    groupId: string;
+    selection: QaCrablineChannelDriverSelection;
     state: QaTransportState & { cleanup: () => Promise<void> };
-    sutToken: string;
   }) {
     super({
       id: CRABLINE_TRANSPORT_ID,
-      label: "crabline + telegram",
-      accountId: CRABLINE_TELEGRAM_ACCOUNT_ID,
-      requiredPluginIds: [CRABLINE_TELEGRAM_CHANNEL_ID],
+      label: `crabline + ${params.selection.channel}`,
+      accountId: `qa-crabline-${params.selection.channel}`,
+      requiredPluginIds: [],
       state: params.state,
     });
-    this.#cleanupCredentialLease = params.cleanupCredentialLease;
-    this.#driverIdentity = params.driverIdentity;
-    this.#driverToken = params.driverToken;
-    this.#groupId = params.groupId;
+    this.#selection = params.selection;
     this.#state = params.state;
-    this.#sutToken = params.sutToken;
   }
 
-  createGatewayConfig = (_params: { baseUrl: string }) =>
-    createCrablineTelegramGatewayConfig({
-      driverIdentity: this.#driverIdentity,
-      groupId: this.#groupId,
-      sutToken: this.#sutToken,
-    });
+  createGatewayConfig = (_params: { baseUrl: string }) => ({});
 
-  createChannelDriverSmokeEnv = (env: NodeJS.ProcessEnv) => ({
-    ...env,
-    OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN: this.#driverToken,
-    ...(env.TELEGRAM_BOT_TOKEN?.trim() ? {} : { TELEGRAM_BOT_TOKEN: this.#driverToken }),
-  });
+  createChannelDriverSmokeEnv = (env: NodeJS.ProcessEnv) => ({ ...env });
 
-  waitReady = (params: {
+  waitReady = async (_params: {
     gateway: QaTransportGatewayClient;
     timeoutMs?: number;
     pollIntervalMs?: number;
-  }) =>
-    waitForTelegramReady({
-      ...params,
-      accountId: CRABLINE_TELEGRAM_ACCOUNT_ID,
-    });
+  }) => {};
 
-  buildAgentDelivery = () => ({
-    channel: CRABLINE_TELEGRAM_CHANNEL_ID,
-    replyChannel: CRABLINE_TELEGRAM_CHANNEL_ID,
-    replyTo: `telegram:${this.#groupId}`,
+  buildAgentDelivery = ({ target }: { target: string }) => ({
+    channel: this.#selection.channel,
+    replyChannel: this.#selection.channel,
+    replyTo: `${this.#selection.channel}:${target}`,
   });
 
   handleAction = async (_params: {
     action: QaTransportActionName;
     args: Record<string, unknown>;
-    cfg: OpenClawConfig;
+    cfg: unknown;
     accountId?: string | null;
   }) => {
-    throw new Error("Crabline Telegram transport does not yet expose generic message actions.");
+    throw new Error("Crabline local mock transport does not expose generic message actions.");
   };
 
-  createReportNotes = (params: QaTransportReportParams) => [
-    `Runs against Crabline's Telegram Chat SDK adapter plus a real OpenClaw Telegram gateway account using the ${params.providerMode} provider.`,
-    "Driver-side sends and observations go through openclaw/crabline; SUT replies go through the OpenClaw Telegram channel plugin.",
-    "Direct QA conversations are represented through the configured Telegram QA group because Telegram bots cannot DM each other.",
+  createReportNotes = (_params: QaTransportReportParams) => [
+    `Runs ${this.#selection.channel}-shaped QA messages through openclaw/crabline local mocks.`,
+    "No live channel service, provider SDK, or external credential lease is required.",
   ];
 
   async cleanup() {
-    const results = await Promise.allSettled([
-      this.#state.cleanup(),
-      this.#cleanupCredentialLease(),
-    ]);
-    const rejected = results.find(
-      (result): result is PromiseRejectedResult => result.status === "rejected",
-    );
-    if (rejected) {
-      throw rejected.reason;
-    }
+    await this.#state.cleanup();
   }
 }
 
@@ -662,85 +424,41 @@ export async function createQaCrablineTransportAdapter(params: {
   observeIdleMs?: number;
   observeTimeoutMs?: number;
   outputDir: string;
-  runtime?: CrablineTelegramRuntime;
+  runtime?: CrablineRuntime;
   selection: QaCrablineChannelDriverSelection;
   state?: QaBusState;
 }) {
-  if (params.selection.channel !== CRABLINE_TELEGRAM_CHANNEL_ID) {
-    throw new Error(
-      `Crabline channel ${params.selection.channel} is not supported by QA Lab transport execution yet.`,
-    );
-  }
-
   const env = params.env ?? process.env;
-  const credentialLease = await acquireQaCredentialLease({
-    env,
-    fetchImpl: params.runtime?.fetchCredentialLease,
-    kind: "telegram",
-    parsePayload: parseTelegramCredentialPayload,
-    resolveEnvPayload: () => resolveTelegramQaRuntimeEnv(env),
+  await fs.mkdir(path.join(params.outputDir, "artifacts", "crabline"), {
+    recursive: true,
   });
-  const credentialHeartbeat = startQaCredentialLeaseHeartbeat(credentialLease);
-  const cleanupCredentialLease = async () => {
-    const heartbeatFailure = credentialHeartbeat.getFailure();
-    await credentialHeartbeat.stop();
-    await credentialLease.release();
-    if (heartbeatFailure) {
-      throw heartbeatFailure;
-    }
-  };
+  const { fixtureId, manifest, manifestPath } = createCrablineManifest({
+    outputDir: params.outputDir,
+    selection: params.selection,
+  });
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
-  try {
-    const { driverToken, groupId, sutToken } = credentialLease.payload;
-    const fetchIdentity = params.runtime?.fetchTelegramBotIdentity ?? fetchTelegramBotIdentity;
-    const driverIdentity = await fetchIdentity(driverToken);
-    if (!driverIdentity.is_bot) {
-      throw new Error("OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN did not resolve to a Telegram bot.");
-    }
+  const provider =
+    params.runtime?.provider ??
+    (await loadCrablineRuntime(env))
+      .createRegistry(manifest, manifestPath)
+      .resolve(params.selection.channel, fixtureId);
+  const fixtureContext = createFixtureContext({
+    fixtureId,
+    manifest,
+    manifestPath,
+    providerId: params.selection.channel,
+  });
 
-    await fs.mkdir(path.join(params.outputDir, "artifacts", "crabline"), {
-      recursive: true,
-    });
-    const { manifest, manifestPath } = createTelegramManifest({
-      driverToken,
-      groupId,
-      outputDir: params.outputDir,
-    });
-    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    const provider =
-      params.runtime?.provider ??
-      (await loadCrablineRuntime())
-        .createRegistry(manifest, manifestPath)
-        .resolve(CRABLINE_TELEGRAM_PROVIDER_ID, CRABLINE_TELEGRAM_FIXTURE_ID);
-    const fixtureContext = createFixtureContext({
-      manifest,
-      manifestPath,
-    });
-
-    return new QaCrablineTelegramTransport({
-      cleanupCredentialLease,
-      driverIdentity,
-      driverToken,
-      groupId,
-      state: createCrablineTelegramState({
-        driverIdentity,
-        fixtureContext,
-        observeIdleMs: params.observeIdleMs,
-        observeTimeoutMs: params.observeTimeoutMs,
-        provider,
-        state: params.state ?? createQaBusState(),
-      }),
-      sutToken,
-    });
-  } catch (error) {
-    try {
-      await cleanupCredentialLease();
-    } catch (cleanupError) {
-      throw new Error(
-        `Crabline Telegram transport setup failed and credential cleanup failed: ${formatErrorMessage(error)}; cleanup failed: ${formatErrorMessage(cleanupError)}`,
-        { cause: cleanupError },
-      );
-    }
-    throw error;
-  }
+  return new QaCrablineLocalMockTransport({
+    selection: params.selection,
+    state: createCrablineState({
+      fixtureContext,
+      observeIdleMs: params.observeIdleMs,
+      observeTimeoutMs: params.observeTimeoutMs,
+      provider,
+      selection: params.selection,
+      state: params.state ?? createQaBusState(),
+    }),
+  });
 }

@@ -300,11 +300,7 @@ describe("qa suite", () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "qa-suite-crabline-"));
     const fakeCrabline = await createFakeCrablineCli();
     const originalCrablineBin = process.env.OPENCLAW_QA_CRABLINE_BIN;
-    const originalTelegramDriverToken = process.env.OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN;
-    const originalTelegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
     process.env.OPENCLAW_QA_CRABLINE_BIN = fakeCrabline.cliPath;
-    process.env.OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN = "telegram-token";
-    delete process.env.TELEGRAM_BOT_TOKEN;
     try {
       const artifacts = await qaSuiteProgressTesting.writeQaSuiteArtifacts({
         outputDir,
@@ -358,16 +354,6 @@ describe("qa suite", () => {
         id: "telegram",
       });
     } finally {
-      if (originalTelegramBotToken === undefined) {
-        delete process.env.TELEGRAM_BOT_TOKEN;
-      } else {
-        process.env.TELEGRAM_BOT_TOKEN = originalTelegramBotToken;
-      }
-      if (originalTelegramDriverToken === undefined) {
-        delete process.env.OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN;
-      } else {
-        process.env.OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN = originalTelegramDriverToken;
-      }
       if (originalCrablineBin === undefined) {
         delete process.env.OPENCLAW_QA_CRABLINE_BIN;
       } else {

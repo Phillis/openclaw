@@ -33,10 +33,6 @@ if (command === "providers") {
     ]
   }));
 } else if (command === "doctor") {
-  if (!process.env.TELEGRAM_BOT_TOKEN) {
-    process.stderr.write("provider telegram missing telegram.botToken or TELEGRAM_BOT_TOKEN");
-    process.exit(1);
-  }
   process.stdout.write(JSON.stringify({ findings: [], ok: true }));
 } else {
   process.stderr.write("unexpected command " + command);
@@ -53,7 +49,7 @@ describe("crabline channel driver metadata", () => {
     await expect(resolveQaCrablineChannelDriverSelection({})).resolves.toBeNull();
   });
 
-  it("resolves the Telegram SDK-backed channel driver", async () => {
+  it("resolves the Telegram local mock channel driver", async () => {
     const crablineBin = await createFakeCrablineCli();
     const selection = await resolveQaCrablineChannelDriverSelection({
       channel: "telegram",
@@ -83,7 +79,7 @@ describe("crabline channel driver metadata", () => {
     });
   });
 
-  it("runs Crabline's Chat SDK provider doctor through the package CLI", async () => {
+  it("runs Crabline's local mock provider doctor through the package CLI", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "qa-crabline-driver-"));
     tempDirs.push(outputDir);
     const crablineBin = await createFakeCrablineCli();
@@ -99,7 +95,6 @@ describe("crabline channel driver metadata", () => {
           env: {
             ...process.env,
             OPENCLAW_QA_CRABLINE_BIN: crablineBin,
-            OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN: "telegram-token",
             TELEGRAM_BOT_TOKEN: "",
           },
           outputDir,
@@ -121,7 +116,7 @@ describe("crabline channel driver metadata", () => {
     }
   });
 
-  it("fails Crabline's Chat SDK provider doctor when required env is unavailable", async () => {
+  it("does not require Telegram env for Crabline local mock doctor", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "qa-crabline-driver-"));
     tempDirs.push(outputDir);
     const crablineBin = await createFakeCrablineCli();
@@ -143,7 +138,14 @@ describe("crabline channel driver metadata", () => {
             outputDir,
           },
         ),
-      ).rejects.toThrow("provider telegram missing telegram.botToken or TELEGRAM_BOT_TOKEN");
+      ).resolves.toMatchObject({
+        smoke: {
+          result: {
+            findings: [],
+            ok: true,
+          },
+        },
+      });
     } finally {
       // tempDirs cleanup covers outputDir and the fake CLI dir.
     }

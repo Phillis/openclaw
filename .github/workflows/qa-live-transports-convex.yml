@@ -572,11 +572,10 @@ jobs:
           if-no-files-found: warn
 
   run_smoke_ci_crabline:
-    name: Run smoke-ci profile through Crabline with Convex leases
+    name: Run smoke-ci profile through Crabline local mocks
     needs: [authorize_actor, validate_selected_ref]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 45
-    environment: qa-live-shared
     steps:
       - name: Checkout selected ref
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -591,24 +590,21 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           install-bun: "true"
 
-      - name: Validate required QA credential env
-        env:
-          OPENCLAW_QA_CONVEX_SITE_URL: ${{ secrets.OPENCLAW_QA_CONVEX_SITE_URL }}
-          OPENCLAW_QA_CONVEX_SECRET_CI: ${{ secrets.OPENCLAW_QA_CONVEX_SECRET_CI }}
+      - name: Setup Crabline local mock runtime
         shell: bash
         run: |
           set -euo pipefail
 
-          require_var() {
-            local key="$1"
-            if [[ -z "${!key:-}" ]]; then
-              echo "Missing required ${key}." >&2
-              exit 1
-            fi
-          }
+          crabline_dir=".artifacts/crabline-runtime"
+          git clone --filter=blob:none https://github.com/openclaw/crabline.git "${crabline_dir}"
+          git -C "${crabline_dir}" checkout 2ee1240
+          pnpm --dir "${crabline_dir}" install --ignore-workspace
+          pnpm --dir "${crabline_dir}" build
 
-          require_var OPENCLAW_QA_CONVEX_SITE_URL
-          require_var OPENCLAW_QA_CONVEX_SECRET_CI
+          {
+            echo "OPENCLAW_QA_CRABLINE_BIN=${GITHUB_WORKSPACE}/${crabline_dir}/dist/src/bin/crabline.js"
+            echo "OPENCLAW_QA_CRABLINE_RUNTIME=${GITHUB_WORKSPACE}/${crabline_dir}/dist/src/index.js"
+          } >> "$GITHUB_ENV"
 
       - name: Build private QA runtime
         env:
@@ -619,11 +615,6 @@ jobs:
         id: run_lane
         shell: bash
         env:
-          OPENCLAW_QA_CONVEX_SITE_URL: ${{ secrets.OPENCLAW_QA_CONVEX_SITE_URL }}
-          OPENCLAW_QA_CONVEX_SECRET_CI: ${{ secrets.OPENCLAW_QA_CONVEX_SECRET_CI }}
-          OPENCLAW_QA_CREDENTIAL_ACQUIRE_TIMEOUT_MS: "1800000"
-          OPENCLAW_QA_CREDENTIAL_ROLE: ci
-          OPENCLAW_QA_CREDENTIAL_SOURCE: convex
           OPENCLAW_QA_REDACT_PUBLIC_METADATA: "1"
         run: |
           set -euo pipefail
