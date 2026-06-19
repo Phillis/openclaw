@@ -55,8 +55,11 @@ const MERGE_SUMMARIES_INSTRUCTIONS = [
   "- Batch operation progress (e.g., '5/17 items completed')",
   "- The last thing the user requested and what was being done about it",
   "- Decisions made and their rationale",
-  "- TODOs, open questions, and constraints",
-  "- Any commitments or follow-ups promised",
+  "- TODOs, open questions, constraints, and promised follow-ups",
+  "- The current next action, exact unblock condition, and who/what the agent is waiting on",
+  "- Review triggers, deadlines, and any watchdog/stall conditions already established",
+  "- Artifact continuity: branches, issues, PRs, files, logs, hosts, URLs, and identifiers",
+  "- Verified facts vs assumptions when the distinction is clear in the source summaries",
   "",
   "PRIORITIZE recent context over older history. The agent needs to know",
   "what it was doing, not just what was discussed.",
@@ -78,7 +81,9 @@ const HANDOFF_INSTRUCTIONS = [
   "- Current high-level goal and project path.",
   "- Status of the latest tool executions (especially AutoClaw/Subagents).",
   "- Critical files currently being modified.",
-  "- Pending items and next intended steps.",
+  "- Pending items, next intended step, and exact unblock condition.",
+  "- Who/what the session is waiting on, and when it should review or re-check.",
+  "- The strongest verified facts, plus any assumptions that still need confirmation.",
 ].join("\n");
 
 /** Optional instruction policy for preserving identifiers during compaction. */

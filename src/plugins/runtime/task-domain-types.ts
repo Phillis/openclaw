@@ -1,6 +1,11 @@
 // Task domain types define plugin task-flow payloads shared by runtime adapters.
 import type { JsonValue } from "../../tasks/task-flow-registry.types.js";
 import type {
+  TaskFlowAttention,
+  TaskFlowCheckpoint,
+  TaskFlowWatch,
+} from "../../tasks/task-flow-state.js";
+import type {
   TaskDeliveryStatus,
   TaskNotifyPolicy,
   TaskRuntime,
@@ -80,6 +85,9 @@ export type TaskFlowView = {
 /** Detailed task flow view with state, wait, blocked, and task summary data. */
 export type TaskFlowDetail = TaskFlowView & {
   state?: JsonValue;
+  checkpoint?: TaskFlowCheckpoint;
+  watch?: TaskFlowWatch;
+  attention?: TaskFlowAttention;
   wait?: JsonValue;
   blocked?: {
     taskId?: string;

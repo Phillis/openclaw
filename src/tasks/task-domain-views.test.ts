@@ -177,7 +177,20 @@ describe("task domain view mappers", () => {
     const task = makeTask({ taskId: "task-child", parentFlowId: "flow-1" });
     const summary = makeSummary();
     const flow = makeFlow({
-      stateJson: { phase: "waiting" },
+      stateJson: {
+        phase: "waiting",
+        __openclawCheckpoint: {
+          summary: "Waiting for child task output.",
+          nextAction: "Review the child artifact once it lands.",
+          updatedAt: 15,
+        },
+        __openclawWatch: {
+          waitingOn: "child_task",
+          expectedEvent: "child completion",
+          reviewAt: 18,
+          reviewReason: "Review child completion if no update arrives.",
+        },
+      },
       waitJson: { kind: "task", taskId: "task-child" },
       blockedTaskId: "task-child",
       blockedSummary: "Waiting for child task",
@@ -187,7 +200,39 @@ describe("task domain view mappers", () => {
 
     expect(detail).toEqual({
       ...mapTaskFlowView(flow),
-      state: { phase: "waiting" },
+      state: {
+        phase: "waiting",
+        __openclawCheckpoint: {
+          summary: "Waiting for child task output.",
+          nextAction: "Review the child artifact once it lands.",
+          updatedAt: 15,
+        },
+        __openclawWatch: {
+          waitingOn: "child_task",
+          expectedEvent: "child completion",
+          reviewAt: 18,
+          reviewReason: "Review child completion if no update arrives.",
+        },
+      },
+      checkpoint: {
+        summary: "Waiting for child task output.",
+        nextAction: "Review the child artifact once it lands.",
+        updatedAt: 15,
+      },
+      watch: {
+        waitingOn: "child_task",
+        expectedEvent: "child completion",
+        reviewAt: 18,
+        reviewReason: "Review child completion if no update arrives.",
+      },
+      attention: {
+        state: "review_due",
+        reason: "Review child completion if no update arrives.",
+        updatedAt: 15,
+        reviewAt: 18,
+        waitingOn: "child_task",
+        expectedEvent: "child completion",
+      },
       wait: { kind: "task", taskId: "task-child" },
       blocked: {
         taskId: "task-child",

@@ -275,7 +275,7 @@ function readTranscriptMessages(sessionFile: string): unknown[] {
 }
 
 const CLI_RESEED_PROMPT =
-  "Continue this conversation using the OpenClaw transcript below as prior session history.\n\n<conversation_history>\nUser: earlier context\n</conversation_history>\n\n<next_user_message>\nhi\n</next_user_message>";
+  "Continue this conversation using the OpenClaw transcript below as prior session history.\nTreat it as authoritative context for this fresh CLI session.\nPreserve the active objective, latest verified state, current blocker/wait condition, and next action.\nAvoid redoing already-verified work unless the transcript or current reality shows it is stale.\n\n<conversation_history>\nUser: earlier context\n</conversation_history>\n\n<next_user_message>\nhi\n</next_user_message>";
 
 describe("runCliAgent reliability", () => {
   afterEach(() => {

@@ -7,6 +7,11 @@ import type {
   TaskRunView,
 } from "../plugins/runtime/task-domain-types.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
+import {
+  deriveTaskFlowAttention,
+  readTaskFlowCheckpoint,
+  readTaskFlowWatch,
+} from "./task-flow-state.js";
 import { summarizeTaskRecords } from "./task-registry.summary.js";
 import type { TaskRecord, TaskRegistrySummary } from "./task-registry.types.js";
 
@@ -79,9 +84,15 @@ export function mapTaskFlowDetail(params: {
 }): TaskFlowDetail {
   const summary = params.summary ?? summarizeTaskRecords(params.tasks);
   const base = mapTaskFlowView(params.flow);
+  const checkpoint = readTaskFlowCheckpoint(params.flow.stateJson);
+  const watch = readTaskFlowWatch(params.flow.stateJson);
+  const attention = deriveTaskFlowAttention(params.flow);
   return {
     ...base,
     ...(params.flow.stateJson !== undefined ? { state: params.flow.stateJson } : {}),
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(watch ? { watch } : {}),
+    ...(attention ? { attention } : {}),
     ...(params.flow.waitJson !== undefined ? { wait: params.flow.waitJson } : {}),
     ...(params.flow.blockedTaskId || params.flow.blockedSummary
       ? {

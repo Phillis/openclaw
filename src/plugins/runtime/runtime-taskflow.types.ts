@@ -1,6 +1,7 @@
 // Runtime task-flow types describe task-flow hooks and options for plugin runtimes.
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { JsonValue, TaskFlowRecord } from "../../tasks/task-flow-registry.types.js";
+import type { TaskFlowCheckpoint, TaskFlowWatch } from "../../tasks/task-flow-state.js";
 import type {
   TaskDeliveryState,
   TaskDeliveryStatus,
@@ -41,6 +42,8 @@ export type ManagedTaskFlowCreateParams = {
   currentStep?: string | null;
   stateJson?: JsonValue | null;
   waitJson?: JsonValue | null;
+  checkpoint?: TaskFlowCheckpoint | null;
+  watch?: TaskFlowWatch | null;
   cancelRequestedAt?: number | null;
   createdAt?: number;
   updatedAt?: number;
@@ -84,6 +87,8 @@ export type BoundTaskFlowRuntime = {
     currentStep?: string | null;
     stateJson?: JsonValue | null;
     waitJson?: JsonValue | null;
+    checkpoint?: TaskFlowCheckpoint | null;
+    watch?: TaskFlowWatch | null;
     blockedTaskId?: string | null;
     blockedSummary?: string | null;
     updatedAt?: number;
@@ -94,12 +99,16 @@ export type BoundTaskFlowRuntime = {
     status?: Extract<ManagedTaskFlowRecord["status"], "queued" | "running">;
     currentStep?: string | null;
     stateJson?: JsonValue | null;
+    checkpoint?: TaskFlowCheckpoint | null;
+    watch?: TaskFlowWatch | null;
     updatedAt?: number;
   }) => ManagedTaskFlowMutationResult;
   finish: (params: {
     flowId: string;
     expectedRevision: number;
     stateJson?: JsonValue | null;
+    checkpoint?: TaskFlowCheckpoint | null;
+    watch?: TaskFlowWatch | null;
     updatedAt?: number;
     endedAt?: number;
   }) => ManagedTaskFlowMutationResult;
@@ -107,6 +116,8 @@ export type BoundTaskFlowRuntime = {
     flowId: string;
     expectedRevision: number;
     stateJson?: JsonValue | null;
+    checkpoint?: TaskFlowCheckpoint | null;
+    watch?: TaskFlowWatch | null;
     blockedTaskId?: string | null;
     blockedSummary?: string | null;
     updatedAt?: number;

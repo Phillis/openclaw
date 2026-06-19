@@ -12,6 +12,7 @@ import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixture
 
 let truncateToolResultText: typeof import("./tool-result-truncation.js").truncateToolResultText;
 let truncateToolResultMessage: typeof import("./tool-result-truncation.js").truncateToolResultMessage;
+let normalizeToolResultTextForModel: typeof import("./tool-result-truncation.js").normalizeToolResultTextForModel;
 let calculateMaxToolResultChars: typeof import("./tool-result-truncation.js").calculateMaxToolResultChars;
 let calculateMaxToolResultCharsWithCap: typeof import("./tool-result-truncation.js").calculateMaxToolResultCharsWithCap;
 let resolveAutoLiveToolResultMaxChars: typeof import("./tool-result-truncation.js").resolveAutoLiveToolResultMaxChars;
@@ -31,6 +32,7 @@ async function loadFreshToolResultTruncationModuleForTest() {
   ({
     truncateToolResultText,
     truncateToolResultMessage,
+    normalizeToolResultTextForModel,
     calculateMaxToolResultChars,
     calculateMaxToolResultCharsWithCap,
     resolveAutoLiveToolResultMaxChars,
@@ -104,6 +106,11 @@ async function createTmpDir(): Promise<string> {
 }
 
 describe("truncateToolResultText", () => {
+  it("normalizes ansi escapes and runaway blank lines before truncation", () => {
+    const text = "\u001b[31merror\u001b[0m\n\n\n\nline two\r\nline three\u0007";
+    expect(normalizeToolResultTextForModel(text)).toBe("error\n\nline two\nline three");
+  });
+
   it("returns text unchanged when under limit", () => {
     const text = "hello world";
     expect(truncateToolResultText(text, 1000)).toBe(text);

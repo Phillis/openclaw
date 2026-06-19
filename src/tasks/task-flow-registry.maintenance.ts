@@ -12,6 +12,7 @@ import {
   updateFlowRecordByIdExpectedRevision,
 } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
+import { deriveTaskFlowAttention } from "./task-flow-state.js";
 
 const TASK_FLOW_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
@@ -19,6 +20,19 @@ const TASK_FLOW_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export type TaskFlowRegistryMaintenanceSummary = {
   reconciled: number;
   pruned: number;
+};
+
+export type TaskFlowRegistryAttentionDiagnostic = {
+  flowId: string;
+  ownerKey: string;
+  status: TaskFlowRecord["status"];
+  attention: NonNullable<ReturnType<typeof deriveTaskFlowAttention>>;
+};
+
+export type TaskFlowRegistryAttentionDiagnostics = {
+  reviewDue: number;
+  stale: number;
+  flows: TaskFlowRegistryAttentionDiagnostic[];
 };
 
 function isTerminalFlow(flow: TaskFlowRecord): boolean {
@@ -127,6 +141,29 @@ function repairTerminalMirroredFlowTimestamp(flow: TaskFlowRecord): boolean {
 
 export function getInspectableTaskFlowAuditSummary(): TaskFlowAuditSummary {
   return summarizeTaskFlowAuditFindings(listTaskFlowAuditFindings());
+}
+
+export function getInspectableTaskFlowAttentionDiagnostics(
+  now = Date.now(),
+): TaskFlowRegistryAttentionDiagnostics {
+  const flows = listTaskFlowRecords()
+    .map((flow) => {
+      const attention = deriveTaskFlowAttention(flow, now);
+      return attention
+        ? {
+            flowId: flow.flowId,
+            ownerKey: flow.ownerKey,
+            status: flow.status,
+            attention,
+          }
+        : null;
+    })
+    .filter((entry): entry is TaskFlowRegistryAttentionDiagnostic => Boolean(entry));
+  return {
+    reviewDue: flows.filter((flow) => flow.attention.state === "review_due").length,
+    stale: flows.filter((flow) => flow.attention.state === "stale").length,
+    flows,
+  };
 }
 
 export function previewTaskFlowRegistryMaintenance(): TaskFlowRegistryMaintenanceSummary {

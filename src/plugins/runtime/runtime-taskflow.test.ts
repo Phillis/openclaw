@@ -40,6 +40,14 @@ describe("runtime TaskFlow", () => {
         goal: "Triage inbox",
         currentStep: "classify",
         stateJson: { lane: "inbox" },
+        checkpoint: {
+          summary: "Need to classify the next inbox item.",
+          nextAction: "Read the newest unread item.",
+        },
+        watch: {
+          reviewAt: 5_000,
+          reviewReason: "Check for a backlog if classification stalls.",
+        },
       }),
     );
 
@@ -49,6 +57,17 @@ describe("runtime TaskFlow", () => {
     expect(created.requesterOrigin?.channel).toBe("telegram");
     expect(created.requesterOrigin?.to).toBe("telegram:123");
     expect(created.goal).toBe("Triage inbox");
+    expect(created.stateJson).toMatchObject({
+      lane: "inbox",
+      __openclawCheckpoint: {
+        summary: "Need to classify the next inbox item.",
+        nextAction: "Read the newest unread item.",
+      },
+      __openclawWatch: {
+        reviewAt: 5_000,
+        reviewReason: "Check for a backlog if classification stalls.",
+      },
+    });
     expect(taskFlow.get(created.flowId)?.flowId).toBe(created.flowId);
     expect(taskFlow.findLatest()?.flowId).toBe(created.flowId);
     expect(taskFlow.resolve("agent:main:main")?.flowId).toBe(created.flowId);

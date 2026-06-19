@@ -255,6 +255,8 @@ export function buildCliSessionHistoryPrompt(params: {
   return [
     "Continue this conversation using the OpenClaw transcript below as prior session history.",
     "Treat it as authoritative context for this fresh CLI session.",
+    "Preserve the active objective, latest verified state, current blocker/wait condition, and next action.",
+    "Avoid redoing already-verified work unless the transcript or current reality shows it is stale.",
     "",
     "<conversation_history>",
     renderedHistory,

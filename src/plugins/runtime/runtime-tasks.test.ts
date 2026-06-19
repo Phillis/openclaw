@@ -74,6 +74,17 @@ describe("runtime tasks", () => {
         goal: "Review inbox",
         currentStep: "triage",
         stateJson: { lane: "priority" },
+        checkpoint: {
+          summary: "Inbox needs triage before child work can start.",
+          nextAction: "Pick the highest-priority message.",
+          updatedAt: 9,
+        },
+        watch: {
+          waitingOn: "child_task",
+          expectedEvent: "child completion",
+          staleAfterMs: 5_000,
+          stallCount: 1,
+        },
       }),
     );
     const child = legacyTaskFlow.runTask({
@@ -102,7 +113,31 @@ describe("runtime tasks", () => {
     expect(flow.ownerKey).toBe("agent:main:main");
     expect(flow.goal).toBe("Review inbox");
     expect(flow.currentStep).toBe("triage");
-    expect(flow.state).toEqual({ lane: "priority" });
+    expect(flow.state).toEqual({
+      lane: "priority",
+      __openclawCheckpoint: {
+        summary: "Inbox needs triage before child work can start.",
+        nextAction: "Pick the highest-priority message.",
+        updatedAt: 9,
+      },
+      __openclawWatch: {
+        waitingOn: "child_task",
+        expectedEvent: "child completion",
+        staleAfterMs: 5_000,
+        stallCount: 1,
+      },
+    });
+    expect(flow.checkpoint).toEqual({
+      summary: "Inbox needs triage before child work can start.",
+      nextAction: "Pick the highest-priority message.",
+      updatedAt: 9,
+    });
+    expect(flow.watch).toEqual({
+      waitingOn: "child_task",
+      expectedEvent: "child completion",
+      staleAfterMs: 5_000,
+      stallCount: 1,
+    });
     const taskSummary = requireRecord(flow.taskSummary);
     expect(taskSummary.total).toBe(1);
     expect(taskSummary.active).toBe(1);

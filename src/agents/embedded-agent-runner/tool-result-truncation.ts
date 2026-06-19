@@ -2,6 +2,7 @@
  * Truncates oversized tool-result content in messages and transcripts.
  */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { stripAnsi } from "../../../packages/terminal-core/src/ansi.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { TextContent } from "../../llm/types.js";
@@ -116,6 +117,18 @@ function appendBoundedTruncationSuffix(params: {
 const MIDDLE_OMISSION_MARKER =
   "\n\n⚠️ [... middle content omitted — showing head and tail ...]\n\n";
 
+function stripControlChars(value: string): string {
+  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+}
+
+export function normalizeToolResultTextForModel(text: string): string {
+  const normalized = stripControlChars(stripAnsi(text)).replace(/\r\n?/g, "\n");
+  return normalized
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trimEnd();
+}
+
 /**
  * Detect whether text likely contains error/diagnostic content near the end,
  * which should be preserved during truncation.
@@ -145,41 +158,43 @@ export function truncateToolResultText(
   maxChars: number,
   options: ToolResultTruncationOptions = {},
 ): string {
+  const normalizedText = normalizeToolResultTextForModel(text);
   const suffixFactory = resolveSuffixFactory(options.suffix);
   const minKeepChars = resolveEffectiveMinKeepChars({
     maxChars,
     minKeepChars: options.minKeepChars ?? MIN_KEEP_CHARS,
     suffixFactory,
   });
-  if (text.length <= maxChars) {
-    return text;
+  if (normalizedText.length <= maxChars) {
+    return normalizedText;
   }
-  const defaultSuffix = suffixFactory(Math.max(1, text.length - maxChars));
+  const defaultSuffix = suffixFactory(Math.max(1, normalizedText.length - maxChars));
   const budget = Math.max(minKeepChars, maxChars - defaultSuffix.length);
 
   // If tail looks important, split budget between head and tail
-  if (hasImportantTail(text) && budget > minKeepChars * 2) {
+  if (hasImportantTail(normalizedText) && budget > minKeepChars * 2) {
     const tailBudget = Math.min(Math.floor(budget * 0.3), 4_000);
     const headBudget = budget - tailBudget - MIDDLE_OMISSION_MARKER.length;
 
     if (headBudget > minKeepChars) {
       // Find clean cut points at newline boundaries
       let headCut = headBudget;
-      const headNewline = text.lastIndexOf("\n", headBudget);
+      const headNewline = normalizedText.lastIndexOf("\n", headBudget);
       if (headNewline > headBudget * 0.8) {
         headCut = headNewline;
       }
 
-      let tailStart = text.length - tailBudget;
-      const tailNewline = text.indexOf("\n", tailStart);
+      let tailStart = normalizedText.length - tailBudget;
+      const tailNewline = normalizedText.indexOf("\n", tailStart);
       if (tailNewline !== -1 && tailNewline < tailStart + tailBudget * 0.2) {
         tailStart = tailNewline + 1;
       }
 
-      const keptText = text.slice(0, headCut) + MIDDLE_OMISSION_MARKER + text.slice(tailStart);
+      const keptText =
+        normalizedText.slice(0, headCut) + MIDDLE_OMISSION_MARKER + normalizedText.slice(tailStart);
       return appendBoundedTruncationSuffix({
         keptText,
-        originalTextLength: text.length,
+        originalTextLength: normalizedText.length,
         maxChars,
         suffixFactory,
       });
@@ -188,14 +203,14 @@ export function truncateToolResultText(
 
   // Default: keep the beginning
   let cutPoint = budget;
-  const lastNewline = text.lastIndexOf("\n", budget);
+  const lastNewline = normalizedText.lastIndexOf("\n", budget);
   if (lastNewline > budget * 0.8) {
     cutPoint = lastNewline;
   }
-  const keptText = text.slice(0, cutPoint);
+  const keptText = normalizedText.slice(0, cutPoint);
   return appendBoundedTruncationSuffix({
     keptText,
-    originalTextLength: text.length,
+    originalTextLength: normalizedText.length,
     maxChars,
     suffixFactory,
   });

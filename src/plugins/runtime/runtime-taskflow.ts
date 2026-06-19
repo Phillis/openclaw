@@ -20,6 +20,7 @@ import {
   resumeFlow,
   setFlowWaiting,
 } from "../../tasks/task-flow-runtime-internal.js";
+import { mergeTaskFlowStructuredState } from "../../tasks/task-flow-state.js";
 import type { TaskDeliveryState } from "../../tasks/task-registry.types.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import type {
@@ -99,7 +100,31 @@ function createBoundTaskFlowRuntime(params: {
   const requesterOrigin = params.requesterOrigin
     ? normalizeDeliveryContext(params.requesterOrigin)
     : undefined;
+  const resolveStructuredStateJson = (params: {
+    currentStateJson?: TaskFlowRecord["stateJson"];
+    stateJson?: TaskFlowRecord["stateJson"] | null;
+    checkpoint?: Parameters<typeof mergeTaskFlowStructuredState>[0]["checkpoint"];
+    watch?: Parameters<typeof mergeTaskFlowStructuredState>[0]["watch"];
+  }) => {
+    if (
+      params.stateJson === undefined &&
+      params.checkpoint === undefined &&
+      params.watch === undefined
+    ) {
+      return undefined;
+    }
+    return mergeTaskFlowStructuredState({
+      stateJson: params.stateJson === undefined ? params.currentStateJson : params.stateJson,
+      checkpoint: params.checkpoint,
+      watch: params.watch,
+    });
+  };
   const tryCreateManaged: BoundTaskFlowRuntime["tryCreateManaged"] = (input) => {
+    const stateJson = resolveStructuredStateJson({
+      stateJson: input.stateJson,
+      checkpoint: input.checkpoint,
+      watch: input.watch,
+    });
     const flow = createManagedTaskFlow({
       ownerKey,
       controllerId: input.controllerId,
@@ -108,7 +133,7 @@ function createBoundTaskFlowRuntime(params: {
       notifyPolicy: input.notifyPolicy,
       goal: input.goal,
       currentStep: input.currentStep,
-      stateJson: input.stateJson,
+      stateJson,
       waitJson: input.waitJson,
       cancelRequestedAt: input.cancelRequestedAt,
       createdAt: input.createdAt,
@@ -166,12 +191,18 @@ function createBoundTaskFlowRuntime(params: {
           ...(flow.current ? { current: flow.current } : {}),
         };
       }
+      const stateJson = resolveStructuredStateJson({
+        currentStateJson: flow.flow.stateJson,
+        stateJson: input.stateJson,
+        checkpoint: input.checkpoint,
+        watch: input.watch,
+      });
       return mapFlowUpdateResult(
         setFlowWaiting({
           flowId: flow.flow.flowId,
           expectedRevision: input.expectedRevision,
           currentStep: input.currentStep,
-          stateJson: input.stateJson,
+          stateJson,
           waitJson: input.waitJson,
           blockedTaskId: input.blockedTaskId,
           blockedSummary: input.blockedSummary,
@@ -191,13 +222,19 @@ function createBoundTaskFlowRuntime(params: {
           ...(flow.current ? { current: flow.current } : {}),
         };
       }
+      const stateJson = resolveStructuredStateJson({
+        currentStateJson: flow.flow.stateJson,
+        stateJson: input.stateJson,
+        checkpoint: input.checkpoint,
+        watch: input.watch ?? null,
+      });
       return mapFlowUpdateResult(
         resumeFlow({
           flowId: flow.flow.flowId,
           expectedRevision: input.expectedRevision,
           status: input.status,
           currentStep: input.currentStep,
-          stateJson: input.stateJson,
+          stateJson,
           updatedAt: input.updatedAt,
         }),
       );
@@ -214,11 +251,17 @@ function createBoundTaskFlowRuntime(params: {
           ...(flow.current ? { current: flow.current } : {}),
         };
       }
+      const stateJson = resolveStructuredStateJson({
+        currentStateJson: flow.flow.stateJson,
+        stateJson: input.stateJson,
+        checkpoint: input.checkpoint,
+        watch: input.watch ?? null,
+      });
       return mapFlowUpdateResult(
         finishFlow({
           flowId: flow.flow.flowId,
           expectedRevision: input.expectedRevision,
-          stateJson: input.stateJson,
+          stateJson,
           updatedAt: input.updatedAt,
           endedAt: input.endedAt,
         }),
@@ -236,11 +279,17 @@ function createBoundTaskFlowRuntime(params: {
           ...(flow.current ? { current: flow.current } : {}),
         };
       }
+      const stateJson = resolveStructuredStateJson({
+        currentStateJson: flow.flow.stateJson,
+        stateJson: input.stateJson,
+        checkpoint: input.checkpoint,
+        watch: input.watch ?? null,
+      });
       return mapFlowUpdateResult(
         failFlow({
           flowId: flow.flow.flowId,
           expectedRevision: input.expectedRevision,
-          stateJson: input.stateJson,
+          stateJson,
           blockedTaskId: input.blockedTaskId,
           blockedSummary: input.blockedSummary,
           updatedAt: input.updatedAt,

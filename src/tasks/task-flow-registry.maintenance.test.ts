@@ -13,6 +13,7 @@ import {
 } from "./task-flow-registry.js";
 import {
   getInspectableTaskFlowAuditSummary,
+  getInspectableTaskFlowAttentionDiagnostics,
   previewTaskFlowRegistryMaintenance,
   runTaskFlowRegistryMaintenance,
 } from "./task-flow-registry.maintenance.js";
@@ -276,6 +277,79 @@ describe("task-flow-registry maintenance", () => {
 
       const remainingFlowIds = new Set(listTaskFlowRecords().map((flow) => flow.flowId));
       expect(remainingFlowIds).toEqual(new Set([fresh.flowId, running.flowId]));
+    });
+  });
+
+  it("reports review-due and stale managed flows for watchdog-style inspection", async () => {
+    await withTaskFlowMaintenanceStateDir(async () => {
+      createManagedTaskFlow({
+        ownerKey: "agent:main:review",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Review-due flow",
+        status: "waiting",
+        createdAt: 1,
+        updatedAt: 20,
+        stateJson: {
+          __openclawCheckpoint: {
+            summary: "Waiting for user approval",
+            updatedAt: 15,
+          },
+          __openclawWatch: {
+            waitingOn: "user",
+            expectedEvent: "approval reply",
+            reviewAt: 18,
+            reviewReason: "Review the approval lane if the user has not replied.",
+          },
+        },
+      });
+      createManagedTaskFlow({
+        ownerKey: "agent:main:stale",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Stale flow",
+        status: "running",
+        createdAt: 1,
+        updatedAt: 40,
+        stateJson: {
+          __openclawCheckpoint: {
+            summary: "Benchmarking",
+            updatedAt: 40,
+          },
+          __openclawWatch: {
+            staleAfterMs: 10,
+            reviewReason: "Switch tactics if no new benchmark evidence appears.",
+          },
+        },
+      });
+
+      expect(getInspectableTaskFlowAttentionDiagnostics(60)).toEqual({
+        reviewDue: 1,
+        stale: 1,
+        flows: [
+          {
+            flowId: expect.any(String),
+            ownerKey: "agent:main:review",
+            status: "waiting",
+            attention: {
+              state: "review_due",
+              reason: "Review the approval lane if the user has not replied.",
+              updatedAt: 15,
+              reviewAt: 18,
+              waitingOn: "user",
+              expectedEvent: "approval reply",
+            },
+          },
+          {
+            flowId: expect.any(String),
+            ownerKey: "agent:main:stale",
+            status: "running",
+            attention: {
+              state: "stale",
+              reason: "Switch tactics if no new benchmark evidence appears.",
+              updatedAt: 40,
+            },
+          },
+        ],
+      });
     });
   });
 });
