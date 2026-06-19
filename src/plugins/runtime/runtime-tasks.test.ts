@@ -115,6 +115,20 @@ describe("runtime tasks", () => {
     expect(flow.currentStep).toBe("triage");
     expect(flow.state).toEqual({
       lane: "priority",
+      __openclawTaskFlow: {
+        version: 1,
+        checkpoint: {
+          summary: "Inbox needs triage before child work can start.",
+          nextAction: "Pick the highest-priority message.",
+          updatedAt: 9,
+        },
+        watch: {
+          waitingOn: "child_task",
+          expectedEvent: "child completion",
+          staleAfterMs: 5_000,
+          stallCount: 1,
+        },
+      },
       __openclawCheckpoint: {
         summary: "Inbox needs triage before child work can start.",
         nextAction: "Pick the highest-priority message.",

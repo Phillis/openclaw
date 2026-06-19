@@ -59,6 +59,17 @@ describe("runtime TaskFlow", () => {
     expect(created.goal).toBe("Triage inbox");
     expect(created.stateJson).toMatchObject({
       lane: "inbox",
+      __openclawTaskFlow: {
+        version: 1,
+        checkpoint: {
+          summary: "Need to classify the next inbox item.",
+          nextAction: "Read the newest unread item.",
+        },
+        watch: {
+          reviewAt: 5_000,
+          reviewReason: "Check for a backlog if classification stalls.",
+        },
+      },
       __openclawCheckpoint: {
         summary: "Need to classify the next inbox item.",
         nextAction: "Read the newest unread item.",

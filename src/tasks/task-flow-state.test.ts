@@ -24,6 +24,19 @@ describe("task-flow-state", () => {
 
     expect(state).toEqual({
       phase: "triage",
+      __openclawTaskFlow: {
+        version: 1,
+        checkpoint: {
+          summary: "Need a resumable checkpoint.",
+          nextAction: "Review the newest artifact.",
+          updatedAt: 10,
+        },
+        watch: {
+          waitingOn: "child_task",
+          expectedEvent: "child completion",
+          staleAfterMs: 5_000,
+        },
+      },
       __openclawCheckpoint: {
         summary: "Need a resumable checkpoint.",
         nextAction: "Review the newest artifact.",
@@ -44,6 +57,73 @@ describe("task-flow-state", () => {
       waitingOn: "child_task",
       expectedEvent: "child completion",
       staleAfterMs: 5_000,
+    });
+  });
+
+  it("reads versioned structured state without legacy compatibility keys", () => {
+    const state = {
+      phase: "waiting",
+      __openclawTaskFlow: {
+        version: 1,
+        checkpoint: {
+          summary: "Waiting on a child flow.",
+          nextAction: "Review the child output when it lands.",
+          updatedAt: 25,
+        },
+        watch: {
+          waitingOn: "child_flow",
+          expectedEvent: "child finish",
+          reviewAt: 30,
+        },
+      },
+    };
+
+    expect(readTaskFlowCheckpoint(state)).toEqual({
+      summary: "Waiting on a child flow.",
+      nextAction: "Review the child output when it lands.",
+      updatedAt: 25,
+    });
+    expect(readTaskFlowWatch(state)).toEqual({
+      waitingOn: "child_flow",
+      expectedEvent: "child finish",
+      reviewAt: 30,
+    });
+  });
+
+  it("preserves unknown versioned structured-state fields when updating known keys", () => {
+    const state = mergeTaskFlowStructuredState({
+      stateJson: {
+        __openclawTaskFlow: {
+          version: 2,
+          resumeDiff: {
+            changed: ["checkpoint"],
+          },
+          checkpoint: {
+            summary: "Old checkpoint",
+          },
+        },
+      },
+      checkpoint: {
+        summary: "New checkpoint",
+        nextAction: "Continue from the latest known good state.",
+      },
+    });
+
+    expect(state).toEqual({
+      __openclawTaskFlow: {
+        version: 2,
+        resumeDiff: {
+          changed: ["checkpoint"],
+        },
+        checkpoint: {
+          summary: "New checkpoint",
+          nextAction: "Continue from the latest known good state.",
+        },
+      },
+      __openclawCheckpoint: {
+        summary: "New checkpoint",
+        nextAction: "Continue from the latest known good state.",
+      },
     });
   });
 

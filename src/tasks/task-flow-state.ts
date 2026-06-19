@@ -4,6 +4,8 @@ import type { JsonValue, TaskFlowRecord } from "./task-flow-registry.types.js";
 
 const CHECKPOINT_KEY = "__openclawCheckpoint";
 const WATCH_KEY = "__openclawWatch";
+const STRUCTURED_STATE_KEY = "__openclawTaskFlow";
+const STRUCTURED_STATE_VERSION = 1;
 
 export type TaskFlowCheckpoint = {
   summary?: string;
@@ -33,6 +35,11 @@ export type TaskFlowAttention = {
   waitingOn?: string;
   expectedEvent?: string;
   stallCount?: number;
+};
+
+type TaskFlowStructuredState = {
+  checkpoint?: TaskFlowCheckpoint;
+  watch?: TaskFlowWatch;
 };
 
 function asRecord(value: JsonValue | undefined | null): Record<string, JsonValue> | undefined {
@@ -136,6 +143,25 @@ function normalizeWatchRecord(value: JsonValue | undefined): TaskFlowWatch | und
   return Object.keys(watch).length > 0 ? watch : undefined;
 }
 
+function readTaskFlowStructuredState(
+  stateJson: JsonValue | undefined,
+): TaskFlowStructuredState | undefined {
+  const record = asRecord(stateJson);
+  const structured = record ? asRecord(record[STRUCTURED_STATE_KEY]) : undefined;
+  if (!structured) {
+    return undefined;
+  }
+  const checkpoint = normalizeCheckpointRecord(structured.checkpoint);
+  const watch = normalizeWatchRecord(structured.watch);
+  if (!checkpoint && !watch) {
+    return undefined;
+  }
+  return {
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(watch ? { watch } : {}),
+  };
+}
+
 function checkpointToJsonValue(value: TaskFlowCheckpoint): JsonValue | undefined {
   const artifactRefs =
     value.artifactRefs && Object.keys(value.artifactRefs).length > 0
@@ -169,19 +195,23 @@ function watchToJsonValue(value: TaskFlowWatch): JsonValue | undefined {
 export function readTaskFlowCheckpoint(
   stateJson: JsonValue | undefined,
 ): TaskFlowCheckpoint | undefined {
-  const record = asRecord(stateJson);
-  if (!record) {
-    return undefined;
+  const structured = readTaskFlowStructuredState(stateJson);
+  if (structured?.checkpoint) {
+    return structured.checkpoint;
   }
-  return normalizeCheckpointRecord(record[CHECKPOINT_KEY] ?? record.checkpoint);
+  const record = asRecord(stateJson);
+  return record
+    ? normalizeCheckpointRecord(record[CHECKPOINT_KEY] ?? record.checkpoint)
+    : undefined;
 }
 
 export function readTaskFlowWatch(stateJson: JsonValue | undefined): TaskFlowWatch | undefined {
-  const record = asRecord(stateJson);
-  if (!record) {
-    return undefined;
+  const structured = readTaskFlowStructuredState(stateJson);
+  if (structured?.watch) {
+    return structured.watch;
   }
-  return normalizeWatchRecord(record[WATCH_KEY] ?? record.watch);
+  const record = asRecord(stateJson);
+  return record ? normalizeWatchRecord(record[WATCH_KEY] ?? record.watch) : undefined;
 }
 
 export function mergeTaskFlowStructuredState(params: {
@@ -192,25 +222,48 @@ export function mergeTaskFlowStructuredState(params: {
   const base = asRecord(params.stateJson);
   const explicitNull = params.stateJson === null;
   const next = base ? { ...base } : {};
+  const existingStructured = base ? asRecord(base[STRUCTURED_STATE_KEY]) : undefined;
+  const nextStructured = existingStructured ? { ...existingStructured } : {};
 
-  if (params.checkpoint !== undefined) {
-    const checkpoint = params.checkpoint ? checkpointToJsonValue(params.checkpoint) : undefined;
-    if (checkpoint === undefined) {
-      delete next[CHECKPOINT_KEY];
-      delete next.checkpoint;
-    } else {
-      next[CHECKPOINT_KEY] = checkpoint;
-    }
+  const nextCheckpoint =
+    params.checkpoint === undefined
+      ? readTaskFlowCheckpoint(params.stateJson ?? undefined)
+      : (params.checkpoint ?? undefined);
+  const nextWatch =
+    params.watch === undefined
+      ? readTaskFlowWatch(params.stateJson ?? undefined)
+      : (params.watch ?? undefined);
+
+  const checkpoint = nextCheckpoint ? checkpointToJsonValue(nextCheckpoint) : undefined;
+  if (checkpoint === undefined) {
+    delete next[CHECKPOINT_KEY];
+    delete next.checkpoint;
+    delete nextStructured.checkpoint;
+  } else {
+    next[CHECKPOINT_KEY] = checkpoint;
+    nextStructured.checkpoint = checkpoint;
   }
 
-  if (params.watch !== undefined) {
-    const watch = params.watch ? watchToJsonValue(params.watch) : undefined;
-    if (watch === undefined) {
-      delete next[WATCH_KEY];
-      delete next.watch;
-    } else {
-      next[WATCH_KEY] = watch;
-    }
+  const watch = nextWatch ? watchToJsonValue(nextWatch) : undefined;
+  if (watch === undefined) {
+    delete next[WATCH_KEY];
+    delete next.watch;
+    delete nextStructured.watch;
+  } else {
+    next[WATCH_KEY] = watch;
+    nextStructured.watch = watch;
+  }
+
+  if (nextStructured.checkpoint !== undefined || nextStructured.watch !== undefined) {
+    nextStructured.version =
+      typeof nextStructured.version === "number" && Number.isFinite(nextStructured.version)
+        ? nextStructured.version
+        : STRUCTURED_STATE_VERSION;
+    next[STRUCTURED_STATE_KEY] = nextStructured;
+  } else if (Object.keys(nextStructured).some((key) => key !== "version")) {
+    next[STRUCTURED_STATE_KEY] = nextStructured;
+  } else {
+    delete next[STRUCTURED_STATE_KEY];
   }
 
   if (Object.keys(next).length === 0) {
