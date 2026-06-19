@@ -21,6 +21,8 @@ import type { RequestClient } from "../internal/discord.js";
 import { sendMessageDiscord, sendVoiceMessageDiscord } from "../send.js";
 import { sanitizeDiscordFrontChannelReplyPayloads } from "./reply-safety.js";
 
+const DISCORD_REASONING_TITLE = "Thinking";
+
 export type DiscordThreadBindingLookupRecord = {
   accountId: string;
   channelId: string;
@@ -156,6 +158,19 @@ function resolveDiscordDeliveryOptions(params: {
   };
 }
 
+function formatDiscordReasoningPayload(payload: ReplyPayload): ReplyPayload {
+  if (payload.isReasoning !== true) {
+    return payload;
+  }
+  const text = typeof payload.text === "string" ? payload.text.trim() : "";
+  const nextPayload: ReplyPayload = {
+    ...payload,
+    text: text ? `${DISCORD_REASONING_TITLE}\n\n${text}` : DISCORD_REASONING_TITLE,
+  };
+  delete nextPayload.isReasoning;
+  return nextPayload;
+}
+
 export async function deliverDiscordReply(params: {
   cfg: OpenClawConfig;
   replies: ReplyPayload[];
@@ -178,7 +193,9 @@ export async function deliverDiscordReply(params: {
   void params.runtime;
 
   const delivery = resolveDiscordDeliveryOptions(params);
-  const payloads = sanitizeDiscordFrontChannelReplyPayloads(params.replies, { kind: params.kind });
+  const payloads = sanitizeDiscordFrontChannelReplyPayloads(params.replies, {
+    kind: params.kind,
+  }).map(formatDiscordReasoningPayload);
   if (payloads.length === 0) {
     return;
   }
