@@ -118,11 +118,16 @@ type PolicyDigest = {
 };
 
 export function resolveBootstrapMaxChars(cfg?: OpenClawConfig, agentId?: string | null): number {
+  const scopedRoot =
+    cfg && typeof cfg === "object" && "bootstrapMaxChars" in cfg
+      ? (cfg as { bootstrapMaxChars?: unknown }).bootstrapMaxChars
+      : undefined;
   const raw =
     cfg && agentId
       ? (resolveAgentConfig(cfg, agentId)?.bootstrapMaxChars ??
+        scopedRoot ??
         cfg.agents?.defaults?.bootstrapMaxChars)
-      : cfg?.agents?.defaults?.bootstrapMaxChars;
+      : (scopedRoot ?? cfg?.agents?.defaults?.bootstrapMaxChars);
   if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
     return Math.floor(raw);
   }
@@ -133,11 +138,16 @@ export function resolveBootstrapTotalMaxChars(
   cfg?: OpenClawConfig,
   agentId?: string | null,
 ): number {
+  const scopedRoot =
+    cfg && typeof cfg === "object" && "bootstrapTotalMaxChars" in cfg
+      ? (cfg as { bootstrapTotalMaxChars?: unknown }).bootstrapTotalMaxChars
+      : undefined;
   const raw =
     cfg && agentId
       ? (resolveAgentConfig(cfg, agentId)?.bootstrapTotalMaxChars ??
+        scopedRoot ??
         cfg.agents?.defaults?.bootstrapTotalMaxChars)
-      : cfg?.agents?.defaults?.bootstrapTotalMaxChars;
+      : (scopedRoot ?? cfg?.agents?.defaults?.bootstrapTotalMaxChars);
   if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
     return Math.floor(raw);
   }
