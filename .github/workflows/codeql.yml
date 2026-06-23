@@ -11,14 +11,6 @@ on:
         options:
           - all
           - security
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - ".github/actions/**"
-      - ".github/codeql/**"
-      - ".github/workflows/**"
-      - "packages/**"
-      - "src/**"
   push:
     branches:
       - main
@@ -28,9 +20,6 @@ on:
       - ".github/workflows/**"
       - "packages/**"
       - "src/**"
-  schedule:
-    - cron: "0 6 * * *"
-
 concurrency:
   group: codeql-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
