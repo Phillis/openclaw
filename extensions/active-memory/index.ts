@@ -48,6 +48,7 @@ const DEFAULT_RECENT_ASSISTANT_CHARS = 180;
 const DEFAULT_CACHE_TTL_MS = 15_000;
 const DEFAULT_MAX_CACHE_ENTRIES = 1000;
 const CACHE_SWEEP_INTERVAL_MS = 1000;
+const DEFAULT_SESSION_COOLDOWN_MS = 0;
 const DEFAULT_MIN_TIMEOUT_MS = 250;
 const DEFAULT_SETUP_GRACE_TIMEOUT_MS = 0;
 const MAX_TIMEOUT_MS = 120_000;
@@ -189,6 +190,7 @@ type ActiveRecallPluginConfig = {
   recentAssistantChars?: number;
   logging?: boolean;
   cacheTtlMs?: number;
+  cooldownMs?: number;
   circuitBreakerMaxTimeouts?: number;
   circuitBreakerCooldownMs?: number;
   persistTranscripts?: boolean;
@@ -230,6 +232,7 @@ type ResolvedActiveRecallPluginConfig = {
   recentAssistantChars: number;
   logging: boolean;
   cacheTtlMs: number;
+  cooldownMs: number;
   circuitBreakerMaxTimeouts: number;
   circuitBreakerCooldownMs: number;
   persistTranscripts: boolean;
@@ -358,6 +361,7 @@ const ACTIVE_MEMORY_CLOSE_TAG = `</${ACTIVE_MEMORY_PLUGIN_TAG}>`;
 const MAX_LOG_VALUE_CHARS = 300;
 
 const activeRecallCache = new Map<string, CachedActiveRecallResult>();
+const activeRecallSessionCooldowns = new Map<string, number>();
 
 type CircuitBreakerEntry = {
   consecutiveTimeouts: number;
@@ -368,6 +372,39 @@ const timeoutCircuitBreaker = new Map<string, CircuitBreakerEntry>();
 
 function buildCircuitBreakerKey(agentId: string, provider?: string, model?: string): string {
   return `${agentId}:${provider ?? "unknown"}/${model ?? "unknown"}`;
+}
+
+function buildSessionCooldownKey(params: {
+  agentId: string;
+  sessionKey?: string;
+  sessionId?: string;
+}): string {
+  return `${params.agentId}:${params.sessionKey ?? params.sessionId ?? "none"}`;
+}
+
+function getActiveRecallCooldownRemainingMs(
+  cooldownKey: string,
+  cooldownMs: number,
+  nowMs = Date.now(),
+): number {
+  if (cooldownMs <= 0) {
+    activeRecallSessionCooldowns.delete(cooldownKey);
+    return 0;
+  }
+  const lastStartedAt = activeRecallSessionCooldowns.get(cooldownKey);
+  if (lastStartedAt === undefined) {
+    return 0;
+  }
+  const elapsedMs = nowMs - lastStartedAt;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs >= cooldownMs) {
+    activeRecallSessionCooldowns.delete(cooldownKey);
+    return 0;
+  }
+  return cooldownMs - elapsedMs;
+}
+
+function markActiveRecallCooldownStarted(cooldownKey: string, nowMs = Date.now()): void {
+  activeRecallSessionCooldowns.set(cooldownKey, nowMs);
 }
 
 function isCircuitBreakerOpen(key: string, maxTimeouts: number, cooldownMs: number): boolean {
@@ -894,6 +931,7 @@ function normalizePluginConfig(
     ),
     logging: raw.logging === true,
     cacheTtlMs: clampInt(raw.cacheTtlMs, DEFAULT_CACHE_TTL_MS, 1000, 120_000),
+    cooldownMs: clampInt(raw.cooldownMs, DEFAULT_SESSION_COOLDOWN_MS, 0, 600_000),
     circuitBreakerMaxTimeouts: clampInt(
       raw.circuitBreakerMaxTimeouts,
       DEFAULT_CIRCUIT_BREAKER_MAX_TIMEOUTS,
@@ -3662,6 +3700,24 @@ export default definePluginEntry({
               latestUserMessage: event.prompt,
               recentTurns,
             });
+            const cooldownKey = buildSessionCooldownKey({
+              agentId: effectiveAgentId,
+              sessionKey: resolvedSessionKey,
+              sessionId: ctx.sessionId,
+            });
+            const cooldownRemainingMs = getActiveRecallCooldownRemainingMs(
+              cooldownKey,
+              invocationConfig.cooldownMs,
+            );
+            if (cooldownRemainingMs > 0) {
+              await persistPluginStatusLines({
+                api,
+                agentId: effectiveAgentId,
+                sessionKey: resolvedSessionKey,
+                statusLine: `${ACTIVE_MEMORY_STATUS_PREFIX} status=cooldown remaining=${formatElapsedMsCompact(cooldownRemainingMs)} query=${invocationConfig.queryMode}`,
+              });
+              return undefined;
+            }
             // Start recall with its full configured budget. The preceding
             // session/config checks must not consume abort-settlement time.
             armHookDeadline(liveRecallTimeoutMs, "recall");
@@ -3680,6 +3736,7 @@ export default definePluginEntry({
               abortSignal: deadlineController.signal,
             });
             deadlineController.signal.throwIfAborted();
+            markActiveRecallCooldownStarted(cooldownKey);
             if (!result.summary) {
               return undefined;
             }
@@ -3731,6 +3788,7 @@ const testing = {
   shouldCacheResult,
   resetActiveRecallCacheForTests() {
     activeRecallCache.clear();
+    activeRecallSessionCooldowns.clear();
     timeoutCircuitBreaker.clear();
     lastActiveRecallCacheSweepAt = 0;
     minimumTimeoutMs = DEFAULT_MIN_TIMEOUT_MS;

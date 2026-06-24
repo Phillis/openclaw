@@ -75,6 +75,7 @@
       "persistTranscripts": { "type": "boolean" },
       "transcriptDir": { "type": "string" },
       "cacheTtlMs": { "type": "integer", "minimum": 1000, "maximum": 120000 },
+      "cooldownMs": { "type": "integer", "minimum": 0, "maximum": 600000 },
       "circuitBreakerMaxTimeouts": { "type": "integer", "minimum": 1, "maximum": 20 },
       "circuitBreakerCooldownMs": { "type": "integer", "minimum": 5000, "maximum": 600000 },
       "qmd": {
@@ -165,6 +166,10 @@
     "circuitBreakerMaxTimeouts": {
       "label": "Circuit Breaker Max Timeouts",
       "help": "Skip recall after this many consecutive timeouts for the same agent/model. Resets on a successful recall or after the cooldown expires. Default: 3."
+    },
+    "cooldownMs": {
+      "label": "Session Cooldown (ms)",
+      "help": "Minimum time between proactive recall launches for the same agent/session. Use this to avoid back-to-back recall sub-agent runs during active chats."
     },
     "circuitBreakerCooldownMs": {
       "label": "Circuit Breaker Cooldown (ms)",
