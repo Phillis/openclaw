@@ -64,6 +64,15 @@ async function loadCronSubagentRegistryRuntime() {
 const COMMAND_STYLE_CRON_PREFIX =
   /^(?:(?:[A-Z_][A-Z0-9_]*=\S+\s+)+)?(?:cd\s+\S+|(?:\.{1,2}|~)?\/\S+|[A-Za-z]:[\\/]\S+|(?:bash|bun|cargo|deno|docker|gh|git|go|make|node|npm|npx|pnpm|python|python3|ruby|sh|tsx|uv|zsh)\b)/u;
 const MAX_CRON_DELIVERY_TARGET_CONTEXT_CHARS = 1000;
+const DEFAULT_CRON_AGENT_TOOLS_ALLOW = Object.freeze([
+  "exec",
+  "message",
+  "cron",
+  "session_status",
+  "get_goal",
+  "memory_recall",
+  "web_fetch",
+]);
 
 function resolveIsolatedCronPromptCacheKey(params: {
   job: CronJob;
@@ -102,15 +111,12 @@ export function isCommandStyleCronMessage(message: string): boolean {
 function resolveCronBootstrapContextMode(
   payload: AgentTurnPayload,
 ): BootstrapContextMode | undefined {
-  // Command-like cron prompts benefit from lightweight bootstrap context so
-  // simple scheduled command tasks do not spend budget on full repo context.
-  if (payload?.lightContext === true) {
-    return "lightweight";
-  }
+  // Scheduled/background prompts should not pay full interactive startup cost
+  // unless a job explicitly opts into full context.
   if (payload?.lightContext === false) {
     return undefined;
   }
-  return isCommandStyleCronMessage(payload?.message ?? "") ? "lightweight" : undefined;
+  return "lightweight";
 }
 
 function buildCronDeliveryTargetRuntimeContext(params: {
@@ -165,6 +171,13 @@ function resolveCliRuntimeToolsAllow(toolsAllow?: string[]): string[] | undefine
   return toolsAllow?.some((toolName) => normalizeToolName(toolName) === "*")
     ? undefined
     : toolsAllow;
+}
+
+function resolveCronAgentToolsAllow(payload: AgentTurnPayload): string[] {
+  if (Array.isArray(payload?.toolsAllow)) {
+    return payload.toolsAllow;
+  }
+  return [...DEFAULT_CRON_AGENT_TOOLS_ALLOW];
 }
 
 /** Result envelope returned after an isolated cron prompt completes. */
@@ -249,6 +262,7 @@ export function createCronPromptExecutor(params: {
     params.cronSession.sessionEntry.systemPromptReport,
   );
   const bootstrapContextMode = resolveCronBootstrapContextMode(params.agentPayload);
+  const cronToolsAllow = resolveCronAgentToolsAllow(params.agentPayload);
   const sourceReplyDeliveryMode = params.sourceDelivery.sourceReplyDeliveryMode;
   const messageChannel = params.sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
   const deliveryTargetRuntimeContext = buildCronDeliveryTargetRuntimeContext({
@@ -326,7 +340,7 @@ export function createCronPromptExecutor(params: {
             messageChannel,
             sourceReplyDeliveryMode,
             requireExplicitMessageTarget: params.sourceDelivery.messageTool.requireExplicitTarget,
-            toolsAllow: resolveCliRuntimeToolsAllow(params.agentPayload?.toolsAllow),
+            toolsAllow: resolveCliRuntimeToolsAllow(cronToolsAllow),
             abortSignal: params.abortSignal,
             onExecutionStarted: params.onExecutionStarted,
             onExecutionPhase: params.onExecutionPhase,
@@ -412,7 +426,7 @@ export function createCronPromptExecutor(params: {
           runTimeoutOverrideMs: params.runTimeoutOverrideMs,
           bootstrapContextMode,
           bootstrapContextRunKind: "cron",
-          toolsAllow: params.agentPayload?.toolsAllow,
+          toolsAllow: cronToolsAllow,
           execOverrides: params.suppressExecNotifyOnExit
             ? {
                 notifyOnExit: false,

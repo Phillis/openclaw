@@ -247,13 +247,13 @@ describe("runCronIsolatedAgentTurn session identity", () => {
     });
   });
 
-  it("does not force lightweight bootstrap context for natural-language cron payloads", async () => {
+  it("uses lightweight bootstrap context for natural-language cron payloads by default", async () => {
     await withTempHome(async (home) => {
       await runCronTurn(home, {
         jobPayload: { kind: "agentTurn", message: "Prepare the nightly status summary" },
       });
 
-      expect(lastEmbeddedAgentCall().bootstrapContextMode).toBeUndefined();
+      expect(lastEmbeddedAgentCall().bootstrapContextMode).toBe("lightweight");
     });
   });
 

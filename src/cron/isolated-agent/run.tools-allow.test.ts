@@ -91,6 +91,27 @@ describe("runCronIsolatedAgentTurn toolsAllow passthrough", () => {
   });
 
   it(
+    "uses a narrow default toolsAllow set for isolated cron runs",
+    { timeout: RUN_TOOLS_ALLOW_TIMEOUT_MS },
+    async () => {
+      await runCronIsolatedAgentTurn(makeParams());
+
+      expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+      const call = requireEmbeddedAgentCall();
+      expect(call.jobId).toBe("tools-allow");
+      expect(call.toolsAllow).toEqual([
+        "exec",
+        "message",
+        "cron",
+        "session_status",
+        "get_goal",
+        "memory_recall",
+        "web_fetch",
+      ]);
+    },
+  );
+
+  it(
     "passes through isolated cron toolsAllow=cron self-removal path",
     { timeout: RUN_TOOLS_ALLOW_TIMEOUT_MS },
     async () => {
