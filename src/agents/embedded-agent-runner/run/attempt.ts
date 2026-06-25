@@ -1453,6 +1453,8 @@ export async function runEmbeddedAttempt(
           contextFiles: buildBootstrapContextForFiles(bootstrapFiles, {
             config: params.config,
             agentId: sessionAgentId,
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
             warn: bootstrapWarn,
           }),
         };
@@ -1470,12 +1472,25 @@ export async function runEmbeddedAttempt(
     const bootstrapFilesForInjectionStats = bootstrapRouting.includeBootstrapInSystemContext
       ? hookAdjustedBootstrapFiles
       : hookAdjustedBootstrapFiles.filter((file) => file.name !== DEFAULT_BOOTSTRAP_FILENAME);
-    const bootstrapMaxChars = resolveBootstrapMaxChars(params.config, sessionAgentId);
-    const bootstrapTotalMaxChars = resolveBootstrapTotalMaxChars(params.config, sessionAgentId);
+    const bootstrapReportAgentId = resolveSessionAgentIds({
+      sessionKey: params.sessionKey ?? params.sessionId,
+      config: params.config,
+    }).sessionAgentId;
+    const reportInjectedFiles = buildBootstrapContextForFiles(hookAdjustedBootstrapFiles, {
+      config: params.config,
+      agentId: sessionAgentId,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+    });
+    const bootstrapMaxChars = resolveBootstrapMaxChars(params.config, bootstrapReportAgentId);
+    const bootstrapTotalMaxChars = resolveBootstrapTotalMaxChars(
+      params.config,
+      bootstrapReportAgentId,
+    );
     const bootstrapAnalysis = analyzeBootstrapBudget({
       files: buildBootstrapInjectionStats({
         bootstrapFiles: bootstrapFilesForInjectionStats,
-        injectedFiles: contextFiles,
+        injectedFiles: reportInjectedFiles,
       }),
       bootstrapMaxChars,
       bootstrapTotalMaxChars,
@@ -2089,7 +2104,7 @@ export async function runEmbeddedAttempt(
       })(),
       systemPrompt: appendPrompt,
       bootstrapFiles: hookAdjustedBootstrapFiles,
-      injectedFiles: contextFiles,
+      injectedFiles: reportInjectedFiles,
       skillsPrompt,
       tools: effectiveTools,
     });

@@ -43,6 +43,7 @@ import {
   analyzeBootstrapBudget,
 } from "../bootstrap-budget.js";
 import {
+  buildBootstrapContextForFiles,
   makeBootstrapWarn as makeBootstrapWarnImpl,
   resolveBootstrapContextForRun as resolveBootstrapContextForRunImpl,
 } from "../bootstrap-files.js";
@@ -408,12 +409,25 @@ export async function prepareCliRunContext(
           warn: (message) => cliBackendLog.warn(message),
         }),
       });
-  const bootstrapMaxChars = resolveBootstrapMaxChars(params.config, sessionAgentId);
-  const bootstrapTotalMaxChars = resolveBootstrapTotalMaxChars(params.config, sessionAgentId);
+  const bootstrapReportAgentId = resolveSessionAgentIds({
+    sessionKey: params.sessionKey ?? params.sessionId,
+    config: params.config,
+  }).sessionAgentId;
+  const reportInjectedFiles = buildBootstrapContextForFiles(bootstrapFiles, {
+    config: params.config,
+    agentId: sessionAgentId,
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionId,
+  });
+  const bootstrapMaxChars = resolveBootstrapMaxChars(params.config, bootstrapReportAgentId);
+  const bootstrapTotalMaxChars = resolveBootstrapTotalMaxChars(
+    params.config,
+    bootstrapReportAgentId,
+  );
   const bootstrapAnalysis = analyzeBootstrapBudget({
     files: buildBootstrapInjectionStats({
       bootstrapFiles,
-      injectedFiles: contextFiles,
+      injectedFiles: reportInjectedFiles,
     }),
     bootstrapMaxChars,
     bootstrapTotalMaxChars,
@@ -851,7 +865,7 @@ export async function prepareCliRunContext(
     sandbox: { mode: "off", sandboxed: false },
     systemPrompt,
     bootstrapFiles,
-    injectedFiles: contextFiles,
+    injectedFiles: reportInjectedFiles,
     skillsPrompt: systemPromptSkillsPrompt,
     tools: promptTools,
     currentTurn: {

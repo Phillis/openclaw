@@ -86,6 +86,8 @@ import {
 import { isStoredCredentialCompatibleWithAuthProvider } from "./auth-profiles/order.js";
 import { clearSessionAuthProfileOverride } from "./auth-profiles/session-override.js";
 import { ensureAuthProfileStore } from "./auth-profiles/store.js";
+import { analyzeBootstrapBudget, buildBootstrapInjectionStats } from "./bootstrap-budget.js";
+import { buildBootstrapContextForFiles, resolveBootstrapFilesForRun } from "./bootstrap-files.js";
 import {
   createAgentAttemptLifecycleCallbacks,
   type AgentAttemptLifecycleState,
@@ -100,6 +102,11 @@ import { resolveAgentRunContext } from "./command/run-context.js";
 import { resolveSession } from "./command/session.js";
 import type { AgentCommandIngressOpts, AgentCommandOpts } from "./command/types.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
+import {
+  resolveBootstrapMaxChars,
+  resolveBootstrapPromptTruncationWarningMode,
+  resolveBootstrapTotalMaxChars,
+} from "./embedded-agent-helpers.js";
 import {
   classifyEmbeddedAgentRunResultForModelFallback,
   mergeEmbeddedAgentRunResultForModelFallbackExhaustion,
@@ -2137,6 +2144,74 @@ async function agentCommandInternal(
     }
     try {
       await fallbackTrajectoryRecorder?.flush();
+
+      if (result.meta.systemPromptReport) {
+        const bootstrapFiles = await resolveBootstrapFilesForRun({
+          workspaceDir,
+          config: cfg,
+          sessionKey,
+          sessionId,
+          agentId: sessionAgentId,
+          contextMode: opts.bootstrapContextMode,
+          runKind: opts.bootstrapContextRunKind,
+        });
+        const reportInjectedFiles = buildBootstrapContextForFiles(bootstrapFiles, {
+          config: cfg,
+          agentId: sessionAgentId,
+          sessionKey,
+          sessionId,
+        });
+        const bootstrapMaxChars = resolveBootstrapMaxChars(cfg, sessionAgentId);
+        const bootstrapTotalMaxChars = resolveBootstrapTotalMaxChars(cfg, sessionAgentId);
+        const injectedWorkspaceFiles = buildBootstrapInjectionStats({
+          bootstrapFiles,
+          injectedFiles: reportInjectedFiles,
+        });
+        const bootstrapAnalysis = analyzeBootstrapBudget({
+          files: injectedWorkspaceFiles,
+          bootstrapMaxChars,
+          bootstrapTotalMaxChars,
+        });
+        const existingBootstrapTruncation = result.meta.systemPromptReport.bootstrapTruncation;
+        const nextBootstrapTruncation =
+          existingBootstrapTruncation ||
+          bootstrapAnalysis.truncatedFiles.length > 0 ||
+          bootstrapAnalysis.nearLimitFiles.length > 0 ||
+          bootstrapAnalysis.totalNearLimit
+            ? {
+                warningMode:
+                  existingBootstrapTruncation?.warningMode ??
+                  resolveBootstrapPromptTruncationWarningMode(cfg),
+                warningShown: existingBootstrapTruncation?.warningShown ?? false,
+                ...(existingBootstrapTruncation?.promptWarningSignature
+                  ? {
+                      promptWarningSignature: existingBootstrapTruncation.promptWarningSignature,
+                    }
+                  : {}),
+                ...(existingBootstrapTruncation?.warningSignaturesSeen?.length
+                  ? {
+                      warningSignaturesSeen: existingBootstrapTruncation.warningSignaturesSeen,
+                    }
+                  : {}),
+                truncatedFiles: bootstrapAnalysis.truncatedFiles.length,
+                nearLimitFiles: bootstrapAnalysis.nearLimitFiles.length,
+                totalNearLimit: bootstrapAnalysis.totalNearLimit,
+              }
+            : undefined;
+        result = {
+          ...result,
+          meta: {
+            ...result.meta,
+            systemPromptReport: {
+              ...result.meta.systemPromptReport,
+              bootstrapMaxChars,
+              bootstrapTotalMaxChars,
+              injectedWorkspaceFiles,
+              ...(nextBootstrapTruncation ? { bootstrapTruncation: nextBootstrapTruncation } : {}),
+            },
+          },
+        };
+      }
 
       const rotatedSessionFile = result.meta.agentMeta?.sessionFile;
       const effectiveSessionId = rotatedSessionFile

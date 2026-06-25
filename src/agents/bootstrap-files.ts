@@ -361,12 +361,22 @@ export function buildBootstrapContextForFiles(
   params: {
     config?: OpenClawConfig;
     agentId?: string | null;
+    sessionKey?: string;
+    sessionId?: string;
     warn?: (message: string) => void;
   },
 ): EmbeddedContextFile[] {
+  const scopedAgentId =
+    params.config && (params.agentId || params.sessionKey || params.sessionId)
+      ? resolveSessionAgentIds({
+          sessionKey: params.sessionKey ?? params.sessionId,
+          config: params.config,
+          agentId: params.agentId ?? undefined,
+        }).sessionAgentId
+      : (params.agentId ?? undefined);
   const contextFiles = buildBootstrapContextFiles(bootstrapFiles, {
-    maxChars: resolveBootstrapMaxChars(params.config, params.agentId),
-    totalMaxChars: resolveBootstrapTotalMaxChars(params.config, params.agentId),
+    maxChars: resolveBootstrapMaxChars(params.config, scopedAgentId),
+    totalMaxChars: resolveBootstrapTotalMaxChars(params.config, scopedAgentId),
     warn: params.warn,
   });
   return contextFiles;

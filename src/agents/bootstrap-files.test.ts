@@ -372,6 +372,37 @@ describe("resolveBootstrapContextForRun", () => {
     expect(contextFileNames.has("AGENTS.md")).toBe(true);
   });
 
+  it("uses the session-scoped agent bootstrap limits when only the session key carries the agent id", async () => {
+    const workspaceDir = await makeTempWorkspace("openclaw-bootstrap-");
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), "a".repeat(4000), "utf8");
+
+    const result = await resolveBootstrapContextForRun({
+      workspaceDir,
+      sessionKey: "agent:marcus:bootstrap-fix-probe",
+      config: {
+        agents: {
+          defaults: {
+            bootstrapMaxChars: 9000,
+            bootstrapTotalMaxChars: 32000,
+          },
+          list: [
+            { id: "main" },
+            {
+              id: "marcus",
+              bootstrapMaxChars: 3200,
+              bootstrapTotalMaxChars: 14000,
+            },
+          ],
+        },
+      },
+    });
+
+    const agentsContext = result.contextFiles.find(
+      (file) => path.basename(file.path) === "AGENTS.md",
+    );
+    expect(agentsContext?.content.length).toBe(3200);
+  });
+
   it("uses heartbeat-only bootstrap files in lightweight heartbeat mode", async () => {
     const workspaceDir = await makeTempWorkspace("openclaw-bootstrap-");
     await fs.writeFile(path.join(workspaceDir, "HEARTBEAT.md"), "check inbox", "utf8");
