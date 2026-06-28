@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 // CLI adapter for invoking native provider hooks through direct relay or gateway fallback.
 import {
   invokeNativeHookRelayBridge,
@@ -11,6 +14,9 @@ import { setSafeTimeout } from "../utils/timer-delay.js";
 import { parseTimeoutMsWithFallback } from "./parse-timeout.js";
 
 const MAX_NATIVE_HOOK_STDIN_BYTES = 1024 * 1024;
+const DEFAULT_TOOL_USE_RELAY_MAX_CONCURRENT = 4;
+const DEFAULT_TOOL_USE_RELAY_ADMISSION_WAIT_MS = 25;
+const DEFAULT_TOOL_USE_RELAY_STALE_MS = 15_000;
 
 /** User-facing flags for the native hook relay command. */
 export type NativeHookRelayCliOptions = {
@@ -64,6 +70,23 @@ export async function runNativeHookRelayCli(
   } catch (error) {
     writeText(stderr, formatRelayCliError("invalid native hook timeout", error));
     return 1;
+  }
+
+  let admissionRelease: (() => void) | undefined | null;
+  try {
+    admissionRelease = await acquireNativeHookRelayAdmission(event, timeoutMs);
+  } catch (error) {
+    writeText(stderr, formatRelayCliError("native hook relay admission failed open", error));
+  }
+  if (admissionRelease === null) {
+    return writeNativeHookRelayUnavailableResponse({
+      stdout,
+      stderr,
+      opts,
+      provider,
+      event,
+      message: "Native hook relay concurrency limit reached",
+    });
   }
 
   const deadline = createNativeHookRelayDeadline(timeoutMs);
@@ -153,6 +176,7 @@ export async function runNativeHookRelayCli(
     }
   } finally {
     deadline.dispose();
+    admissionRelease?.();
   }
 }
 
@@ -206,6 +230,152 @@ function writeText(stream: NodeJS.WritableStream, value: string | undefined): vo
 function formatRelayCliError(prefix: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return `${prefix}: ${message}\n`;
+}
+
+async function acquireNativeHookRelayAdmission(
+  event: string,
+  timeoutMs: number,
+): Promise<(() => void) | undefined | null> {
+  if (process.env.OPENCLAW_NATIVE_HOOK_RELAY_SKIP_CLI_ADMISSION === "1") {
+    return undefined;
+  }
+  if (!isAdmissionControlledToolUseEvent(event)) {
+    return undefined;
+  }
+  const maxConcurrent = readPositiveIntegerEnv(
+    "OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_MAX_CONCURRENT",
+    DEFAULT_TOOL_USE_RELAY_MAX_CONCURRENT,
+  );
+  if (maxConcurrent <= 0) {
+    return undefined;
+  }
+  const admissionWaitMs = Math.min(
+    timeoutMs,
+    readPositiveIntegerEnv(
+      "OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_ADMISSION_WAIT_MS",
+      DEFAULT_TOOL_USE_RELAY_ADMISSION_WAIT_MS,
+    ),
+  );
+  const staleMs = readPositiveIntegerEnv(
+    "OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_STALE_MS",
+    DEFAULT_TOOL_USE_RELAY_STALE_MS,
+  );
+  const dir = nativeHookRelayAdmissionDir();
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const startedAt = Date.now();
+  for (;;) {
+    pruneNativeHookRelayAdmissionLocks(dir, staleMs);
+    const release = tryAcquireNativeHookRelayAdmissionSlot(dir, maxConcurrent, event);
+    if (release) {
+      return release;
+    }
+    if (Date.now() - startedAt >= admissionWaitMs) {
+      return null;
+    }
+    await delay(Math.min(10, admissionWaitMs - (Date.now() - startedAt)));
+  }
+}
+
+function isAdmissionControlledToolUseEvent(event: string): boolean {
+  return event === "pre_tool_use" || event === "post_tool_use";
+}
+
+function nativeHookRelayAdmissionDir(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : "nouid";
+  return path.join(tmpdir(), `openclaw-native-hook-relay-admission-${uid}`);
+}
+
+function tryAcquireNativeHookRelayAdmissionSlot(
+  dir: string,
+  maxConcurrent: number,
+  event: string,
+): (() => void) | undefined {
+  for (let index = 0; index < maxConcurrent; index += 1) {
+    const slotDir = path.join(dir, `tool-use-${index}.lock`);
+    try {
+      mkdirSync(slotDir, { mode: 0o700 });
+      writeFileSync(
+        path.join(slotDir, "owner.json"),
+        `${JSON.stringify({
+          pid: process.pid,
+          event,
+          createdAtMs: Date.now(),
+        })}\n`,
+        { mode: 0o600 },
+      );
+      let released = false;
+      return () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        rmSync(slotDir, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "EEXIST") {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return undefined;
+}
+
+function pruneNativeHookRelayAdmissionLocks(dir: string, staleMs: number): void {
+  const now = Date.now();
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".lock")) {
+      continue;
+    }
+    const slotDir = path.join(dir, name);
+    try {
+      const owner = readNativeHookRelayAdmissionOwner(slotDir);
+      const createdAtMs = typeof owner?.createdAtMs === "number" ? owner.createdAtMs : 0;
+      const expired = createdAtMs <= 0 || now - createdAtMs > staleMs;
+      const ownPid = process.pid;
+      const deadPid =
+        !expired &&
+        typeof owner?.pid === "number" &&
+        owner.pid > 0 &&
+        owner.pid !== ownPid &&
+        isProcessDead(owner.pid);
+      if (expired || deadPid) {
+        rmSync(slotDir, { recursive: true, force: true });
+      }
+    } catch {
+      rmSync(slotDir, { recursive: true, force: true });
+    }
+  }
+}
+
+function readNativeHookRelayAdmissionOwner(
+  slotDir: string,
+): { pid?: number; createdAtMs?: number } | null {
+  const ownerPath = path.join(slotDir, "owner.json");
+  if (!existsSync(ownerPath)) {
+    return null;
+  }
+  return JSON.parse(readFileSync(ownerPath, "utf8")) as { pid?: number; createdAtMs?: number };
+}
+
+function isProcessDead(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ESRCH";
+  }
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, ms));
+  });
 }
 
 function createNativeHookRelayDeadline(timeoutMs: number): NativeHookRelayDeadline {

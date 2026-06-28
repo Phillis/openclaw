@@ -216,6 +216,9 @@ const MAX_NATIVE_HOOK_BRIDGE_BODY_BYTES = 5_000_000;
 const MAX_NATIVE_HOOK_BRIDGE_RESPONSE_BYTES = 5_000_000;
 const NATIVE_HOOK_BRIDGE_RETRY_INTERVAL_MS = 25;
 const NATIVE_HOOK_BRIDGE_REPLACEMENT_RECORD_GRACE_MS = 250;
+const MAX_IN_FLIGHT_NATIVE_HOOK_RELAY_EVENT = 4;
+const MAX_IN_FLIGHT_NATIVE_HOOK_RELAY_PER_REGISTRATION_EVENT = 2;
+const STALE_NATIVE_HOOK_RELAY_RELEASE_MS = 10_000;
 const NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR =
   "native hook relay bridge stale registration";
 const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
@@ -276,6 +279,7 @@ const pendingPermissionApprovals = nativeHookRelayState.pendingPermissionApprova
 const pendingPreToolUseApprovals = nativeHookRelayState.pendingPreToolUseApprovals;
 const permissionApprovalWindows = nativeHookRelayState.permissionApprovalWindows;
 const permissionAllowAlwaysApprovals = nativeHookRelayState.permissionAllowAlwaysApprovals;
+const nativeHookRelayInFlightCounts = new Map<string, number>();
 
 type NativeHookRelayPermissionApprovalRequest = {
   provider: NativeHookRelayProvider;
@@ -1369,16 +1373,103 @@ async function processNativeHookRelayInvocation(params: {
   invocation: NativeHookRelayInvocation;
   adapter: NativeHookRelayProviderAdapter;
 }): Promise<NativeHookRelayProcessResponse> {
+  const concurrencyControlled = isConcurrencyControlledNativeHookRelayEvent(
+    params.invocation.event,
+  );
+  const release = concurrencyControlled
+    ? enterNativeHookRelayInvocation(params.invocation)
+    : undefined;
+  if (concurrencyControlled && !release) {
+    return renderNativeHookRelayBusyResponse(params);
+  }
+  try {
+    if (params.invocation.event === "pre_tool_use") {
+      return await runNativeHookRelayPreToolUse(params);
+    }
+    if (params.invocation.event === "post_tool_use") {
+      return await runNativeHookRelayPostToolUse(params);
+    }
+    if (params.invocation.event === "before_agent_finalize") {
+      return await runNativeHookRelayBeforeAgentFinalize(params);
+    }
+    return await runNativeHookRelayPermissionRequest(params);
+  } finally {
+    release?.();
+  }
+}
+
+function isConcurrencyControlledNativeHookRelayEvent(event: NativeHookRelayEvent): boolean {
+  return event === "pre_tool_use" || event === "post_tool_use" || event === "before_agent_finalize";
+}
+
+function enterNativeHookRelayInvocation(
+  invocation: NativeHookRelayInvocation,
+): (() => void) | undefined {
+  const eventKey = `event:${invocation.event}`;
+  const registrationEventKey = `relay:${invocation.relayId}:${invocation.event}`;
+  const eventInFlight = nativeHookRelayInFlightCounts.get(eventKey) ?? 0;
+  const registrationEventInFlight = nativeHookRelayInFlightCounts.get(registrationEventKey) ?? 0;
+  if (
+    eventInFlight >= MAX_IN_FLIGHT_NATIVE_HOOK_RELAY_EVENT ||
+    registrationEventInFlight >= MAX_IN_FLIGHT_NATIVE_HOOK_RELAY_PER_REGISTRATION_EVENT
+  ) {
+    log.warn("native hook relay invocation skipped because concurrency is saturated", {
+      event: invocation.event,
+      relayId: invocation.relayId,
+      eventInFlight,
+      registrationEventInFlight,
+    });
+    return undefined;
+  }
+
+  incrementNativeHookRelayInFlight(eventKey);
+  incrementNativeHookRelayInFlight(registrationEventKey);
+  let released = false;
+  const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    clearTimeout(staleTimer);
+    decrementNativeHookRelayInFlight(eventKey);
+    decrementNativeHookRelayInFlight(registrationEventKey);
+  };
+  const staleTimer = setTimeout(() => {
+    log.warn("native hook relay invocation stale; allowing later invocations", {
+      event: invocation.event,
+      relayId: invocation.relayId,
+      staleMs: STALE_NATIVE_HOOK_RELAY_RELEASE_MS,
+    });
+    release();
+  }, STALE_NATIVE_HOOK_RELAY_RELEASE_MS);
+  staleTimer.unref?.();
+  return release;
+}
+
+function incrementNativeHookRelayInFlight(key: string): void {
+  nativeHookRelayInFlightCounts.set(key, (nativeHookRelayInFlightCounts.get(key) ?? 0) + 1);
+}
+
+function decrementNativeHookRelayInFlight(key: string): void {
+  const current = nativeHookRelayInFlightCounts.get(key) ?? 0;
+  if (current <= 1) {
+    nativeHookRelayInFlightCounts.delete(key);
+    return;
+  }
+  nativeHookRelayInFlightCounts.set(key, current - 1);
+}
+
+function renderNativeHookRelayBusyResponse(params: {
+  invocation: NativeHookRelayInvocation;
+  adapter: NativeHookRelayProviderAdapter;
+}): NativeHookRelayProcessResponse {
   if (params.invocation.event === "pre_tool_use") {
-    return runNativeHookRelayPreToolUse(params);
+    return params.adapter.renderPreToolUseBlockResponse("OpenClaw hook relay is busy.");
   }
-  if (params.invocation.event === "post_tool_use") {
-    return runNativeHookRelayPostToolUse(params);
+  if (params.invocation.event === "permission_request") {
+    return params.adapter.renderPermissionDecisionResponse("deny", "OpenClaw hook relay is busy.");
   }
-  if (params.invocation.event === "before_agent_finalize") {
-    return runNativeHookRelayBeforeAgentFinalize(params);
-  }
-  return runNativeHookRelayPermissionRequest(params);
+  return params.adapter.renderNoopResponse(params.invocation.event);
 }
 
 async function runNativeHookRelayPreToolUse(params: {

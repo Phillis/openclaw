@@ -1,4 +1,7 @@
 // Native hook relay CLI tests cover relay command registration and runtime delegation.
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { PassThrough, Readable, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { runNativeHookRelayCli } from "./native-hook-relay-cli.js";
@@ -387,6 +390,87 @@ describe("native hook relay CLI", () => {
       }),
     );
   }, 1_000);
+
+  it("bounds concurrent PreToolUse invocations with the relay admission guard", async () => {
+    const hold = Promise.withResolvers<void>();
+    const invokeBridge = vi.fn(async () => {
+      await hold.promise;
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), "openclaw-native-hook-relay-cli-"));
+    const previousTmpdir = process.env.TMPDIR;
+    const previousMaxConcurrent = process.env.OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_MAX_CONCURRENT;
+    const previousAdmissionWaitMs =
+      process.env.OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_ADMISSION_WAIT_MS;
+    try {
+      process.env.TMPDIR = tmpRoot;
+      process.env.OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_MAX_CONCURRENT = "1";
+      process.env.OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_ADMISSION_WAIT_MS = "1";
+
+      const firstRun = runNativeHookRelayCli(
+        {
+          provider: "codex",
+          relayId: "relay-1",
+          generation: "generation-1",
+          event: "pre_tool_use",
+        },
+        {
+          stdin: createReadableTextStream("{}"),
+          invokeBridge: invokeBridge as never,
+        },
+      );
+
+      await vi.waitFor(() => {
+        expect(invokeBridge).toHaveBeenCalledTimes(1);
+      });
+
+      const stdout = createWritableTextBuffer();
+      const stderr = createWritableTextBuffer();
+      const secondExitCode = await runNativeHookRelayCli(
+        {
+          provider: "codex",
+          relayId: "relay-1",
+          generation: "generation-1",
+          event: "pre_tool_use",
+        },
+        {
+          stdin: createReadableTextStream("{}"),
+          stdout,
+          stderr,
+          invokeBridge: vi.fn(),
+        },
+      );
+
+      expect(secondExitCode).toBe(0);
+      expect(JSON.parse(stdout.text())).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "Native hook relay concurrency limit reached",
+        },
+      });
+      expect(stderr.text()).toBe("");
+
+      hold.resolve();
+      await expect(firstRun).resolves.toBe(0);
+    } finally {
+      hold.resolve();
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+      if (previousMaxConcurrent === undefined) {
+        delete process.env.OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_MAX_CONCURRENT;
+      } else {
+        process.env.OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_MAX_CONCURRENT = previousMaxConcurrent;
+      }
+      if (previousAdmissionWaitMs === undefined) {
+        delete process.env.OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_ADMISSION_WAIT_MS;
+      } else {
+        process.env.OPENCLAW_NATIVE_HOOK_RELAY_POST_TOOL_ADMISSION_WAIT_MS =
+          previousAdmissionWaitMs;
+      }
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
 
   it("rejects oversized hook input without touching the gateway", async () => {
     const callGateway = vi.fn();

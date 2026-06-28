@@ -232,6 +232,10 @@ const DEFAULT_MODIFYING_HOOK_TIMEOUT_MS_BY_HOOK: Partial<Record<PluginHookName, 
   resolve_exec_env: 15_000,
 };
 
+const DEFAULT_MAX_IN_FLIGHT_TYPED_HOOKS_PER_PLUGIN = 2;
+const DEFAULT_STALE_TYPED_HOOK_RELEASE_MS = 30_000;
+const hookExecutionCounts = new Map<string, number>();
+
 type ModifyingHookPolicy<K extends PluginHookName, TResult> = {
   mergeResults?: (
     accumulated: TResult | undefined,
@@ -565,6 +569,50 @@ export function createHookRunner(
     normalizePositiveTimeoutMs(hook.timeoutMs) ??
     normalizePositiveTimeoutMs(modifyingHookTimeoutMsByHook[hookName]);
 
+  const enterHookExecution = (
+    hookName: PluginHookName,
+    hook: { pluginId: string },
+    timeoutMs?: number,
+  ): (() => void) | undefined => {
+    const key = `${hook.pluginId}:${hookName}`;
+    const inFlight = hookExecutionCounts.get(key) ?? 0;
+    if (inFlight >= DEFAULT_MAX_IN_FLIGHT_TYPED_HOOKS_PER_PLUGIN) {
+      logger?.warn(
+        `[hooks] ${hookName} handler from ${hook.pluginId} skipped: ${inFlight} executions still in flight`,
+      );
+      return undefined;
+    }
+
+    hookExecutionCounts.set(key, inFlight + 1);
+    let released = false;
+    let staleTimer: ReturnType<typeof setTimeout> | undefined;
+    const release = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      if (staleTimer) {
+        clearTimeout(staleTimer);
+      }
+      const current = hookExecutionCounts.get(key) ?? 0;
+      if (current <= 1) {
+        hookExecutionCounts.delete(key);
+      } else {
+        hookExecutionCounts.set(key, current - 1);
+      }
+    };
+
+    const staleReleaseMs = Math.max(DEFAULT_STALE_TYPED_HOOK_RELEASE_MS, (timeoutMs ?? 0) * 4);
+    staleTimer = setTimeout(() => {
+      logger?.warn(
+        `[hooks] ${hookName} handler from ${hook.pluginId} stale after ${staleReleaseMs}ms; allowing later executions`,
+      );
+      release();
+    }, staleReleaseMs);
+    staleTimer.unref?.();
+    return release;
+  };
+
   const withHookTimeout = async <T>(
     promise: Promise<T>,
     timeoutMs: number,
@@ -616,17 +664,23 @@ export function createHookRunner(
     logger?.debug?.(`[hooks] running ${hookName} (${hooks.length} handlers)`);
 
     const promises = hooks.map(async (hook) => {
+      const timeoutMs = getVoidHookTimeoutMs(hookName, hook);
+      const release = enterHookExecution(hookName, hook, timeoutMs);
+      if (!release) {
+        return;
+      }
       try {
         const promise = Promise.resolve(
           (hook.handler as (event: unknown, ctx: unknown) => Promise<void> | void)(event, ctx),
         );
-        const timeoutMs = getVoidHookTimeoutMs(hookName, hook);
+        void promise.then(release, release);
         if (timeoutMs) {
           await withHookTimeout(promise, timeoutMs, { unref: optionsValue.unrefTimeout ?? true });
         } else {
           await promise;
         }
       } catch (err) {
+        release();
         handleHookError({ hookName, pluginId: hook.pluginId, error: err });
       }
     });
@@ -654,10 +708,15 @@ export function createHookRunner(
     let result: TResult | undefined;
 
     for (const hook of hooks) {
+      const timeoutMs = getModifyingHookTimeoutMs(hookName, hook);
+      const release = enterHookExecution(hookName, hook, timeoutMs);
+      if (!release) {
+        continue;
+      }
       try {
         const handler = hook.handler as (event: unknown, ctx: unknown) => Promise<TResult>;
         const promise = Promise.resolve(handler(event, ctx));
-        const timeoutMs = getModifyingHookTimeoutMs(hookName, hook);
+        void promise.then(release, release);
         const handlerResult = timeoutMs ? await withHookTimeout(promise, timeoutMs) : await promise;
 
         const shouldMergeResult =
@@ -679,6 +738,7 @@ export function createHookRunner(
           }
         }
       } catch (err) {
+        release();
         handleHookError({ hookName, pluginId: hook.pluginId, error: err });
       }
     }
@@ -735,16 +795,22 @@ export function createHookRunner(
     ctx: Parameters<NonNullable<PluginHookRegistration<K>["handler"]>>[1],
   ): Promise<TResult | undefined> {
     for (const hook of hooks) {
+      const timeoutMs = getClaimingHookTimeoutMs(hookName, hook);
+      const release = enterHookExecution(hookName, hook, timeoutMs);
+      if (!release) {
+        continue;
+      }
       try {
         const promise = Promise.resolve(
           (hook.handler as (event: unknown, ctx: unknown) => Promise<TResult | void>)(event, ctx),
         );
-        const timeoutMs = getClaimingHookTimeoutMs(hookName, hook);
+        void promise.then(release, release);
         const handlerResult = timeoutMs ? await withHookTimeout(promise, timeoutMs) : await promise;
         if (handlerResult?.handled) {
           return handlerResult;
         }
       } catch (err) {
+        release();
         handleHookError({ hookName, pluginId: hook.pluginId, error: err });
       }
     }
@@ -786,16 +852,22 @@ export function createHookRunner(
 
     let firstError: string | null = null;
     for (const hook of hooks) {
+      const timeoutMs = getClaimingHookTimeoutMs(hookName, hook);
+      const release = enterHookExecution(hookName, hook, timeoutMs);
+      if (!release) {
+        continue;
+      }
       try {
         const promise = Promise.resolve(
           (hook.handler as (event: unknown, ctx: unknown) => Promise<TResult | void>)(event, ctx),
         );
-        const timeoutMs = getClaimingHookTimeoutMs(hookName, hook);
+        void promise.then(release, release);
         const handlerResult = timeoutMs ? await withHookTimeout(promise, timeoutMs) : await promise;
         if (handlerResult?.handled) {
           return { status: "handled", result: handlerResult };
         }
       } catch (err) {
+        release();
         firstError ??= sanitizeHookError(err);
         handleHookError({ hookName, pluginId: hook.pluginId, error: err });
       }
