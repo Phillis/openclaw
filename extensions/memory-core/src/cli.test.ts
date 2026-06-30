@@ -1186,8 +1186,10 @@ describe("memory cli", () => {
     await runMemoryCli(["search", "hello", "--max-results", "+02"]);
 
     expect(search).toHaveBeenCalledWith("hello", {
+      explain: false,
       maxResults: 2,
       minScore: undefined,
+      scopes: [],
       sessionKey: "agent:main:cli:direct:memory-search",
     });
     expect(getMemorySearchManager).toHaveBeenCalledWith({
@@ -1208,8 +1210,10 @@ describe("memory cli", () => {
     await runMemoryCli(["search", "--query", "deployment notes"]);
 
     expect(search).toHaveBeenCalledWith("deployment notes", {
+      explain: false,
       maxResults: undefined,
       minScore: undefined,
+      scopes: [],
       sessionKey: "agent:main:cli:direct:memory-search",
     });
     expect(log).toHaveBeenCalledWith("No matches.");
@@ -1226,8 +1230,10 @@ describe("memory cli", () => {
     await runMemoryCli(["search", "positional", "--query", "flagged"]);
 
     expect(search).toHaveBeenCalledWith("flagged", {
+      explain: false,
       maxResults: undefined,
       minScore: undefined,
+      scopes: [],
       sessionKey: "agent:main:cli:direct:memory-search",
     });
     expect(close).toHaveBeenCalled();
