@@ -6,7 +6,7 @@ export type MemorySource = "memory" | "sessions";
 
 export type MemorySearchTrace = {
   query: string;
-  backend: "builtin" | "qmd";
+  backend: "builtin" | "qmd" | "lancedb";
   included: boolean;
   scope?: MemoryScope;
   lifecycle?: MemoryLifecycle;
@@ -61,7 +61,7 @@ export type MemorySyncProgressUpdate = {
 
 /** Runtime backend/mode diagnostics for memory search. */
 export type MemorySearchRuntimeDebug = {
-  backend: "builtin" | "qmd";
+  backend: "builtin" | "qmd" | "lancedb";
   configuredMode?: string;
   effectiveMode?: string;
   fallback?: string;
@@ -79,7 +79,7 @@ export type MemoryReadResult = {
 
 /** Aggregated memory backend status for CLI/UI diagnostics. */
 export type MemoryProviderStatus = {
-  backend: "builtin" | "qmd";
+  backend: "builtin" | "qmd" | "lancedb";
   provider: string;
   model?: string;
   requestedProvider?: string;
@@ -135,7 +135,7 @@ export type MemoryDoctorCheck = {
 };
 
 export type MemoryDoctorReport = {
-  backend: "builtin" | "qmd";
+  backend: "builtin" | "qmd" | "lancedb";
   checkedAtMs: number;
   checks: MemoryDoctorCheck[];
 };

@@ -496,7 +496,13 @@ describe("memory plugin e2e", () => {
     expect(
       getMemoryCapabilityRegistration()?.capability.flushPlanResolver?.({})?.relativePath,
     ).toBe("memory/sidecar.md");
-    expect(getMemoryCapabilityRegistration()?.capability.runtime).toBe(runtime);
+    expect(getMemoryCapabilityRegistration()?.capability.runtime).not.toBe(runtime);
+    expect(
+      getMemoryCapabilityRegistration()?.capability.runtime?.resolveMemoryBackendConfig({
+        cfg: {} as any,
+        agentId: "main",
+      }).backend,
+    ).toBe("lancedb");
     await expect(
       listActiveMemoryPublicArtifacts({
         cfg: {
@@ -820,9 +826,113 @@ describe("memory plugin e2e", () => {
               category: "preference",
               importance: 0.9,
               score: expect.any(Number),
+              scope: "workspace",
+              lifecycle: "active",
+              feedbackScore: 0,
             },
           ],
         });
+      },
+    });
+  });
+
+  test("stores scoped rows in real LanceDB and hides stale feedback from recall", async () => {
+    const embeddingsCreate = vi.fn(() => ({
+      data: [{ embedding: [0.1, 0.2, 0.3] }],
+    }));
+    const ensureGlobalUndiciEnvProxyDispatcher = vi.fn();
+    const actualLanceDb = await import("@lancedb/lancedb");
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher,
+      embeddingsCreate,
+      loadLanceDbModule: vi.fn(async () => actualLanceDb),
+      run: async (dynamicMemoryPlugin) => {
+        const registeredTools: Array<{ tool: any; opts: { name?: string } }> = [];
+        const registerMemoryCapability = vi.fn();
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: OPENAI_API_KEY,
+              model: "text-embedding-3-small",
+              dimensions: 3,
+            },
+            dbPath: getDbPath(),
+            autoCapture: false,
+            autoRecall: false,
+          },
+          runtime: {},
+          logger: {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+          },
+          registerMemoryCapability,
+          registerTool: (tool: any, opts: { name?: string }) => {
+            registeredTools.push({ tool, opts });
+          },
+          registerCli: vi.fn(),
+          registerService: vi.fn(),
+          on: vi.fn(),
+          resolvePath: (filePath: string) => filePath,
+        };
+
+        dynamicMemoryPlugin.register(mockApi as any);
+        const storeTool = registeredTools.find(
+          (entry) => entry.opts?.name === "memory_store",
+        )?.tool;
+        const recallTool = registeredTools.find(
+          (entry) => entry.opts?.name === "memory_recall",
+        )?.tool;
+        const feedbackTool = registeredTools.find(
+          (entry) => entry.opts?.name === "memory_feedback",
+        )?.tool;
+        expectToolExecute(storeTool, "memory_store");
+        expectToolExecute(recallTool, "memory_recall");
+        expectToolExecute(feedbackTool, "memory_feedback");
+
+        const storeResult = await storeTool.execute("store-real-lance", {
+          text: "The user's canary color is blue.",
+          category: "fact",
+          scope: "project",
+        });
+        const memoryId = storeResult.details?.id;
+        expect(memoryId).toMatch(/[0-9a-f-]{36}/);
+
+        const scopedRecall = await recallTool.execute("recall-real-lance", {
+          query: "canary color",
+          scopes: ["project"],
+          limit: 3,
+          explain: true,
+        });
+        expect(scopedRecall.details?.count).toBe(1);
+        expect(scopedRecall.details?.memories?.[0]).toMatchObject({
+          id: memoryId,
+          scope: "project",
+          lifecycle: "active",
+          feedbackScore: 0,
+        });
+
+        const feedbackResult = await feedbackTool.execute("feedback-real-lance", {
+          memoryId,
+          kind: "stale",
+        });
+        expect(feedbackResult.details).toMatchObject({
+          updated: 1,
+          lifecycle: "stale",
+        });
+
+        const recallAfterFeedback = await recallTool.execute("recall-after-feedback", {
+          query: "canary color",
+          scopes: ["project"],
+          limit: 3,
+        });
+        expect(recallAfterFeedback.details?.count).toBe(0);
       },
     });
   });

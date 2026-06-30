@@ -7,7 +7,9 @@
  */
 
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type * as LanceDB from "@lancedb/lancedb";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import {
@@ -17,6 +19,21 @@ import {
 import { BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES } from "openclaw/plugin-sdk/chat-channel-ids";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { MemoryEmbeddingProvider } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
+import {
+  normalizeMemoryFeedbackKind,
+  normalizeMemoryLifecycle,
+  normalizeMemoryScope,
+  normalizeMemoryScopes,
+  type MemoryDoctorReport,
+  type MemoryFeedbackKind,
+  type MemoryFeedbackResult,
+  type MemoryLifecycle,
+  type MemoryProviderStatus,
+  type MemoryReadResult,
+  type MemoryScope,
+  type MemorySearchManager,
+  type MemorySearchResult as SharedMemorySearchResult,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { MESSAGE_TOOL_DELIVERY_HINTS } from "openclaw/plugin-sdk/message-tool-delivery-hints";
 import {
   parseStrictPositiveInteger,
@@ -54,6 +71,19 @@ type MemoryEntry = {
   importance: number;
   category: MemoryCategory;
   createdAt: number;
+  scope?: MemoryScope;
+  lifecycle?: MemoryLifecycle;
+  validFrom?: number | null;
+  validUntil?: number | null;
+  confidence?: number;
+  supersedes?: string | null;
+  supersededBy?: string | null;
+  duplicateOf?: string | null;
+  bundleHash?: string | null;
+  feedbackScore?: number;
+  feedbackCount?: number;
+  lastFeedbackAt?: number | null;
+  lastFeedbackKind?: MemoryFeedbackKind | "" | null;
 };
 
 type MemoryListEntry = Omit<MemoryEntry, "vector">;
@@ -66,6 +96,8 @@ type MemorySearchResult = {
   entry: MemoryEntry;
   score: number;
 };
+
+type MemoryDoctorCheck = MemoryDoctorReport["checks"][number];
 
 type AutoCaptureCursor = {
   nextIndex: number;
@@ -212,6 +244,25 @@ const DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA = 10;
 const DEFAULT_AUTO_RECALL_OVERFETCH_LIMIT = 10;
 const DEFAULT_AUTO_RECALL_RESULT_CAP = 3;
 const DUPLICATE_SEARCH_LIMIT = 5;
+const DEFAULT_MEMORY_SCOPE: MemoryScope = "workspace";
+const DEFAULT_MEMORY_LIFECYCLE: MemoryLifecycle = "active";
+const LANCEDB_MEMORY_PATH_PREFIX = "lancedb:";
+
+const MEMORY_METADATA_COLUMNS: Array<{ name: keyof MemoryEntry; valueSql: string }> = [
+  { name: "scope", valueSql: "'workspace'" },
+  { name: "lifecycle", valueSql: "'active'" },
+  { name: "validFrom", valueSql: "0" },
+  { name: "validUntil", valueSql: "0" },
+  { name: "confidence", valueSql: "1.0" },
+  { name: "supersedes", valueSql: "''" },
+  { name: "supersededBy", valueSql: "''" },
+  { name: "duplicateOf", valueSql: "''" },
+  { name: "bundleHash", valueSql: "''" },
+  { name: "feedbackScore", valueSql: "0.0" },
+  { name: "feedbackCount", valueSql: "0" },
+  { name: "lastFeedbackAt", valueSql: "0" },
+  { name: "lastFeedbackKind", valueSql: "''" },
+];
 
 function parsePositiveIntegerOption(value: string | undefined, flag: string): number | undefined {
   if (value === undefined) {
@@ -222,6 +273,104 @@ function parsePositiveIntegerOption(value: string | undefined, flag: string): nu
     throw new Error(`${flag} must be a positive integer`);
   }
   return parsed;
+}
+
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value !== 0 ? value : null;
+}
+
+function normalizeFeedbackCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function normalizeFeedbackScore(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function memoryEntryFromRow(row: Record<string, unknown>): MemoryEntry {
+  return {
+    id: row.id as string,
+    text: row.text as string,
+    vector: row.vector as number[],
+    importance: row.importance as number,
+    category: row.category as MemoryEntry["category"],
+    createdAt: row.createdAt as number,
+    scope: normalizeMemoryScope(row.scope) ?? DEFAULT_MEMORY_SCOPE,
+    lifecycle: normalizeMemoryLifecycle(row.lifecycle) ?? DEFAULT_MEMORY_LIFECYCLE,
+    validFrom: normalizeOptionalNumber(row.validFrom),
+    validUntil: normalizeOptionalNumber(row.validUntil),
+    confidence:
+      typeof row.confidence === "number" && Number.isFinite(row.confidence) ? row.confidence : 1,
+    supersedes: typeof row.supersedes === "string" && row.supersedes ? row.supersedes : null,
+    supersededBy:
+      typeof row.supersededBy === "string" && row.supersededBy ? row.supersededBy : null,
+    duplicateOf: typeof row.duplicateOf === "string" && row.duplicateOf ? row.duplicateOf : null,
+    bundleHash: typeof row.bundleHash === "string" && row.bundleHash ? row.bundleHash : null,
+    feedbackScore: normalizeFeedbackScore(row.feedbackScore),
+    feedbackCount: normalizeFeedbackCount(row.feedbackCount),
+    lastFeedbackAt: normalizeOptionalNumber(row.lastFeedbackAt),
+    lastFeedbackKind: normalizeMemoryFeedbackKind(row.lastFeedbackKind) ?? null,
+  };
+}
+
+function isLiveMemoryEntry(
+  entry: Pick<MemoryEntry, "lifecycle" | "validFrom" | "validUntil">,
+): boolean {
+  const now = Date.now();
+  return (
+    (entry.lifecycle ?? DEFAULT_MEMORY_LIFECYCLE) === "active" &&
+    (entry.validFrom === null ||
+      entry.validFrom === undefined ||
+      entry.validFrom === 0 ||
+      entry.validFrom <= now) &&
+    (entry.validUntil === null ||
+      entry.validUntil === undefined ||
+      entry.validUntil === 0 ||
+      entry.validUntil > now)
+  );
+}
+
+function buildLanceLiveWhere(scopes?: readonly MemoryScope[]): string {
+  const nowMs = Date.now();
+  const parts = [
+    "lifecycle = 'active'",
+    `(validFrom IS NULL OR validFrom = 0 OR validFrom <= ${nowMs})`,
+    `(validUntil IS NULL OR validUntil = 0 OR validUntil > ${nowMs})`,
+  ];
+  if (scopes?.length) {
+    parts.push(`scope IN (${scopes.map((scope) => sqlString(scope)).join(", ")})`);
+  }
+  return parts.join(" AND ");
+}
+
+function parseLanceMemoryPath(pathname: string): string | null {
+  const trimmed = pathname.trim();
+  const id = trimmed.startsWith(LANCEDB_MEMORY_PATH_PREFIX)
+    ? trimmed.slice(LANCEDB_MEMORY_PATH_PREFIX.length)
+    : trimmed;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id : null;
+}
+
+function filterEntriesByLifecycleAndScope<T extends { entry: MemoryEntry }>(
+  results: T[],
+  options?: { scopes?: MemoryScope[]; includeInactive?: boolean },
+): T[] {
+  return results.filter((result) => {
+    if (!options?.includeInactive && !isLiveMemoryEntry(result.entry)) {
+      return false;
+    }
+    if (
+      options?.scopes?.length &&
+      !options.scopes.includes(result.entry.scope ?? DEFAULT_MEMORY_SCOPE)
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 class MemoryDB {
@@ -269,10 +418,52 @@ class MemoryDB {
           importance: 0,
           category: "other",
           createdAt: 0,
+          scope: DEFAULT_MEMORY_SCOPE,
+          lifecycle: DEFAULT_MEMORY_LIFECYCLE,
+          validFrom: 0,
+          validUntil: 0,
+          confidence: 1,
+          supersedes: "",
+          supersededBy: "",
+          duplicateOf: "",
+          bundleHash: "",
+          feedbackScore: 0,
+          feedbackCount: 0,
+          lastFeedbackAt: 0,
+          lastFeedbackKind: "",
         },
       ]);
       await this.table.delete('id = "__schema__"');
     }
+    await this.ensureMetadataColumns();
+  }
+
+  private async ensureMetadataColumns(): Promise<void> {
+    const table = this.table as
+      | (LanceDB.Table & {
+          schema?: () => Promise<{ fields?: Array<{ name?: unknown }> }>;
+          addColumns?: (columns: Array<{ name: string; valueSql: string }>) => Promise<unknown>;
+        })
+      | null;
+    if (typeof table?.schema !== "function" || typeof table.addColumns !== "function") {
+      return;
+    }
+    const schema = await table.schema();
+    const names = new Set(
+      (schema.fields ?? []).flatMap((field) =>
+        typeof field.name === "string" ? [field.name] : [],
+      ),
+    );
+    const missing = MEMORY_METADATA_COLUMNS.filter((column) => !names.has(column.name));
+    if (missing.length === 0) {
+      return;
+    }
+    await table.addColumns(
+      missing.map((column) => ({
+        name: column.name,
+        valueSql: column.valueSql,
+      })),
+    );
   }
 
   async store(entry: Omit<MemoryEntry, "id" | "createdAt">): Promise<MemoryEntry> {
@@ -282,42 +473,105 @@ class MemoryDB {
       ...entry,
       id: randomUUID(),
       createdAt: Date.now(),
+      scope: entry.scope ?? DEFAULT_MEMORY_SCOPE,
+      lifecycle: entry.lifecycle ?? DEFAULT_MEMORY_LIFECYCLE,
+      validFrom: entry.validFrom ?? 0,
+      validUntil: entry.validUntil ?? 0,
+      confidence: entry.confidence ?? 1,
+      supersedes: entry.supersedes ?? "",
+      supersededBy: entry.supersededBy ?? "",
+      duplicateOf: entry.duplicateOf ?? "",
+      bundleHash: entry.bundleHash ?? "",
+      feedbackScore: entry.feedbackScore ?? 0,
+      feedbackCount: entry.feedbackCount ?? 0,
+      lastFeedbackAt: entry.lastFeedbackAt ?? 0,
+      lastFeedbackKind: entry.lastFeedbackKind ?? "",
     };
 
     await this.table!.add([fullEntry]);
     return fullEntry;
   }
 
-  async search(vector: number[], limit = 5, minScore = 0.5): Promise<MemorySearchResult[]> {
+  async search(
+    vector: number[],
+    limit = 5,
+    minScore = 0.5,
+    options?: { scopes?: MemoryScope[]; includeInactive?: boolean },
+  ): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
-    const results = await this.table!.vectorSearch(vector).limit(limit).toArray();
+    let query = this.table!.vectorSearch(vector).limit(limit);
+    const canPushFilter = typeof (query as { where?: unknown }).where === "function";
+    if (!options?.includeInactive) {
+      if (canPushFilter) {
+        query = query.where(buildLanceLiveWhere(options?.scopes));
+      }
+    } else if (options.scopes?.length) {
+      if (canPushFilter) {
+        query = query.where(
+          `scope IN (${options.scopes.map((scope) => sqlString(scope)).join(", ")})`,
+        );
+      }
+    }
+    const results = await query.toArray();
 
     // LanceDB uses L2 distance by default; convert to similarity score
-    const mapped = results.map((row) => {
+    const mapped = results.map((row: Record<string, unknown>) => {
       const distance = row["_distance"] ?? 0;
       // Use inverse for a 0-1 range: sim = 1 / (1 + d)
-      const score = 1 / (1 + distance);
+      const score = 1 / (1 + (typeof distance === "number" ? distance : 0));
+      const entry = memoryEntryFromRow(row);
+      const adjustedScore = Math.max(0, Math.min(1, score + (entry.feedbackScore ?? 0) * 0.03));
       return {
-        entry: {
-          id: row.id as string,
-          text: row.text as string,
-          vector: row.vector as number[],
-          importance: row.importance as number,
-          category: row.category as MemoryEntry["category"],
-          createdAt: row.createdAt as number,
-        },
-        score,
+        entry,
+        score: adjustedScore,
       };
     });
 
-    return mapped.filter((r) => r.score >= minScore);
+    return filterEntriesByLifecycleAndScope(
+      mapped.filter((r) => r.score >= minScore),
+      options,
+    );
   }
 
-  async list(limit?: number, options: MemoryListOptions = {}): Promise<MemoryListEntry[]> {
+  async list(
+    limit?: number,
+    options: MemoryListOptions & { includeInactive?: boolean; bundleHash?: string } = {},
+  ): Promise<MemoryListEntry[]> {
     await this.ensureInitialized();
 
-    let query = this.table!.query().select(["id", "text", "importance", "category", "createdAt"]);
+    const columns = [
+      "id",
+      "text",
+      "importance",
+      "category",
+      "createdAt",
+      "scope",
+      "lifecycle",
+      "validFrom",
+      "validUntil",
+      "confidence",
+      "supersedes",
+      "supersededBy",
+      "duplicateOf",
+      "bundleHash",
+      "feedbackScore",
+      "feedbackCount",
+      "lastFeedbackAt",
+      "lastFeedbackKind",
+    ];
+    let query = this.table!.query().select(columns);
+    const canPushFilter = typeof (query as { where?: unknown }).where === "function";
+    if ((!options.includeInactive || options.bundleHash) && canPushFilter) {
+      const filters: string[] = [];
+      if (!options.includeInactive) {
+        filters.push(buildLanceLiveWhere());
+      }
+      if (options.bundleHash) {
+        filters.push(`bundleHash = ${sqlString(options.bundleHash)}`);
+      }
+      query = query.where(filters.join(" AND "));
+    }
     // Push limit to LanceDB only when we don't need to sort in-memory.
     if (!options.orderByCreatedAt && limit !== undefined) {
       query = query.limit(limit);
@@ -325,18 +579,87 @@ class MemoryDB {
 
     const rows = await query.toArray();
 
-    const entries = rows.map((row) => ({
-      id: row.id as string,
-      text: row.text as string,
-      importance: row.importance as number,
-      category: row.category as MemoryEntry["category"],
-      createdAt: row.createdAt as number,
-    }));
+    let entries = rows.map((row: Record<string, unknown>) => {
+      const entry = memoryEntryFromRow(row);
+      const { vector: _vector, ...rest } = entry;
+      return rest;
+    });
+    if (!canPushFilter) {
+      entries = entries.filter((entry) => {
+        if (!options.includeInactive && !isLiveMemoryEntry(entry)) {
+          return false;
+        }
+        if (options.bundleHash && entry.bundleHash !== options.bundleHash) {
+          return false;
+        }
+        return true;
+      });
+    }
     if (options.orderByCreatedAt) {
       entries.sort((a, b) => b.createdAt - a.createdAt);
     }
 
     return limit === undefined ? entries : entries.slice(0, limit);
+  }
+
+  async get(id: string): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+    const rows = await this.table!.query()
+      .where(`id = ${sqlString(id)}`)
+      .limit(1)
+      .toArray();
+    const row = rows[0] as Record<string, unknown> | undefined;
+    return row ? memoryEntryFromRow(row) : null;
+  }
+
+  async updateFeedback(params: {
+    id: string;
+    kind: MemoryFeedbackKind;
+    scope?: MemoryScope;
+    supersededBy?: string;
+    duplicateOf?: string;
+  }): Promise<MemoryFeedbackResult> {
+    await this.ensureInitialized();
+    const existing = await this.get(params.id);
+    if (!existing) {
+      return { updated: 0 };
+    }
+    const feedbackDelta =
+      params.kind === "useful" ? 1 : params.kind === "wrong" || params.kind === "stale" ? -2 : -1;
+    const lifecycle: MemoryLifecycle =
+      params.kind === "too_private"
+        ? "tombstoned"
+        : params.kind === "duplicate" || params.supersededBy
+          ? "superseded"
+          : params.kind === "wrong" || params.kind === "stale"
+            ? "stale"
+            : (existing.lifecycle ?? DEFAULT_MEMORY_LIFECYCLE);
+    const scope =
+      params.kind === "wrong_scope" && params.scope
+        ? params.scope
+        : (existing.scope ?? DEFAULT_MEMORY_SCOPE);
+    const feedbackScore = (existing.feedbackScore ?? 0) + feedbackDelta;
+    const feedbackCount = (existing.feedbackCount ?? 0) + 1;
+    await this.table!.update({
+      where: `id = ${sqlString(params.id)}`,
+      values: {
+        lifecycle,
+        scope,
+        feedbackScore,
+        feedbackCount,
+        lastFeedbackAt: Date.now(),
+        lastFeedbackKind: params.kind,
+        supersededBy: params.supersededBy ?? existing.supersededBy ?? "",
+        duplicateOf: params.duplicateOf ?? existing.duplicateOf ?? "",
+      },
+    });
+    return {
+      updated: 1,
+      lifecycle,
+      scope,
+      feedbackScore,
+      feedbackCount,
+    };
   }
 
   async delete(id: string): Promise<boolean> {
@@ -353,6 +676,33 @@ class MemoryDB {
   async count(): Promise<number> {
     await this.ensureInitialized();
     return this.table!.countRows();
+  }
+
+  async countLive(): Promise<number> {
+    await this.ensureInitialized();
+    return this.table!.countRows(buildLanceLiveWhere());
+  }
+
+  async lifecycleCounts(): Promise<Array<{ lifecycle: MemoryLifecycle; chunks: number }>> {
+    await this.ensureInitialized();
+    const rows = await this.table!.query().select(["lifecycle"]).toArray();
+    const counts = new Map<MemoryLifecycle, number>();
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const lifecycle = normalizeMemoryLifecycle(row.lifecycle) ?? DEFAULT_MEMORY_LIFECYCLE;
+      counts.set(lifecycle, (counts.get(lifecycle) ?? 0) + 1);
+    }
+    return Array.from(counts, ([lifecycle, chunks]) => ({ lifecycle, chunks }));
+  }
+
+  async scopeCounts(): Promise<Array<{ scope: MemoryScope; chunks: number }>> {
+    await this.ensureInitialized();
+    const rows = await this.table!.query().select(["scope"]).toArray();
+    const counts = new Map<MemoryScope, number>();
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const scope = normalizeMemoryScope(row.scope) ?? DEFAULT_MEMORY_SCOPE;
+      counts.set(scope, (counts.get(scope) ?? 0) + 1);
+    }
+    return Array.from(counts, ([scope, chunks]) => ({ scope, chunks }));
   }
 
   async getTable(): Promise<LanceDB.Table> {
@@ -1411,6 +1761,240 @@ export function detectCategory(text: string): MemoryCategory {
   return "other";
 }
 
+class LanceMemorySearchManager implements MemorySearchManager {
+  constructor(
+    private readonly deps: {
+      db: MemoryDB;
+      embeddings: Embeddings;
+      dbPath: string;
+      cfg: () => MemoryConfig;
+    },
+  ) {}
+
+  async search(
+    query: string,
+    opts?: Parameters<MemorySearchManager["search"]>[1],
+  ): Promise<SharedMemorySearchResult[]> {
+    const cfg = this.deps.cfg();
+    const maxResults = Math.max(1, Math.floor(opts?.maxResults ?? 5));
+    const minScore = opts?.minScore ?? 0.1;
+    const scopes = normalizeMemoryScopes(opts?.scopes);
+    const vector = await this.deps.embeddings.embed(
+      normalizeRecallQuery(query, cfg.recallMaxChars),
+    );
+    const hits = await this.deps.db.search(
+      vector,
+      maxResults + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA,
+      minScore,
+      {
+        scopes,
+      },
+    );
+    return cleanMemorySearchResults(hits)
+      .slice(0, maxResults)
+      .map(({ result, text }) =>
+        this.toSharedSearchResult(query, result, text, Boolean(opts?.explain)),
+      );
+  }
+
+  async readFile(params: {
+    relPath: string;
+    from?: number;
+    lines?: number;
+  }): Promise<MemoryReadResult> {
+    const id = parseLanceMemoryPath(params.relPath);
+    if (!id) {
+      throw new Error(`Invalid LanceDB memory path: ${params.relPath}`);
+    }
+    const entry = await this.deps.db.get(id);
+    if (!entry) {
+      throw new Error(`Memory not found: ${params.relPath}`);
+    }
+    return {
+      path: `${LANCEDB_MEMORY_PATH_PREFIX}${entry.id}`,
+      text: entry.text,
+      truncated: false,
+      from: params.from,
+      lines: params.lines,
+    };
+  }
+
+  status(): MemoryProviderStatus {
+    const cfg = this.deps.cfg();
+    return {
+      backend: "lancedb",
+      provider: cfg.embedding.provider,
+      model: cfg.embedding.model,
+      dbPath: this.deps.dbPath,
+      vector: {
+        enabled: true,
+        storeAvailable: true,
+        semanticAvailable: true,
+        available: true,
+        dims: cfg.embedding.dimensions ?? vectorDimsForModel(cfg.embedding.model),
+      },
+      custom: {
+        pluginId: "memory-lancedb",
+      },
+    };
+  }
+
+  async probeEmbeddingAvailability() {
+    try {
+      await this.deps.embeddings.embed("memory probe", { timeoutMs: 3_000 });
+      return { ok: true, checked: true, checkedAtMs: Date.now() };
+    } catch (error) {
+      return {
+        ok: false,
+        checked: true,
+        checkedAtMs: Date.now(),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async probeVectorStoreAvailability(): Promise<boolean> {
+    return await this.probeVectorAvailability();
+  }
+
+  async probeVectorAvailability(): Promise<boolean> {
+    try {
+      await this.deps.db.count();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async feedback(
+    params: Parameters<NonNullable<MemorySearchManager["feedback"]>>[0],
+  ): Promise<MemoryFeedbackResult> {
+    const id = parseLanceMemoryPath(params.path);
+    if (!id) {
+      throw new Error(`Invalid LanceDB memory path: ${params.path}`);
+    }
+    return await this.deps.db.updateFeedback({
+      id,
+      kind: params.kind,
+      scope: params.scope,
+      supersededBy: params.supersededBy,
+      duplicateOf: params.duplicateOf,
+    });
+  }
+
+  async doctor(params?: { deep?: boolean }): Promise<MemoryDoctorReport> {
+    const checks: MemoryDoctorCheck[] = [];
+    let total = 0;
+    let live = 0;
+    try {
+      total = await this.deps.db.count();
+      live = await this.deps.db.countLive();
+      checks.push({
+        id: "lancedb",
+        status: "ok",
+        message: `table reachable; total=${total} live=${live}`,
+      });
+    } catch (error) {
+      checks.push({
+        id: "lancedb",
+        status: "error",
+        message: "LanceDB table is not reachable",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (checks.every((check) => check.status !== "error")) {
+      try {
+        const [scopeCounts, lifecycleCounts] = await Promise.all([
+          this.deps.db.scopeCounts(),
+          this.deps.db.lifecycleCounts(),
+        ]);
+        checks.push({
+          id: "metadata",
+          status: "ok",
+          message: `metadata columns present; scopes=${scopeCounts.length} lifecycles=${lifecycleCounts.length}`,
+          detail: JSON.stringify({ scopes: scopeCounts, lifecycles: lifecycleCounts }),
+        });
+      } catch (error) {
+        checks.push({
+          id: "metadata",
+          status: "warn",
+          message: "metadata inspection failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (params?.deep) {
+      const embedding = await this.probeEmbeddingAvailability();
+      checks.push({
+        id: "embedding",
+        status: embedding.ok ? "ok" : "error",
+        message: embedding.ok ? "embedding provider reachable" : "embedding provider unavailable",
+        detail: embedding.error,
+      });
+    }
+
+    return {
+      backend: "lancedb",
+      checkedAtMs: Date.now(),
+      checks,
+    };
+  }
+
+  async close() {}
+
+  private toSharedSearchResult(
+    query: string,
+    result: MemorySearchResult,
+    text: string,
+    explain: boolean,
+  ): SharedMemorySearchResult {
+    const path = `${LANCEDB_MEMORY_PATH_PREFIX}${result.entry.id}`;
+    const entry = result.entry;
+    const shared: SharedMemorySearchResult = {
+      path,
+      startLine: 1,
+      endLine: Math.max(1, text.split("\n").length),
+      score: result.score,
+      vectorScore: result.score,
+      snippet: text,
+      source: "memory",
+      scope: entry.scope ?? DEFAULT_MEMORY_SCOPE,
+      lifecycle: entry.lifecycle ?? DEFAULT_MEMORY_LIFECYCLE,
+      confidence: entry.confidence ?? 1,
+      feedbackScore: entry.feedbackScore ?? 0,
+      feedbackCount: entry.feedbackCount ?? 0,
+      supersededBy: entry.supersededBy ?? undefined,
+      citation: path,
+    };
+    if (explain) {
+      shared.trace = {
+        query,
+        backend: "lancedb",
+        included: isLiveMemoryEntry(entry),
+        scope: shared.scope,
+        lifecycle: shared.lifecycle,
+        source: "memory",
+        path,
+        startLine: shared.startLine,
+        endLine: shared.endLine,
+        score: shared.score,
+        vectorScore: shared.vectorScore,
+        feedbackScore: shared.feedbackScore,
+        freshness:
+          entry.validFrom && entry.validFrom > Date.now()
+            ? "future"
+            : entry.validUntil && entry.validUntil <= Date.now()
+              ? "expired"
+              : "valid",
+        reason: "LanceDB vector hit passed scope and lifecycle filters",
+      };
+    }
+    return shared;
+  }
+}
+
 // ============================================================================
 // Plugin Definition
 // ============================================================================
@@ -1478,6 +2062,12 @@ export default definePluginEntry({
         ...asRecord(runtimePluginConfig),
       });
     };
+    const manager = new LanceMemorySearchManager({
+      db,
+      embeddings,
+      dbPath: resolvedDbPath,
+      cfg: resolveCurrentHookConfig,
+    });
     const readMemoryRecallCooldown = (): { error: string } | undefined => {
       if (!memoryRecallCooldown) {
         return undefined;
@@ -1497,6 +2087,20 @@ export default definePluginEntry({
 
     api.logger.info(`memory-lancedb: plugin registered (db: ${resolvedDbPath}, lazy init)`);
     api.registerMemoryCapability?.({
+      runtime: {
+        async getMemorySearchManager() {
+          return { manager };
+        },
+        resolveMemoryBackendConfig() {
+          return { backend: "lancedb", dbPath: resolvedDbPath };
+        },
+        async closeAllMemorySearchManagers() {
+          await manager.close?.();
+        },
+        async closeMemorySearchManager() {
+          await manager.close?.();
+        },
+      },
       publicArtifacts: {
         async listArtifacts(params) {
           const { listMemoryHostPublicArtifacts } = await loadMemoryHostCoreModule();
@@ -1518,11 +2122,24 @@ export default definePluginEntry({
         parameters: Type.Object({
           query: Type.String({ description: "Search query" }),
           limit: optionalPositiveIntegerSchema({ description: "Max results (default: 5)" }),
+          scopes: Type.Optional(
+            Type.Array(
+              Type.Unsafe<MemoryScope>({
+                type: "string",
+                enum: ["agent", "workspace", "project", "thread", "shared", "ephemeral"],
+              }),
+            ),
+          ),
+          explain: Type.Optional(Type.Boolean()),
         }),
         async execute(_toolCallId, params) {
           const rawParams = params as Record<string, unknown>;
           const query = rawParams.query as string;
           const limit = readPositiveIntegerParam(rawParams, "limit") ?? 5;
+          const scopes = normalizeMemoryScopes(
+            Array.isArray(rawParams.scopes) ? rawParams.scopes : [],
+          );
+          const explain = rawParams.explain === true;
 
           const currentCfg = resolveCurrentHookConfig();
           const cooldown = readMemoryRecallCooldown();
@@ -1543,7 +2160,9 @@ export default definePluginEntry({
                 } catch (error) {
                   throw new MemoryRecallEmbeddingError(error);
                 }
-                return await db.search(vector, limit + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA, 0.1);
+                return await db.search(vector, limit + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA, 0.1, {
+                  scopes,
+                });
               },
             });
           } catch (error) {
@@ -1588,6 +2207,18 @@ export default definePluginEntry({
             category: result.entry.category,
             importance: result.entry.importance,
             score: result.score,
+            scope: result.entry.scope ?? DEFAULT_MEMORY_SCOPE,
+            lifecycle: result.entry.lifecycle ?? DEFAULT_MEMORY_LIFECYCLE,
+            feedbackScore: result.entry.feedbackScore ?? 0,
+            ...(explain
+              ? {
+                  trace: {
+                    backend: "lancedb",
+                    included: isLiveMemoryEntry(result.entry),
+                    reason: "LanceDB vector hit passed scope and lifecycle filters",
+                  },
+                }
+              : {}),
           }));
 
           return {
@@ -1623,11 +2254,22 @@ export default definePluginEntry({
               enum: [...MEMORY_CATEGORIES],
             }),
           ),
+          scope: Type.Optional(
+            Type.Unsafe<MemoryScope>({
+              type: "string",
+              enum: ["agent", "workspace", "project", "thread", "shared", "ephemeral"],
+            }),
+          ),
         }),
         async execute(_toolCallId, params) {
-          const { text, category = "other" } = params as {
+          const {
+            text,
+            category = "other",
+            scope,
+          } = params as {
             text: string;
             category?: MemoryEntry["category"];
+            scope?: string;
           };
           const importance =
             readFiniteNumberParam(params as Record<string, unknown>, "importance", {
@@ -1674,6 +2316,7 @@ export default definePluginEntry({
             vector,
             importance,
             category,
+            scope: normalizeMemoryScope(scope) ?? DEFAULT_MEMORY_SCOPE,
           });
 
           return {
@@ -1683,6 +2326,78 @@ export default definePluginEntry({
         },
       },
       { name: "memory_store" },
+    );
+
+    api.registerTool(
+      {
+        name: "memory_feedback",
+        label: "Memory Feedback",
+        description:
+          "Record explicit feedback for a LanceDB memory hit: useful, wrong, stale, duplicate, too_private, or wrong_scope.",
+        parameters: Type.Object({
+          memoryId: Type.Optional(Type.String({ description: "Specific memory UUID" })),
+          path: Type.Optional(Type.String({ description: "Memory path such as lancedb:<uuid>" })),
+          kind: Type.Unsafe<MemoryFeedbackKind>({
+            type: "string",
+            enum: ["useful", "wrong", "stale", "duplicate", "too_private", "wrong_scope"],
+          }),
+          scope: Type.Optional(
+            Type.Unsafe<MemoryScope>({
+              type: "string",
+              enum: ["agent", "workspace", "project", "thread", "shared", "ephemeral"],
+            }),
+          ),
+          supersededBy: Type.Optional(Type.String()),
+          duplicateOf: Type.Optional(Type.String()),
+        }),
+        async execute(_toolCallId, params) {
+          const rawParams = params as Record<string, unknown>;
+          const kind = normalizeMemoryFeedbackKind(rawParams.kind);
+          if (!kind) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Unsupported memory feedback kind: ${String(rawParams.kind)}`,
+                },
+              ],
+              details: { error: "unsupported_kind" },
+            };
+          }
+          const rawPath =
+            typeof rawParams.memoryId === "string"
+              ? rawParams.memoryId
+              : typeof rawParams.path === "string"
+                ? rawParams.path
+                : "";
+          const id = parseLanceMemoryPath(rawPath);
+          if (!id) {
+            return {
+              content: [{ type: "text", text: "Provide a valid memoryId or lancedb:<uuid> path." }],
+              details: { error: "missing_or_invalid_memory_id" },
+            };
+          }
+          const result = await db.updateFeedback({
+            id,
+            kind,
+            scope: normalizeMemoryScope(rawParams.scope),
+            supersededBy:
+              typeof rawParams.supersededBy === "string" ? rawParams.supersededBy : undefined,
+            duplicateOf:
+              typeof rawParams.duplicateOf === "string" ? rawParams.duplicateOf : undefined,
+          });
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Memory feedback recorded: updated=${result.updated} lifecycle=${result.lifecycle ?? "unchanged"} scope=${result.scope ?? "unchanged"}`,
+              },
+            ],
+            details: result,
+          };
+        },
+      },
+      { name: "memory_feedback" },
     );
 
     api.registerTool(
@@ -1785,10 +2500,13 @@ export default definePluginEntry({
           .description("Search memories")
           .argument("<query>", "Search query")
           .option("--limit <n>", "Max results", "5")
+          .option("--scope <scope...>", "Restrict to memory scopes")
+          .option("--explain", "Include compact retrieval traces", false)
           .action(async (query, opts) => {
             const vector = await embeddings.embed(normalizeRecallQuery(query, cfg.recallMaxChars));
             const limit = parsePositiveIntegerOption(opts.limit, "--limit");
-            const results = await db.search(vector, limit, 0.3);
+            const scopes = normalizeMemoryScopes(opts.scope ?? []);
+            const results = await db.search(vector, limit, 0.3, { scopes });
             // Strip vectors for output
             const output = results.map((r) => ({
               id: r.entry.id,
@@ -1796,8 +2514,202 @@ export default definePluginEntry({
               category: r.entry.category,
               importance: r.entry.importance,
               score: r.score,
+              scope: r.entry.scope ?? DEFAULT_MEMORY_SCOPE,
+              lifecycle: r.entry.lifecycle ?? DEFAULT_MEMORY_LIFECYCLE,
+              ...(opts.explain
+                ? {
+                    trace: {
+                      backend: "lancedb",
+                      included: isLiveMemoryEntry(r.entry),
+                      reason: "LanceDB vector hit passed scope and lifecycle filters",
+                    },
+                  }
+                : {}),
             }));
             console.log(JSON.stringify(output, null, 2));
+          });
+
+        memory
+          .command("feedback")
+          .description("Record feedback for a memory")
+          .requiredOption("--path <path>", "Memory id or lancedb:<uuid> path")
+          .requiredOption("--kind <kind>", "useful|wrong|stale|duplicate|too_private|wrong_scope")
+          .option("--scope <scope>", "New scope for wrong_scope feedback")
+          .option("--superseded-by <id>", "Superseding memory id")
+          .option("--duplicate-of <id>", "Canonical duplicate memory id")
+          .action(async (opts) => {
+            const id = parseLanceMemoryPath(opts.path);
+            const kind = normalizeMemoryFeedbackKind(opts.kind);
+            if (!id || !kind) {
+              throw new Error("feedback requires a valid --path and --kind");
+            }
+            const result = await db.updateFeedback({
+              id,
+              kind,
+              scope: normalizeMemoryScope(opts.scope),
+              supersededBy: opts.supersededBy,
+              duplicateOf: opts.duplicateOf,
+            });
+            console.log(JSON.stringify(result, null, 2));
+          });
+
+        memory
+          .command("doctor")
+          .description("Check LanceDB memory backend health")
+          .option("--deep", "Probe embedding provider too", false)
+          .action(async (opts) => {
+            const report = await manager.doctor({ deep: Boolean(opts.deep) });
+            console.log(JSON.stringify(report, null, 2));
+          });
+
+        memory
+          .command("bundle")
+          .description("Export or import LanceDB memories")
+          .option("--output <path>", "Write exported bundle to path")
+          .option("--input <path>", "Import bundle from path")
+          .option("--limit <n>", "Max exported rows", "1000")
+          .action(async (opts) => {
+            if (opts.input) {
+              const inputPath = path.resolve(opts.input);
+              const raw = await fs.readFile(inputPath, "utf-8");
+              const parsed = JSON.parse(raw) as {
+                schema?: string;
+                bundleHash?: string;
+                entries?: Array<{
+                  text?: unknown;
+                  content?: unknown;
+                  category?: unknown;
+                  importance?: unknown;
+                  scope?: unknown;
+                }>;
+              };
+              if (parsed.schema !== "openclaw.memory-lancedb.bundle.v1") {
+                throw new Error(
+                  `Unsupported LanceDB memory bundle schema: ${parsed.schema ?? "missing"}`,
+                );
+              }
+              const bundleHash =
+                typeof parsed.bundleHash === "string" && /^[a-f0-9]{64}$/i.test(parsed.bundleHash)
+                  ? parsed.bundleHash.toLowerCase()
+                  : createHash("sha256").update(raw).digest("hex");
+              const existing = await db.list(1, { includeInactive: true, bundleHash });
+              if (existing.length > 0) {
+                console.log(
+                  JSON.stringify(
+                    {
+                      mode: "already-imported",
+                      bundleHash,
+                      imported: 0,
+                      skipped: parsed.entries?.length ?? 0,
+                    },
+                    null,
+                    2,
+                  ),
+                );
+                return;
+              }
+              let imported = 0;
+              for (const entry of parsed.entries ?? []) {
+                const text =
+                  typeof entry.text === "string"
+                    ? entry.text
+                    : typeof entry.content === "string"
+                      ? entry.content
+                      : "";
+                if (!text.trim() || looksLikePromptInjection(text)) {
+                  continue;
+                }
+                const vector = await embeddings.embed(text);
+                const duplicate = await findCleanDuplicateMemory(db, vector);
+                if (duplicate) {
+                  continue;
+                }
+                await db.store({
+                  text,
+                  vector,
+                  category: MEMORY_CATEGORIES.includes(entry.category as MemoryCategory)
+                    ? (entry.category as MemoryCategory)
+                    : detectCategory(text),
+                  importance:
+                    typeof entry.importance === "number" && Number.isFinite(entry.importance)
+                      ? Math.max(0, Math.min(1, entry.importance))
+                      : 0.7,
+                  scope: normalizeMemoryScope(entry.scope) ?? DEFAULT_MEMORY_SCOPE,
+                  bundleHash,
+                });
+                imported++;
+              }
+              console.log(JSON.stringify({ mode: "imported", bundleHash, imported }, null, 2));
+              return;
+            }
+
+            const limit = parsePositiveIntegerOption(opts.limit, "--limit") ?? 1000;
+            const entries = await db.list(limit, {
+              includeInactive: true,
+              orderByCreatedAt: true,
+            });
+            const bundle = {
+              schema: "openclaw.memory-lancedb.bundle.v1",
+              exportedAt: new Date().toISOString(),
+              entries,
+            };
+            const serialized = JSON.stringify(bundle, null, 2);
+            const bundleHash = createHash("sha256").update(serialized).digest("hex");
+            const payload = JSON.stringify({ ...bundle, bundleHash }, null, 2);
+            if (opts.output) {
+              await fs.writeFile(path.resolve(opts.output), payload);
+            }
+            console.log(payload);
+          });
+
+        memory
+          .command("eval")
+          .description("Run golden recall checks against LanceDB memory")
+          .requiredOption("--file <path>", "JSON file with checks")
+          .option("--limit <n>", "Max checks to run")
+          .action(async (opts) => {
+            const raw = await fs.readFile(path.resolve(opts.file), "utf-8");
+            const parsed = JSON.parse(raw) as {
+              checks?: Array<{ query: string; expect?: string | string[]; maxResults?: number }>;
+            };
+            const limit = opts.limit
+              ? parsePositiveIntegerOption(opts.limit, "--limit")
+              : undefined;
+            const checks = (parsed.checks ?? []).slice(0, limit ?? parsed.checks?.length ?? 0);
+            const results = [];
+            for (const check of checks) {
+              const hits = await manager.search(check.query, {
+                maxResults: check.maxResults ?? 5,
+              });
+              const expected = Array.isArray(check.expect)
+                ? check.expect
+                : check.expect
+                  ? [check.expect]
+                  : [];
+              const haystack = hits
+                .map((hit) => `${hit.path}\n${hit.snippet}`.toLowerCase())
+                .join("\n");
+              results.push({
+                query: check.query,
+                expected,
+                passed:
+                  expected.length === 0 ||
+                  expected.every((item) => haystack.includes(item.toLowerCase())),
+                hits: hits.map((hit) => ({
+                  path: hit.path,
+                  score: hit.score,
+                  snippet: hit.snippet,
+                })),
+              });
+            }
+            const passed = results.filter((result) => result.passed).length;
+            console.log(
+              JSON.stringify(
+                { total: results.length, passed, failed: results.length - passed, results },
+                null,
+                2,
+              ),
+            );
           });
 
         memory

@@ -4,7 +4,7 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RegisteredMemorySearchManager } from "../plugins/memory-state.js";
 
-type ActiveMemorySearchPurpose = "default" | "status";
+type ActiveMemorySearchPurpose = "default" | "status" | "cli";
 
 /** Active manager lookup result, including a soft error when memory is unavailable. */
 export type ActiveMemorySearchManagerResult = {

@@ -65,9 +65,10 @@ describeLive("memory plugin live tests", () => {
     memoryPlugin.register(mockApi as any);
 
     // Check registration
-    expect(registeredTools.length).toBe(3);
+    expect(registeredTools.length).toBe(4);
     expect(registeredTools.map((t) => t.opts?.name)).toContain("memory_recall");
     expect(registeredTools.map((t) => t.opts?.name)).toContain("memory_store");
+    expect(registeredTools.map((t) => t.opts?.name)).toContain("memory_feedback");
     expect(registeredTools.map((t) => t.opts?.name)).toContain("memory_forget");
     expect(registeredClis.length).toBe(1);
     expect(registeredServices.length).toBe(1);

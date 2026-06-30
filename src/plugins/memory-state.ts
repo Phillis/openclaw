@@ -93,6 +93,10 @@ export type MemoryRuntimeBackendConfig =
   | {
       backend: "qmd";
       qmd?: MemoryRuntimeQmdConfig;
+    }
+  | {
+      backend: "lancedb";
+      dbPath?: string;
     };
 
 export type MemoryPluginRuntime = {
@@ -168,17 +172,29 @@ export function registerMemoryCapability(
   capability: MemoryPluginCapability,
 ): void {
   const existingCapability = memoryPluginState.capability?.capability;
-  // A selected memory plugin can add bridge artifacts while memory-core owns sidecar runtime hooks.
-  const shouldPreserveExisting =
+  // A selected memory plugin can add runtime/artifacts while memory-core owns sidecar prompt/flush hooks.
+  const shouldPreserveSidecarHooks =
     existingCapability &&
     Boolean(capability.publicArtifacts) &&
     !capability.promptBuilder &&
-    !capability.flushPlanResolver &&
-    !capability.runtime;
+    !capability.flushPlanResolver;
+  const preservedCapability = shouldPreserveSidecarHooks
+    ? {
+        ...(existingCapability.promptBuilder
+          ? { promptBuilder: existingCapability.promptBuilder }
+          : {}),
+        ...(existingCapability.flushPlanResolver
+          ? { flushPlanResolver: existingCapability.flushPlanResolver }
+          : {}),
+        ...(!capability.runtime && existingCapability.runtime
+          ? { runtime: existingCapability.runtime }
+          : {}),
+      }
+    : {};
   memoryPluginState.capability = {
     pluginId,
     capability: {
-      ...(shouldPreserveExisting ? existingCapability : {}),
+      ...preservedCapability,
       ...capability,
     },
   };
