@@ -1,6 +1,10 @@
 // Memory Core plugin module implements manager status state behavior.
 import type { SQLInputValue } from "node:sqlite";
-import type { MemorySource } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import type {
+  MemoryLifecycle,
+  MemoryScope,
+  MemorySource,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 
 type StatusProvider = {
   id: string;
@@ -13,9 +17,19 @@ type StatusAggregateRow = {
   c: number;
 };
 
+type ScopeAggregateRow = {
+  scope: MemoryScope;
+  c: number;
+};
+
+type LifecycleAggregateRow = {
+  lifecycle: MemoryLifecycle;
+  c: number;
+};
+
 type StatusAggregateDb = {
   prepare: (sql: string) => {
-    all: (...args: SQLInputValue[]) => StatusAggregateRow[];
+    all: (...args: SQLInputValue[]) => unknown[];
   };
 };
 
@@ -76,6 +90,8 @@ export function collectMemoryStatusAggregate(params: {
   files: number;
   chunks: number;
   sourceCounts: Array<{ source: MemorySource; files: number; chunks: number }>;
+  scopeCounts: Array<{ scope: MemoryScope; chunks: number }>;
+  lifecycleCounts: Array<{ lifecycle: MemoryLifecycle; chunks: number }>;
 } {
   const sources = Array.from(params.sources);
   const bySource = new Map<MemorySource, { files: number; chunks: number }>();
@@ -86,7 +102,7 @@ export function collectMemoryStatusAggregate(params: {
   const sourceFilterParams = params.sourceFilterParams ?? [];
   const aggregateRows = params.db
     .prepare(MEMORY_STATUS_AGGREGATE_SQL.replaceAll("__FILTER__", sourceFilterSql))
-    .all(...sourceFilterParams, ...sourceFilterParams);
+    .all(...sourceFilterParams, ...sourceFilterParams) as StatusAggregateRow[];
   let files = 0;
   let chunks = 0;
   for (const row of aggregateRows) {
@@ -105,5 +121,19 @@ export function collectMemoryStatusAggregate(params: {
     files,
     chunks,
     sourceCounts: sources.map((source) => Object.assign({ source }, bySource.get(source)!)),
+    scopeCounts: (
+      params.db
+        .prepare(
+          `SELECT COALESCE(scope, 'workspace') AS scope, COUNT(*) AS c FROM memory_index_chunks WHERE 1=1${sourceFilterSql} GROUP BY COALESCE(scope, 'workspace')`,
+        )
+        .all(...sourceFilterParams) as ScopeAggregateRow[]
+    ).map((row) => ({ scope: row.scope, chunks: row.c })),
+    lifecycleCounts: (
+      params.db
+        .prepare(
+          `SELECT COALESCE(lifecycle, 'active') AS lifecycle, COUNT(*) AS c FROM memory_index_chunks WHERE 1=1${sourceFilterSql} GROUP BY COALESCE(lifecycle, 'active')`,
+        )
+        .all(...sourceFilterParams) as LifecycleAggregateRow[]
+    ).map((row) => ({ lifecycle: row.lifecycle, chunks: row.c })),
   };
 }

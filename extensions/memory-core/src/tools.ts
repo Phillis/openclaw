@@ -1,6 +1,11 @@
 // Memory Core plugin module implements tools behavior.
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import type { MemorySource } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import {
+  normalizeMemoryFeedbackKind,
+  normalizeMemoryScope,
+  normalizeMemoryScopes,
+  type MemorySource,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
   asToolParamsRecord,
   jsonResult,
@@ -35,6 +40,7 @@ import {
   getMemoryManagerContextWithPurpose,
   loadMemoryToolRuntime,
   MemoryGetSchema,
+  MemoryFeedbackSchema,
   MemorySearchSchema,
   searchMemoryCorpusSupplements,
 } from "./tools.shared.js";
@@ -381,6 +387,10 @@ export function createMemorySearchTool(options: {
         const query = readStringParam(rawParams, "query", { required: true });
         const maxResults = readPositiveIntegerParam(rawParams, "maxResults");
         const minScore = readFiniteNumberParam(rawParams, "minScore");
+        const scopes = Array.isArray(rawParams.scopes)
+          ? rawParams.scopes.filter((entry): entry is string => typeof entry === "string")
+          : undefined;
+        const explain = rawParams.explain === true;
         const requestedCorpus = readStringParam(rawParams, "corpus") as
           | "memory"
           | "wiki"
@@ -495,12 +505,15 @@ export function createMemorySearchTool(options: {
                       : requestedCorpus === "memory"
                         ? (["memory"] as MemorySource[])
                         : undefined;
+                  const normalizedScopes = normalizeMemoryScopes(scopes ?? []);
                   const searchOptions = {
                     maxResults,
                     minScore,
                     sessionKey: options.agentSessionKey,
                     qmdSearchModeOverride,
                     signal: deadlineSignal,
+                    scopes: scopes ? normalizedScopes : undefined,
+                    explain,
                     onDebug: (debug: MemorySearchRuntimeDebug) => {
                       runtimeDebug.push(debug);
                     },
@@ -731,6 +744,88 @@ export function createMemoryGetTool(options: {
           lines: lines ?? undefined,
           agentSessionKey: options.agentSessionKey,
         });
+      },
+  });
+}
+
+export function createMemoryFeedbackTool(options: {
+  config?: OpenClawConfig;
+  getConfig?: () => OpenClawConfig | undefined;
+  agentId?: string;
+  agentSessionKey?: string;
+}) {
+  return createMemoryTool({
+    options,
+    label: "Memory Feedback",
+    name: "memory_feedback",
+    description:
+      "Record explicit feedback for a memory_search hit: useful, wrong, stale, duplicate, too_private, or wrong_scope. Use only when a specific returned memory path/line range should be reinforced, decayed, moved scope, or marked stale/superseded.",
+    parameters: MemoryFeedbackSchema,
+    execute:
+      ({ cfg, agentId }) =>
+      async (_toolCallId, params) => {
+        const rawParams = asToolParamsRecord(params);
+        const path = readStringParam(rawParams, "path", { required: true });
+        const kind = readStringParam(rawParams, "kind", { required: true });
+        const source = readStringParam(rawParams, "source") as MemorySource | undefined;
+        const scopeRaw = readStringParam(rawParams, "scope");
+        const supersededBy = readStringParam(rawParams, "supersededBy");
+        const duplicateOf = readStringParam(rawParams, "duplicateOf");
+        const startLine = readPositiveIntegerParam(rawParams, "startLine");
+        const endLine = readPositiveIntegerParam(rawParams, "endLine");
+        const normalizedKind = normalizeMemoryFeedbackKind(kind);
+        if (!normalizedKind) {
+          return jsonResult({
+            disabled: true,
+            unavailable: true,
+            error: `unsupported memory feedback kind: ${kind}`,
+          });
+        }
+        const scope = scopeRaw ? normalizeMemoryScope(scopeRaw) : undefined;
+        if (scopeRaw && !scope) {
+          return jsonResult({
+            disabled: true,
+            unavailable: true,
+            error: `unsupported memory scope: ${scopeRaw}`,
+          });
+        }
+        const memory = await getMemoryManagerContextWithPurpose({
+          cfg,
+          agentId,
+          purpose: "cli",
+        });
+        if ("error" in memory) {
+          return jsonResult({ disabled: true, unavailable: true, error: memory.error });
+        }
+        if (!memory.manager.feedback) {
+          return jsonResult({
+            disabled: true,
+            unavailable: true,
+            error: "active memory backend does not support feedback",
+          });
+        }
+        try {
+          return jsonResult(
+            await memory.manager.feedback({
+              path,
+              kind: normalizedKind,
+              source,
+              scope,
+              startLine,
+              endLine,
+              supersededBy,
+              duplicateOf,
+            }),
+          );
+        } catch (err) {
+          return jsonResult({
+            disabled: true,
+            unavailable: true,
+            error: formatErrorMessage(err),
+          });
+        } finally {
+          await memory.manager.close?.().catch(() => undefined);
+        }
       },
   });
 }

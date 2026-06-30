@@ -13,15 +13,27 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import { extractKeywords } from "openclaw/plugin-sdk/memory-core-host-engine-qmd";
 import {
+  buildMemoryLifecycleWhereClause,
+  buildMemoryScopeFilterClause,
+  deriveMemoryScope,
   readMemoryFile,
   MEMORY_EMBEDDING_CACHE_TABLE,
   MEMORY_INDEX_FTS_TABLE,
   MEMORY_INDEX_VECTOR_TABLE,
+  normalizeMemoryFeedbackKind,
+  normalizeMemoryLifecycle,
+  normalizeMemoryScope,
+  normalizeMemoryScopes,
+  type MemoryDoctorReport,
   type MemoryEmbeddingProbeResult,
+  type MemoryFeedbackResult,
+  type MemoryLifecycle,
   type MemoryProviderStatus,
   type MemorySearchManager,
+  type MemorySearchTrace,
   type MemorySearchRuntimeDebug,
   type MemorySearchResult,
+  type MemoryScope,
   type MemorySource,
   type MemorySyncProgressUpdate,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
@@ -93,6 +105,17 @@ type EmbeddingProbeCacheEntry = {
 };
 
 type KeywordSearchHit = MemorySearchResult & { id: string; textScore: number };
+
+type MemoryChunkMetadata = {
+  scope?: MemoryScope;
+  lifecycle?: MemoryLifecycle;
+  confidence?: number;
+  feedbackScore?: number;
+  feedbackCount?: number;
+  supersededBy?: string;
+  validFrom?: number;
+  validUntil?: number;
+};
 
 const EMBEDDING_PROBE_CACHE = new Map<string, EmbeddingProbeCacheEntry>();
 
@@ -603,6 +626,8 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       onDebug?: (debug: MemorySearchRuntimeDebug) => void;
       /** When set, only these chunk sources are considered (must be enabled for this manager). */
       sources?: MemorySource[];
+      scopes?: MemoryScope[];
+      explain?: boolean;
       /** Caller-owned cancellation; aborts in-flight embedding work when the caller stops waiting. */
       signal?: AbortSignal;
     },
@@ -681,6 +706,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       return [];
     }
     const sourceFilterList = searchSources ?? [...this.sources];
+    const scopeFilterList = normalizeMemoryScopes(opts?.scopes);
     const hybrid = this.settings.query.hybrid;
     const candidates = Math.min(
       200,
@@ -702,6 +728,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
           boostFallbackRanking: true,
         },
         sourceFilterList,
+        scopeFilterList,
       ).catch((err: unknown) => {
         log.warn(`memory search: FTS keyword query failed: ${formatErrorMessage(err)}`);
         return [];
@@ -713,7 +740,14 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
         workspaceDir: this.workspaceDir,
       });
       const sorted = decayed.toSorted((a, b) => b.score - a.score);
-      return this.selectScoredResults(sorted, maxResults, minScore, 0);
+      return this.annotateAndSelectResults({
+        query: cleaned,
+        results: sorted,
+        maxResults,
+        minScore,
+        relaxedMinScore: 0,
+        explain: opts?.explain,
+      });
     }
 
     // If FTS isn't available, hybrid mode cannot use keyword search; degrade to vector-only.
@@ -724,6 +758,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
             candidates,
             { boostFallbackRanking: true },
             sourceFilterList,
+            scopeFilterList,
           ).catch((err: unknown) => {
             log.warn(`memory search: FTS hybrid keyword query failed: ${formatErrorMessage(err)}`);
             return [];
@@ -761,21 +796,36 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
         queryVec = await this.embedQueryWithRetry(cleaned, opts?.signal);
       } else if (!this.provider && this.fts.enabled && this.fts.available) {
         log.warn(`memory search: embeddings unavailable; using keyword-only results: ${message}`);
-        return this.selectScoredResults(keywordResults, maxResults, minScore, 0);
+        return this.annotateAndSelectResults({
+          query: cleaned,
+          results: keywordResults,
+          maxResults,
+          minScore,
+          relaxedMinScore: 0,
+          explain: opts?.explain,
+        });
       } else {
         throw err;
       }
     }
     const hasVector = queryVec.some((v) => v !== 0);
     const vectorResults = hasVector
-      ? await this.searchVector(queryVec, candidates, sourceFilterList).catch((err: unknown) => {
-          log.warn(`memory search: vector query failed: ${formatErrorMessage(err)}`);
-          return [];
-        })
+      ? await this.searchVector(queryVec, candidates, sourceFilterList, scopeFilterList).catch(
+          (err: unknown) => {
+            log.warn(`memory search: vector query failed: ${formatErrorMessage(err)}`);
+            return [];
+          },
+        )
       : [];
 
     if (!hybrid.enabled || !this.fts.enabled || !this.fts.available) {
-      return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      return this.annotateAndSelectResults({
+        query: cleaned,
+        results: vectorResults,
+        maxResults,
+        minScore,
+        explain: opts?.explain,
+      });
     }
 
     const merged = await this.mergeHybridResults({
@@ -788,7 +838,13 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     });
     const strict = merged.filter((entry) => entry.score >= minScore);
     if (strict.length > 0 || keywordResults.length === 0) {
-      return strict.slice(0, maxResults);
+      return this.annotateAndSelectResults({
+        query: cleaned,
+        results: strict,
+        maxResults,
+        minScore,
+        explain: opts?.explain,
+      });
     }
 
     // Hybrid defaults can produce keyword-only matches below minScore after
@@ -800,27 +856,156 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
         (entry) => `${entry.source}:${entry.path}:${entry.startLine}:${entry.endLine}`,
       ),
     );
-    return this.selectScoredResults(
-      merged.filter((entry) =>
+    return this.annotateAndSelectResults({
+      query: cleaned,
+      results: merged.filter((entry) =>
         keywordKeys.has(`${entry.source}:${entry.path}:${entry.startLine}:${entry.endLine}`),
       ),
       maxResults,
       minScore,
       relaxedMinScore,
-    );
+      explain: opts?.explain,
+    });
   }
 
-  private selectScoredResults<T extends MemorySearchResult & { score: number }>(
-    results: T[],
-    maxResults: number,
-    minScore: number,
-    relaxedMinScore = minScore,
-  ): T[] {
-    const strict = results.filter((entry) => entry.score >= minScore);
-    if (strict.length > 0) {
-      return strict.slice(0, maxResults);
+  private loadChunkMetadata(
+    result: Pick<MemorySearchResult, "source" | "path" | "startLine" | "endLine">,
+  ): MemoryChunkMetadata | null {
+    const row = this.db
+      .prepare(
+        `SELECT scope, lifecycle, confidence, feedback_score, feedback_count, superseded_by, valid_from, valid_until
+           FROM memory_index_chunks
+          WHERE source = ? AND path = ? AND start_line = ? AND end_line = ?
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+      )
+      .get(result.source, result.path, result.startLine, result.endLine) as
+      | {
+          scope?: string;
+          lifecycle?: string;
+          confidence?: number;
+          feedback_score?: number;
+          feedback_count?: number;
+          superseded_by?: string | null;
+          valid_from?: number | null;
+          valid_until?: number | null;
+        }
+      | undefined;
+    if (!row) {
+      return null;
     }
-    return results.filter((entry) => entry.score >= relaxedMinScore).slice(0, maxResults);
+    return {
+      scope: normalizeMemoryScope(row.scope),
+      lifecycle: normalizeMemoryLifecycle(row.lifecycle),
+      confidence: typeof row.confidence === "number" ? row.confidence : undefined,
+      feedbackScore: typeof row.feedback_score === "number" ? row.feedback_score : undefined,
+      feedbackCount: typeof row.feedback_count === "number" ? row.feedback_count : undefined,
+      supersededBy: row.superseded_by ?? undefined,
+      validFrom: row.valid_from ?? undefined,
+      validUntil: row.valid_until ?? undefined,
+    };
+  }
+
+  private isMetadataCurrentlySearchable(metadata: MemoryChunkMetadata | null): boolean {
+    if (!metadata) {
+      return true;
+    }
+    if (metadata.lifecycle && metadata.lifecycle !== "active") {
+      return false;
+    }
+    const now = Date.now();
+    if (typeof metadata.validFrom === "number" && metadata.validFrom > now) {
+      return false;
+    }
+    if (typeof metadata.validUntil === "number" && metadata.validUntil <= now) {
+      return false;
+    }
+    return true;
+  }
+
+  private buildResultTrace(params: {
+    query: string;
+    result: MemorySearchResult;
+    metadata: MemoryChunkMetadata | null;
+    included: boolean;
+    reason: string;
+  }): MemorySearchTrace {
+    const now = Date.now();
+    const validFrom = params.metadata?.validFrom;
+    const validUntil = params.metadata?.validUntil;
+    const freshness =
+      typeof validFrom === "number" && validFrom > now
+        ? "future"
+        : typeof validUntil === "number" && validUntil <= now
+          ? "expired"
+          : "valid";
+    return {
+      query: params.query,
+      backend: "builtin",
+      included: params.included,
+      source: params.result.source,
+      path: params.result.path,
+      startLine: params.result.startLine,
+      endLine: params.result.endLine,
+      score: params.result.score,
+      vectorScore: params.result.vectorScore,
+      textScore: params.result.textScore,
+      feedbackScore: params.metadata?.feedbackScore,
+      scope: params.metadata?.scope,
+      lifecycle: params.metadata?.lifecycle,
+      freshness,
+      reason: params.reason,
+    };
+  }
+
+  private async annotateAndSelectResults<T extends MemorySearchResult & { score: number }>(params: {
+    query: string;
+    results: T[];
+    maxResults: number;
+    minScore: number;
+    relaxedMinScore?: number;
+    explain?: boolean;
+  }): Promise<MemorySearchResult[]> {
+    const relaxedMinScore = params.relaxedMinScore ?? params.minScore;
+    const annotated = params.results.flatMap((entry) => {
+      const metadata = this.loadChunkMetadata(entry);
+      if (!this.isMetadataCurrentlySearchable(metadata)) {
+        return [];
+      }
+      const feedbackScore = metadata?.feedbackScore ?? 0;
+      const adjustedScore = Math.max(0, Math.min(1, entry.score + feedbackScore * 0.03));
+      const result: MemorySearchResult = {
+        ...entry,
+        score: adjustedScore,
+        scope: metadata?.scope,
+        lifecycle: metadata?.lifecycle,
+        confidence: metadata?.confidence,
+        feedbackScore,
+        feedbackCount: metadata?.feedbackCount,
+        supersededBy: metadata?.supersededBy,
+      };
+      if (params.explain) {
+        result.trace = this.buildResultTrace({
+          query: params.query,
+          result,
+          metadata,
+          included: true,
+          reason: "active chunk matched search and passed scope/freshness filters",
+        });
+      }
+      return [result];
+    });
+    const sorted = annotated.toSorted((left, right) => {
+      if (left.score !== right.score) {
+        return right.score - left.score;
+      }
+      return left.path.localeCompare(right.path);
+    });
+    const strict = sorted.filter((entry) => entry.score >= params.minScore);
+    if (strict.length > 0) {
+      return strict.slice(0, params.maxResults);
+    }
+    return sorted.filter((entry) => entry.score >= relaxedMinScore).slice(0, params.maxResults);
   }
 
   private hasIndexedContent(): boolean {
@@ -847,6 +1032,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     queryVec: number[],
     limit: number,
     sourceFilterList: MemorySource[],
+    scopeFilterList: MemoryScope[],
   ): Promise<Array<MemorySearchResult & { id: string }>> {
     // This method should never be called without a provider
     if (!this.provider) {
@@ -863,8 +1049,8 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       limit,
       snippetMaxChars: SNIPPET_MAX_CHARS,
       ensureVectorReady: async (dimensions) => await this.ensureVectorReady(dimensions),
-      sourceFilterVec: this.buildSourceFilter("c", sourceFilterList),
-      sourceFilterChunks: this.buildSourceFilter(undefined, sourceFilterList),
+      sourceFilterVec: this.buildChunkFilter("c", sourceFilterList, scopeFilterList),
+      sourceFilterChunks: this.buildChunkFilter(undefined, sourceFilterList, scopeFilterList),
     });
     return results.map((entry) => entry as MemorySearchResult & { id: string });
   }
@@ -878,11 +1064,13 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     limit: number,
     options?: { boostFallbackRanking?: boolean },
     sourceFilterList?: MemorySource[],
+    scopeFilterList: MemoryScope[] = [],
   ): Promise<KeywordSearchHit[]> {
     if (!this.fts.enabled || !this.fts.available) {
       return [];
     }
     const sourceFilter = this.buildSourceFilter(undefined, sourceFilterList);
+    const chunkFilter = this.buildChunkFilter("c", sourceFilterList, scopeFilterList);
     const results = await searchKeyword({
       db: this.db,
       ftsTable: FTS_TABLE,
@@ -891,6 +1079,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       limit,
       snippetMaxChars: SNIPPET_MAX_CHARS,
       sourceFilter,
+      chunkFilter,
       buildFtsQuery: (raw) => this.buildFtsQuery(raw),
       bm25RankToScore,
       boostFallbackRanking: options?.boostFallbackRanking,
@@ -903,12 +1092,14 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     limit: number,
     options: { boostFallbackRanking?: boolean } | undefined,
     sourceFilterList: MemorySource[],
+    scopeFilterList: MemoryScope[],
   ): Promise<KeywordSearchHit[]> {
     const fullQueryResults = await this.searchKeyword(
       query,
       limit,
       options,
       sourceFilterList,
+      scopeFilterList,
     ).catch(() => []);
     if (fullQueryResults.length > 0) {
       return fullQueryResults;
@@ -924,7 +1115,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
 
     const resultSets = await Promise.all(
       fallbackTerms.map((term) =>
-        this.searchKeyword(term, limit, options, sourceFilterList).catch(() => []),
+        this.searchKeyword(term, limit, options, sourceFilterList, scopeFilterList).catch(() => []),
       ),
     );
     return this.mergeKeywordSearchHits(resultSets);
@@ -987,6 +1178,19 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       temporalDecay: params.temporalDecay,
       workspaceDir: this.workspaceDir,
     }).then((entries) => entries.map((entry) => entry as MemorySearchResult));
+  }
+
+  private buildChunkFilter(
+    alias?: string,
+    sourcesOverride?: MemorySource[],
+    scopesOverride?: MemoryScope[],
+  ): { sql: string; params: string[] } {
+    const sourceFilter = this.buildSourceFilter(alias, sourcesOverride);
+    const scopeFilter = buildMemoryScopeFilterClause(scopesOverride, alias);
+    return {
+      sql: sourceFilter.sql + buildMemoryLifecycleWhereClause(alias) + scopeFilter.sql,
+      params: [...sourceFilter.params, ...scopeFilter.params],
+    };
   }
 
   async sync(params?: {
@@ -1115,6 +1319,173 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     });
   }
 
+  async feedback(params: {
+    path: string;
+    source?: MemorySource;
+    startLine?: number;
+    endLine?: number;
+    kind: unknown;
+    scope?: unknown;
+    supersededBy?: string;
+    duplicateOf?: string;
+  }): Promise<MemoryFeedbackResult> {
+    const kind = normalizeMemoryFeedbackKind(params.kind);
+    if (!kind) {
+      throw new Error(`Unsupported memory feedback kind: ${String(params.kind)}`);
+    }
+    const scope = normalizeMemoryScope(params.scope);
+    const lifecycle: MemoryLifecycle | undefined =
+      kind === "stale" || kind === "wrong" || kind === "too_private"
+        ? "stale"
+        : kind === "duplicate"
+          ? "superseded"
+          : undefined;
+    const feedbackDelta = kind === "useful" ? 1 : kind === "wrong" || kind === "stale" ? -2 : -1;
+    const source = params.source ?? "memory";
+    const where: string[] = ["path = ?", "source = ?"];
+    const whereParams: Array<string | number> = [params.path, source];
+    if (typeof params.startLine === "number") {
+      where.push("end_line >= ?");
+      whereParams.push(params.startLine);
+    }
+    if (typeof params.endLine === "number") {
+      where.push("start_line <= ?");
+      whereParams.push(params.endLine);
+    }
+
+    const sets = [
+      "feedback_score = feedback_score + ?",
+      "feedback_count = feedback_count + 1",
+      "last_feedback_at = ?",
+      "last_feedback_kind = ?",
+    ];
+    const setParams: Array<string | number | null> = [feedbackDelta, Date.now(), kind];
+    if (scope) {
+      sets.push("scope = ?");
+      setParams.push(scope);
+    }
+    if (lifecycle) {
+      sets.push("lifecycle = ?");
+      setParams.push(lifecycle);
+    }
+    if (kind === "duplicate" && params.duplicateOf?.trim()) {
+      sets.push("superseded_by = ?");
+      setParams.push(params.duplicateOf.trim());
+    } else if (params.supersededBy?.trim()) {
+      sets.push("superseded_by = ?");
+      setParams.push(params.supersededBy.trim());
+    }
+
+    const result = this.db
+      .prepare(`UPDATE memory_index_chunks SET ${sets.join(", ")} WHERE ${where.join(" AND ")}`)
+      .run(...setParams, ...whereParams);
+
+    const updated = Number(result.changes ?? 0);
+    const row = this.db
+      .prepare(
+        `SELECT scope, lifecycle, feedback_score, feedback_count
+           FROM memory_index_chunks
+          WHERE ${where.join(" AND ")}
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+      )
+      .get(...whereParams) as
+      | {
+          scope?: string;
+          lifecycle?: string;
+          feedback_score?: number;
+          feedback_count?: number;
+        }
+      | undefined;
+    return {
+      updated,
+      scope: normalizeMemoryScope(row?.scope),
+      lifecycle: normalizeMemoryLifecycle(row?.lifecycle),
+      feedbackScore: row?.feedback_score,
+      feedbackCount: row?.feedback_count,
+    };
+  }
+
+  async doctor(params?: { deep?: boolean }): Promise<MemoryDoctorReport> {
+    const checks: MemoryDoctorReport["checks"] = [];
+    const add = (check: MemoryDoctorReport["checks"][number]) => checks.push(check);
+    const status = this.status();
+    add({
+      id: "schema",
+      status: "ok",
+      message: "builtin memory schema loaded",
+      detail: this.settings.store.databasePath,
+    });
+    add({
+      id: "index",
+      status: status.chunks && status.chunks > 0 ? "ok" : "warn",
+      message:
+        status.chunks && status.chunks > 0
+          ? `${status.chunks} chunks indexed`
+          : "no indexed memory chunks",
+    });
+    if (status.fts?.enabled) {
+      add({
+        id: "fts",
+        status: status.fts.available ? "ok" : "warn",
+        message: status.fts.available ? "FTS ready" : "FTS unavailable",
+        detail: status.fts.error,
+      });
+    }
+    if (status.vector?.enabled) {
+      add({
+        id: "vector-store",
+        status: status.vector.storeAvailable === false ? "warn" : "ok",
+        message:
+          status.vector.storeAvailable === false
+            ? "vector store unavailable"
+            : "vector store ready",
+        detail: status.vector.loadError,
+      });
+    }
+    const tombstoned = this.db
+      .prepare("SELECT COUNT(*) AS c FROM memory_index_chunks WHERE lifecycle = 'tombstoned'")
+      .get() as { c?: number } | undefined;
+    const stale = this.db
+      .prepare("SELECT COUNT(*) AS c FROM memory_index_chunks WHERE lifecycle = 'stale'")
+      .get() as { c?: number } | undefined;
+    add({
+      id: "lifecycle",
+      status: "ok",
+      message: `${stale?.c ?? 0} stale chunks, ${tombstoned?.c ?? 0} tombstoned chunks`,
+    });
+    const malformed = this.db
+      .prepare(
+        "SELECT COUNT(*) AS c FROM memory_index_chunks WHERE scope NOT IN ('agent','workspace','project','thread','shared','ephemeral') OR lifecycle NOT IN ('active','stale','superseded','tombstoned')",
+      )
+      .get() as { c?: number } | undefined;
+    add({
+      id: "metadata",
+      status: malformed?.c ? "error" : "ok",
+      message: malformed?.c ? `${malformed.c} chunks have invalid metadata` : "metadata valid",
+    });
+    if (params?.deep) {
+      const embedding = await this.probeEmbeddingAvailability();
+      add({
+        id: "embeddings",
+        status: embedding.ok ? "ok" : "warn",
+        message: embedding.ok ? "embedding provider ready" : "embedding provider unavailable",
+        detail: embedding.error,
+      });
+      const vector = await this.probeVectorAvailability();
+      add({
+        id: "semantic-vector",
+        status: vector || !status.vector?.enabled ? "ok" : "warn",
+        message: vector ? "semantic vector search ready" : "semantic vector search unavailable",
+      });
+    }
+    return {
+      backend: "builtin",
+      checkedAtMs: Date.now(),
+      checks,
+    };
+  }
+
   status(): MemoryProviderStatus {
     this.refreshIndexIdentityDirty({
       providerKeyKnown: this.providerInitialized,
@@ -1156,6 +1527,8 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       sources: Array.from(this.sources),
       extraPaths: this.settings.extraPaths,
       sourceCounts: aggregateState.sourceCounts,
+      scopeCounts: aggregateState.scopeCounts,
+      lifecycleCounts: aggregateState.lifecycleCounts,
       cache: this.cache.enabled
         ? {
             enabled: true,

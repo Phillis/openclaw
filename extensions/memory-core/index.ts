@@ -69,8 +69,38 @@ const MemorySearchSchema = {
     maxResults: { type: "integer", minimum: 1 },
     minScore: { type: "number" },
     corpus: { type: "string", enum: ["memory", "wiki", "all", "sessions"] },
+    scopes: {
+      type: "array",
+      items: {
+        type: "string",
+        enum: ["agent", "workspace", "project", "thread", "shared", "ephemeral"],
+      },
+    },
+    explain: { type: "boolean" },
   },
   required: ["query"],
+  additionalProperties: false,
+} as const satisfies TSchema;
+
+const MemoryFeedbackSchema = {
+  type: "object",
+  properties: {
+    path: { type: "string" },
+    kind: {
+      type: "string",
+      enum: ["useful", "wrong", "stale", "duplicate", "too_private", "wrong_scope"],
+    },
+    source: { type: "string", enum: ["memory", "sessions"] },
+    startLine: { type: "integer", minimum: 1 },
+    endLine: { type: "integer", minimum: 1 },
+    scope: {
+      type: "string",
+      enum: ["agent", "workspace", "project", "thread", "shared", "ephemeral"],
+    },
+    supersededBy: { type: "string" },
+    duplicateOf: { type: "string" },
+  },
+  required: ["path", "kind"],
   additionalProperties: false,
 } as const satisfies TSchema;
 
@@ -89,9 +119,9 @@ const MemoryGetSchema = {
 function createLazyMemoryTool(params: {
   options: MemoryToolOptions;
   label: string;
-  name: "memory_search" | "memory_get";
+  name: "memory_search" | "memory_get" | "memory_feedback";
   description: string;
-  parameters: typeof MemorySearchSchema | typeof MemoryGetSchema;
+  parameters: typeof MemorySearchSchema | typeof MemoryGetSchema | typeof MemoryFeedbackSchema;
   load: (module: MemoryToolsModule, options: MemoryToolOptions) => AnyAgentTool | null;
 }): AnyAgentTool | null {
   if (!hasMemoryToolContext(params.options)) {
@@ -121,6 +151,18 @@ function createLazyMemoryTool(params: {
       return await tool.execute(toolCallId, toolParams, signal, onUpdate);
     },
   };
+}
+
+function createLazyMemoryFeedbackTool(options: MemoryToolOptions): AnyAgentTool | null {
+  return createLazyMemoryTool({
+    options,
+    label: "Memory Feedback",
+    name: "memory_feedback",
+    description:
+      "Record explicit feedback for a memory_search hit: useful, wrong, stale, duplicate, too_private, or wrong_scope.",
+    parameters: MemoryFeedbackSchema,
+    load: (module, loadOptions) => module.createMemoryFeedbackTool(loadOptions),
+  });
 }
 
 function createLazyMemorySearchTool(options: MemoryToolOptions): AnyAgentTool | null {
@@ -205,6 +247,10 @@ export default definePluginEntry({
 
     api.registerTool((ctx) => createLazyMemoryGetTool(resolveMemoryToolOptions(ctx)), {
       names: ["memory_get"],
+    });
+
+    api.registerTool((ctx) => createLazyMemoryFeedbackTool(resolveMemoryToolOptions(ctx)), {
+      names: ["memory_feedback"],
     });
 
     api.registerCommand({

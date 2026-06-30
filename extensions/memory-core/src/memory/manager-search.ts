@@ -145,8 +145,8 @@ export async function searchVector(params: {
   limit: number;
   snippetMaxChars: number;
   ensureVectorReady: (dimensions: number) => Promise<boolean>;
-  sourceFilterVec: { sql: string; params: SearchSource[] };
-  sourceFilterChunks: { sql: string; params: SearchSource[] };
+  sourceFilterVec: { sql: string; params: string[] };
+  sourceFilterChunks: { sql: string; params: string[] };
 }): Promise<SearchRowResult[]> {
   if (params.queryVec.length === 0 || params.limit <= 0) {
     return [];
@@ -241,7 +241,7 @@ async function searchChunksByEmbedding(params: {
   db: DatabaseSync;
   providerModel: string;
   providerModelAliases?: string[];
-  sourceFilter: { sql: string; params: SearchSource[] };
+  sourceFilter: { sql: string; params: string[] };
   queryVec: number[];
   limit: number;
   snippetMaxChars: number;
@@ -328,7 +328,8 @@ export async function searchKeyword(params: {
   ftsTokenizer?: "unicode61" | "trigram";
   limit: number;
   snippetMaxChars: number;
-  sourceFilter: { sql: string; params: SearchSource[] };
+  sourceFilter: { sql: string; params: string[] };
+  chunkFilter?: { sql: string; params: string[] };
   buildFtsQuery: (raw: string) => string | null;
   bm25RankToScore: (rank: number) => number;
   boostFallbackRanking?: boolean;
@@ -347,7 +348,8 @@ export async function searchKeyword(params: {
 
   // Lexical FTS is model-agnostic (issue #48300), but old databases may
   // already contain orphaned FTS rows from prior model-scoped cleanup.
-  const liveChunkClause = ` AND EXISTS (SELECT 1 FROM memory_index_chunks c WHERE c.id = ${params.ftsTable}.id)`;
+  const chunkFilter = params.chunkFilter ?? { sql: "", params: [] };
+  const liveChunkClause = ` AND EXISTS (SELECT 1 FROM memory_index_chunks c WHERE c.id = ${params.ftsTable}.id${chunkFilter.sql})`;
   const substringClause = plan.substringTerms.map(() => " AND text LIKE ? ESCAPE '\\'").join("");
   const substringParams = plan.substringTerms.map((term) => `%${escapeLikePattern(term)}%`);
 
@@ -376,6 +378,7 @@ export async function searchKeyword(params: {
         .all(
           plan.matchQuery,
           ...substringParams,
+          ...chunkFilter.params,
           ...params.sourceFilter.params,
           params.limit,
         ) as typeof rows;
@@ -398,7 +401,12 @@ export async function searchKeyword(params: {
             ` WHERE 1=1${fallbackLikeClause}${liveChunkClause}${params.sourceFilter.sql}\n` +
             ` LIMIT ?`,
         )
-        .all(...fallbackLikeParams, ...params.sourceFilter.params, params.limit) as typeof rows;
+        .all(
+          ...fallbackLikeParams,
+          ...chunkFilter.params,
+          ...params.sourceFilter.params,
+          params.limit,
+        ) as typeof rows;
     }
   } else {
     rows = params.db
@@ -409,7 +417,12 @@ export async function searchKeyword(params: {
           ` WHERE 1=1${substringClause}${liveChunkClause}${params.sourceFilter.sql}\n` +
           ` LIMIT ?`,
       )
-      .all(...substringParams, ...params.sourceFilter.params, params.limit) as typeof rows;
+      .all(
+        ...substringParams,
+        ...chunkFilter.params,
+        ...params.sourceFilter.params,
+        params.limit,
+      ) as typeof rows;
   }
 
   return rows.map((row) => {

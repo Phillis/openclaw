@@ -35,6 +35,10 @@ export const MemorySearchSchema = Type.Object({
   maxResults: Type.Optional(Type.Integer({ minimum: 1 })),
   minScore: optionalFiniteNumberSchema(),
   corpus: Type.Optional(stringEnum(["memory", "wiki", "all", "sessions"])),
+  scopes: Type.Optional(
+    Type.Array(stringEnum(["agent", "workspace", "project", "thread", "shared", "ephemeral"])),
+  ),
+  explain: Type.Optional(Type.Boolean()),
 });
 
 export const MemoryGetSchema = Type.Object({
@@ -42,6 +46,19 @@ export const MemoryGetSchema = Type.Object({
   from: Type.Optional(Type.Integer()),
   lines: Type.Optional(Type.Integer()),
   corpus: Type.Optional(stringEnum(["memory", "wiki", "all"])),
+});
+
+export const MemoryFeedbackSchema = Type.Object({
+  path: Type.String(),
+  kind: stringEnum(["useful", "wrong", "stale", "duplicate", "too_private", "wrong_scope"]),
+  source: Type.Optional(stringEnum(["memory", "sessions"])),
+  startLine: Type.Optional(Type.Integer({ minimum: 1 })),
+  endLine: Type.Optional(Type.Integer({ minimum: 1 })),
+  scope: Type.Optional(
+    stringEnum(["agent", "workspace", "project", "thread", "shared", "ephemeral"]),
+  ),
+  supersededBy: Type.Optional(Type.String()),
+  duplicateOf: Type.Optional(Type.String()),
 });
 
 function resolveMemoryToolContext(options: MemoryToolOptions) {
@@ -86,7 +103,7 @@ export function createMemoryTool(params: {
   label: string;
   name: string;
   description: string;
-  parameters: typeof MemorySearchSchema | typeof MemoryGetSchema;
+  parameters: typeof MemorySearchSchema | typeof MemoryGetSchema | typeof MemoryFeedbackSchema;
   execute: (ctx: { cfg: OpenClawConfig; agentId: string }) => AnyAgentTool["execute"];
 }): AnyAgentTool | null {
   const ctx = resolveMemoryToolContext(params.options);

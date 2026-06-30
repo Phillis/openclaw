@@ -44,6 +44,7 @@ import {
   type MemorySearchManager,
   type MemorySearchRuntimeDebug,
   type MemorySearchResult,
+  type MemoryScope,
   type MemorySource,
   type MemorySyncProgressUpdate,
   type ResolvedMemoryBackendConfig,
@@ -1263,6 +1264,9 @@ export class QmdMemoryManager implements MemorySearchManager {
       qmdSearchModeOverride?: "query" | "search" | "vsearch";
       onDebug?: (debug: MemorySearchRuntimeDebug) => void;
       sources?: MemorySource[];
+      scopes?: MemoryScope[];
+      explain?: boolean;
+      signal?: AbortSignal;
     },
   ): Promise<MemorySearchResult[]> {
     if (!this.isScopeAllowed(opts?.sessionKey)) {
@@ -1280,7 +1284,13 @@ export class QmdMemoryManager implements MemorySearchManager {
       this.qmd.limits.maxResults,
       opts?.maxResults ?? this.qmd.limits.maxResults,
     );
-    const requestedSources = opts?.sources?.length ? uniqueValues(opts.sources) : undefined;
+    const scopeSources =
+      opts?.scopes?.length && !opts.scopes.includes("thread")
+        ? (["memory"] as MemorySource[])
+        : opts?.scopes?.length && opts.scopes.every((scope) => scope === "thread")
+          ? (["sessions"] as MemorySource[])
+          : undefined;
+    const requestedSources = opts?.sources?.length ? uniqueValues(opts.sources) : scopeSources;
     const collectionNames = this.listManagedCollectionNames(requestedSources);
     const limit = resultLimit;
     if (collectionNames.length === 0) {
@@ -1605,6 +1615,42 @@ export class QmdMemoryManager implements MemorySearchManager {
       this.vectorStatusDetail = `QMD status probe failed: ${message}`;
       return false;
     }
+  }
+
+  async doctor(params?: { deep?: boolean }) {
+    const checks: Array<{
+      id: string;
+      status: "ok" | "warn" | "error";
+      message: string;
+      detail?: string;
+    }> = [
+      {
+        id: "backend",
+        status: "ok" as const,
+        message: "qmd backend active",
+        detail: this.indexPath,
+      },
+      {
+        id: "collections",
+        status: this.qmd.collections.length > 0 ? ("ok" as const) : ("warn" as const),
+        message: `${this.qmd.collections.length} managed collections configured`,
+      },
+    ];
+    if (params?.deep) {
+      const vectors = await this.probeVectorAvailability();
+      checks.push({
+        id: "vectors",
+        status:
+          vectors || !qmdUsesVectors(this.qmd.searchMode) ? ("ok" as const) : ("warn" as const),
+        message: vectors ? "qmd vectors ready" : "qmd vectors unavailable or disabled",
+        detail: this.vectorStatusDetail ?? undefined,
+      });
+    }
+    return {
+      backend: "qmd" as const,
+      checkedAtMs: Date.now(),
+      checks,
+    };
   }
 
   async close(): Promise<void> {

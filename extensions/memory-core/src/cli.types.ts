@@ -13,6 +13,29 @@ export type MemorySearchCommandOptions = MemoryCommandOptions & {
   query?: string;
   maxResults?: number;
   minScore?: number;
+  scope?: string[];
+  explain?: boolean;
+};
+
+export type MemoryFeedbackCommandOptions = MemoryCommandOptions & {
+  path?: string;
+  source?: "memory" | "sessions";
+  from?: number;
+  to?: number;
+  kind?: string;
+  scope?: string;
+  supersededBy?: string;
+  duplicateOf?: string;
+};
+
+export type MemoryBundleCommandOptions = MemoryCommandOptions & {
+  output?: string;
+  input?: string;
+};
+
+export type MemoryEvalCommandOptions = MemoryCommandOptions & {
+  file?: string;
+  limit?: number;
 };
 
 export type MemoryPromoteCommandOptions = MemoryCommandOptions & {

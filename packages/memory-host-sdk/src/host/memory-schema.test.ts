@@ -63,9 +63,9 @@ describe("memory index schema", () => {
       });
 
       expect(result.ftsAvailable).toBe(true);
-      expect(db.prepare("SELECT * FROM memory_index_sources").all()).toEqual([
-        { path: "MEMORY.md", source: "memory", hash: "file-hash", mtime: 10, size: 20 },
-      ]);
+      expect(
+        db.prepare("SELECT path, source, hash, mtime, size FROM memory_index_sources").all(),
+      ).toEqual([{ path: "MEMORY.md", source: "memory", hash: "file-hash", mtime: 10, size: 20 }]);
       expect(db.prepare("SELECT id, text FROM memory_index_chunks").all()).toEqual([
         { id: "chunk-1", text: "remember this" },
       ]);
@@ -108,6 +108,62 @@ describe("memory index schema", () => {
       ).toEqual([
         { path: "shared.md", source: "memory", hash: "memory-hash" },
         { path: "shared.md", source: "sessions", hash: "session-hash" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("adds scope lifecycle and feedback metadata to existing canonical tables", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE memory_index_sources (
+          path TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'memory',
+          hash TEXT NOT NULL,
+          mtime INTEGER NOT NULL,
+          size INTEGER NOT NULL,
+          PRIMARY KEY (path, source)
+        );
+        CREATE TABLE memory_index_chunks (
+          id TEXT PRIMARY KEY,
+          path TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'memory',
+          start_line INTEGER NOT NULL,
+          end_line INTEGER NOT NULL,
+          hash TEXT NOT NULL,
+          model TEXT NOT NULL,
+          text TEXT NOT NULL,
+          embedding TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        INSERT INTO memory_index_sources VALUES ('MEMORY.md', 'memory', 'h', 1, 2);
+        INSERT INTO memory_index_chunks VALUES (
+          'c1', 'MEMORY.md', 'memory', 1, 1, 'h', 'm', 'text', '[1]', 3
+        );
+      `);
+
+      ensureMemoryIndexSchema({
+        db,
+        cacheEnabled: false,
+        ftsEnabled: false,
+      });
+
+      expect(
+        db
+          .prepare(
+            "SELECT scope, lifecycle, confidence, feedback_score, feedback_count FROM memory_index_chunks",
+          )
+          .all(),
+      ).toEqual([
+        {
+          scope: "workspace",
+          lifecycle: "active",
+          confidence: 1,
+          feedback_score: 0,
+          feedback_count: 0,
+        },
       ]);
     } finally {
       db.close();

@@ -11,6 +11,7 @@ import { createSubsystemLogger } from "openclaw/plugin-sdk/memory-core-host-engi
 import {
   buildMultimodalChunkForIndexing,
   chunkMarkdown,
+  deriveMemoryScope,
   hashText,
   MEMORY_EMBEDDING_CACHE_TABLE,
   MEMORY_INDEX_FTS_TABLE,
@@ -716,15 +717,20 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
   }
 
   private upsertFileRecord(entry: MemoryIndexEntry, source: MemorySource): void {
+    const scope = deriveMemoryScope({ source, path: entry.path });
     this.db
       .prepare(
-        `INSERT INTO memory_index_sources (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO memory_index_sources (path, source, hash, mtime, size, scope, lifecycle) VALUES (?, ?, ?, ?, ?, ?, 'active')
          ON CONFLICT(path, source) DO UPDATE SET
            hash=excluded.hash,
            mtime=excluded.mtime,
-           size=excluded.size`,
+           size=excluded.size,
+           scope=excluded.scope,
+           lifecycle='active',
+           valid_from=NULL,
+           valid_until=NULL`,
       )
-      .run(entry.path, source, entry.hash, entry.mtimeMs, entry.size);
+      .run(entry.path, source, entry.hash, entry.mtimeMs, entry.size, scope);
   }
 
   private deleteFileRecord(pathname: string, source: MemorySource): void {
@@ -747,6 +753,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     vectorReady: boolean,
   ): void {
     const now = Date.now();
+    const scope = deriveMemoryScope({ source, path: entry.path });
     runSqliteImmediateTransactionSync(this.db, () => {
       this.clearIndexedFileData(entry.path, source);
       for (let i = 0; i < chunks.length; i++) {
@@ -757,14 +764,18 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         );
         this.db
           .prepare(
-            `INSERT INTO memory_index_chunks (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO memory_index_chunks (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at, scope, lifecycle)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
              ON CONFLICT(id) DO UPDATE SET
                hash=excluded.hash,
                model=excluded.model,
                text=excluded.text,
                embedding=excluded.embedding,
-               updated_at=excluded.updated_at`,
+               updated_at=excluded.updated_at,
+               scope=excluded.scope,
+               lifecycle='active',
+               valid_from=NULL,
+               valid_until=NULL`,
           )
           .run(
             id,
@@ -777,6 +788,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
             chunk.text,
             JSON.stringify(embedding),
             now,
+            scope,
           );
         if (vectorReady && embedding.length > 0) {
           replaceMemoryVectorRow({

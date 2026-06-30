@@ -11,6 +11,9 @@ import {
 } from "openclaw/plugin-sdk/number-runtime";
 import type {
   MemoryCommandOptions,
+  MemoryBundleCommandOptions,
+  MemoryEvalCommandOptions,
+  MemoryFeedbackCommandOptions,
   MemoryPromoteCommandOptions,
   MemoryPromoteExplainOptions,
   MemoryRemBackfillOptions,
@@ -47,6 +50,26 @@ async function runMemoryIndex(opts: MemoryCommandOptions) {
 async function runMemorySearch(queryArg: string | undefined, opts: MemorySearchCommandOptions) {
   const runtime = await loadMemoryCliRuntime();
   await runtime.runMemorySearch(queryArg, opts);
+}
+
+async function runMemoryFeedback(opts: MemoryFeedbackCommandOptions) {
+  const runtime = await loadMemoryCliRuntime();
+  await runtime.runMemoryFeedback(opts);
+}
+
+async function runMemoryDoctor(opts: MemoryCommandOptions) {
+  const runtime = await loadMemoryCliRuntime();
+  await runtime.runMemoryDoctor(opts);
+}
+
+async function runMemoryBundle(opts: MemoryBundleCommandOptions) {
+  const runtime = await loadMemoryCliRuntime();
+  await runtime.runMemoryBundle(opts);
+}
+
+async function runMemoryEval(opts: MemoryEvalCommandOptions) {
+  const runtime = await loadMemoryCliRuntime();
+  await runtime.runMemoryEval(opts);
 }
 
 async function runMemoryPromote(opts: MemoryPromoteCommandOptions) {
@@ -122,6 +145,14 @@ export function registerMemoryCli(program: Command) {
           ["openclaw memory status --deep", "Probe embedding provider readiness."],
           ["openclaw memory index --force", "Force a full reindex."],
           ['openclaw memory search "meeting notes"', "Quick search using positional query."],
+          ['openclaw memory search "meeting notes" --explain', "Show compact retrieval traces."],
+          ["openclaw memory doctor --deep", "Run memory-specific health checks."],
+          ["openclaw memory feedback --path MEMORY.md --kind stale", "Mark recalled memory stale."],
+          [
+            "openclaw memory bundle --output workspace-memory.json",
+            "Export a portable memory pack.",
+          ],
+          ["openclaw memory eval --file memory-eval.json", "Run golden recall checks."],
           [
             'openclaw memory search --query "deployment" --max-results 20',
             "Limit results for focused troubleshooting.",
@@ -189,9 +220,69 @@ export function registerMemoryCli(program: Command) {
     .option("--min-score <n>", "Minimum score", (value: string) =>
       parseMemoryCliNumberOption(value, "--min-score"),
     )
+    .option("--scope <scope...>", "Restrict to memory scopes")
+    .option("--explain", "Include compact retrieval traces", false)
     .option("--json", "Print JSON")
     .action(async (queryArg: string | undefined, opts: MemorySearchCommandOptions) => {
       await runMemorySearch(queryArg, opts);
+    });
+
+  memory
+    .command("feedback")
+    .description("Record feedback for indexed memory chunks")
+    .requiredOption("--path <path>", "Memory path")
+    .requiredOption(
+      "--kind <kind>",
+      "Feedback kind: useful, wrong, stale, duplicate, too_private, wrong_scope",
+    )
+    .option("--source <source>", "Source corpus: memory or sessions")
+    .option("--from <line>", "Start line", (value: string) =>
+      parseMemoryCliPositiveIntegerOption(value, "--from"),
+    )
+    .option("--to <line>", "End line", (value: string) =>
+      parseMemoryCliPositiveIntegerOption(value, "--to"),
+    )
+    .option("--scope <scope>", "Correct scope")
+    .option("--superseded-by <ref>", "Superseding memory reference")
+    .option("--duplicate-of <ref>", "Canonical duplicate reference")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--json", "Print JSON")
+    .action(async (opts: MemoryFeedbackCommandOptions) => {
+      await runMemoryFeedback(opts);
+    });
+
+  memory
+    .command("doctor")
+    .description("Run memory-specific health checks")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--json", "Print JSON")
+    .option("--deep", "Probe embedding/vector readiness")
+    .action(async (opts: MemoryCommandOptions) => {
+      await runMemoryDoctor(opts);
+    });
+
+  memory
+    .command("bundle")
+    .description("Export or import a portable workspace memory pack")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--output <path>", "Export bundle to path")
+    .option("--input <path>", "Inspect/import bundle from path")
+    .option("--json", "Print JSON")
+    .action(async (opts: MemoryBundleCommandOptions) => {
+      await runMemoryBundle(opts);
+    });
+
+  memory
+    .command("eval")
+    .description("Run golden memory recall checks from a JSON file")
+    .requiredOption("--file <path>", "Evaluation file")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--limit <n>", "Max checks", (value: string) =>
+      parseMemoryCliPositiveIntegerOption(value, "--limit"),
+    )
+    .option("--json", "Print JSON")
+    .action(async (opts: MemoryEvalCommandOptions) => {
+      await runMemoryEval(opts);
     });
 
   memory

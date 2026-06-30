@@ -202,6 +202,77 @@ describe("memory manager FTS-only reindex", () => {
     expect(countChunksContaining("Alpha topic")).toBe(0);
   });
 
+  it("returns retrieval traces and respects scope filters", async () => {
+    const memoryManager = await createManager();
+    await memoryManager.sync({ force: true });
+
+    const tracedResults = await memoryManager.search("Alpha topic", { explain: true });
+    expect(tracedResults[0]).toMatchObject({
+      path: "MEMORY.md",
+      scope: "workspace",
+      lifecycle: "active",
+    });
+    expect(tracedResults[0]?.trace).toMatchObject({
+      scope: "workspace",
+      lifecycle: "active",
+      reason: expect.stringContaining("passed scope/freshness filters"),
+    });
+
+    await expect(memoryManager.search("Alpha topic", { scopes: ["thread"] })).resolves.toEqual([]);
+    await expect(memoryManager.search("Alpha topic", { scopes: ["workspace"] })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: "MEMORY.md" })]),
+    );
+  });
+
+  it("marks stale feedback out of live recall without deleting audit metadata", async () => {
+    const memoryManager = await createManager();
+    await memoryManager.sync({ force: true });
+
+    const beforeFeedback = await memoryManager.search("Alpha topic");
+    expect(beforeFeedback).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: "MEMORY.md" })]),
+    );
+
+    const feedbackResult = await memoryManager.feedback({
+      path: "MEMORY.md",
+      kind: "stale",
+      startLine: 1,
+      endLine: 3,
+    });
+    expect(feedbackResult).toMatchObject({
+      lifecycle: "stale",
+      feedbackScore: expect.any(Number),
+    });
+    expect(feedbackResult.updated).toBeGreaterThan(0);
+
+    await expect(memoryManager.search("Alpha topic")).resolves.toEqual([]);
+    expect(
+      memoryManager.status().lifecycleCounts?.find((entry) => entry.lifecycle === "stale")?.chunks,
+    ).toBeGreaterThan(0);
+  });
+
+  it("raises useful feedback scores without hiding live recall", async () => {
+    const memoryManager = await createManager();
+    await memoryManager.sync({ force: true });
+
+    await expect(
+      memoryManager.feedback({
+        path: "MEMORY.md",
+        kind: "useful",
+        startLine: 1,
+        endLine: 3,
+      }),
+    ).resolves.toMatchObject({
+      updated: expect.any(Number),
+      lifecycle: "active",
+      feedbackScore: expect.any(Number),
+    });
+
+    await expect(memoryManager.search("Alpha topic")).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: "MEMORY.md" })]),
+    );
+  });
+
   it("aborts instead of downgrading an existing semantic index to FTS-only", async () => {
     const memoryManager = await createManager();
     writeExistingMeta(memoryManager, "mock-embed");

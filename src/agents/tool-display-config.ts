@@ -411,6 +411,11 @@ export const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
       title: "Memory Get",
       detailKeys: ["path", "from", "lines"],
     },
+    memory_feedback: {
+      emoji: "🧠",
+      title: "Memory Feedback",
+      detailKeys: ["path", "kind"],
+    },
     web_search: {
       emoji: "🔎",
       title: "Web Search",

@@ -12,8 +12,12 @@ export {
   cosineSimilarity,
   DEFAULT_MEMORY_READ_LINES,
   DEFAULT_MEMORY_READ_MAX_CHARS,
+  buildMemoryLifecycleWhereClause,
+  buildMemoryScopeFilterClause,
+  deriveMemoryScope,
   ensureDir,
   ensureMemoryIndexSchema,
+  ensureMemoryMetadataColumns,
   hashText,
   isFileMissingError,
   isTransientMemoryReadError,
@@ -27,6 +31,10 @@ export {
   MEMORY_INDEX_STATE_TABLE,
   MEMORY_INDEX_VECTOR_TABLE,
   normalizeExtraMemoryPaths,
+  normalizeMemoryFeedbackKind,
+  normalizeMemoryLifecycle,
+  normalizeMemoryScope,
+  normalizeMemoryScopes,
   parseEmbedding,
   readMemoryFile,
   retryTransientMemoryRead,
@@ -37,39 +45,22 @@ export {
   statRegularFile,
 } from "../../packages/memory-host-sdk/src/engine-storage.js";
 
-/** Origin bucket for memory search results exposed through the SDK. */
-export type MemorySource = "memory" | "sessions";
-
-/** Normalized search hit shape returned by memory host searches. */
-export type MemorySearchResult = {
-  path: string;
-  startLine: number;
-  endLine: number;
-  score: number;
-  vectorScore?: number;
-  textScore?: number;
-  snippet: string;
-  source: MemorySource;
-  citation?: string;
-};
-
-/** Health probe result for embedding provider availability checks. */
-export type MemoryEmbeddingProbeResult = {
-  ok: boolean;
-  error?: string;
-  checked?: boolean;
-  cached?: boolean;
-  checkedAtMs?: number;
-  cacheExpiresAtMs?: number;
-};
-
 export type {
+  MemoryDoctorReport,
+  MemoryEmbeddingProbeResult,
+  MemoryFeedbackKind,
+  MemoryFeedbackResult,
   MemoryChunk,
   MemoryFileEntry,
+  MemoryLifecycle,
   MemoryProviderStatus,
   MemoryReadResult,
   MemorySearchManager,
+  MemorySearchResult,
   MemorySearchRuntimeDebug,
+  MemorySearchTrace,
+  MemoryScope,
+  MemorySource,
   MemorySyncProgressUpdate,
   ResolvedMemoryBackendConfig,
   ResolvedQmdConfig,

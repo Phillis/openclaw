@@ -18,7 +18,7 @@ import { getPluginToolMeta } from "../plugins/tools.js";
 import { canonicalizeSessionKeyForAgent } from "./session-store-key.js";
 import { resolveGatewayScopedTools } from "./tool-resolution.js";
 
-const MEMORY_TOOL_NAMES = new Set(["memory_search", "memory_get"]);
+const MEMORY_TOOL_NAMES = new Set(["memory_search", "memory_get", "memory_feedback"]);
 
 /** Protocol input shape accepted by gateway tool invocation surfaces. */
 export type ToolsInvokeInput = {

@@ -31,11 +31,14 @@ export type {
   ResolvedQmdMcporterConfig,
 } from "./host/backend-config.js";
 export type {
+  MemoryDoctorReport,
   MemoryEmbeddingProbeResult,
+  MemoryFeedbackResult,
   MemoryProviderStatus,
   MemorySearchManager,
   MemorySearchRuntimeDebug,
   MemorySearchResult,
+  MemorySearchTrace,
   MemorySource,
   MemorySyncProgressUpdate,
 } from "./host/types.js";
@@ -49,6 +52,22 @@ export {
   MEMORY_INDEX_STATE_TABLE,
   MEMORY_INDEX_VECTOR_TABLE,
 } from "./host/memory-schema.js";
+export {
+  buildMemoryLifecycleWhereClause,
+  buildMemoryScopeFilterClause,
+  deriveMemoryScope,
+  ensureMemoryMetadataColumns,
+  MEMORY_FEEDBACK_VALUES,
+  MEMORY_LIFECYCLE_VALUES,
+  MEMORY_SCOPE_VALUES,
+  normalizeMemoryFeedbackKind,
+  normalizeMemoryLifecycle,
+  normalizeMemoryScope,
+  normalizeMemoryScopes,
+  type MemoryFeedbackKind,
+  type MemoryLifecycle,
+  type MemoryScope,
+} from "./host/memory-metadata.js";
 export { loadSqliteVecExtension } from "./host/sqlite-vec.js";
 export {
   closeMemorySqliteWalMaintenance,

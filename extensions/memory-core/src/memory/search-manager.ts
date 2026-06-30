@@ -15,9 +15,11 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-engine-qmd";
 import {
   resolveMemoryBackendConfig,
+  type MemoryDoctorReport,
   type MemoryEmbeddingProbeResult,
   type MemorySearchManager,
   type MemorySearchRuntimeDebug,
+  type MemoryScope,
   type MemorySource,
   type MemorySyncProgressUpdate,
   type ResolvedQmdConfig,
@@ -371,6 +373,8 @@ class BorrowedMemoryManager implements MemorySearchManager {
       qmdSearchModeOverride?: "query" | "search" | "vsearch";
       onDebug?: (debug: MemorySearchRuntimeDebug) => void;
       sources?: MemorySource[];
+      scopes?: MemoryScope[];
+      explain?: boolean;
       signal?: AbortSignal;
     },
   ) {
@@ -404,6 +408,32 @@ class BorrowedMemoryManager implements MemorySearchManager {
 
   async probeVectorAvailability() {
     return await this.inner.probeVectorAvailability();
+  }
+
+  async feedback(params: Parameters<NonNullable<MemorySearchManager["feedback"]>>[0]) {
+    if (!this.inner.feedback) {
+      throw new Error("memory feedback is not supported by the active memory backend");
+    }
+    return await this.inner.feedback(params);
+  }
+
+  async doctor(
+    params?: Parameters<NonNullable<MemorySearchManager["doctor"]>>[0],
+  ): Promise<MemoryDoctorReport> {
+    if (this.inner.doctor) {
+      return await this.inner.doctor(params);
+    }
+    return {
+      backend: this.inner.status().backend,
+      checkedAtMs: Date.now(),
+      checks: [
+        {
+          id: "backend",
+          status: "ok",
+          message: `${this.inner.status().backend} backend active`,
+        },
+      ],
+    };
   }
 
   async close() {}
@@ -480,6 +510,9 @@ class FallbackMemoryManager implements MemorySearchManager {
       qmdSearchModeOverride?: "query" | "search" | "vsearch";
       onDebug?: (debug: MemorySearchRuntimeDebug) => void;
       sources?: MemorySource[];
+      scopes?: MemoryScope[];
+      explain?: boolean;
+      signal?: AbortSignal;
     },
   ) {
     this.ensureOpen();
@@ -599,6 +632,44 @@ class FallbackMemoryManager implements MemorySearchManager {
     }
     const fallback = await this.ensureFallback();
     return (await fallback?.probeVectorAvailability()) ?? false;
+  }
+
+  async feedback(params: Parameters<NonNullable<MemorySearchManager["feedback"]>>[0]) {
+    this.ensureOpen();
+    if (!this.primaryFailed && this.deps.primary.feedback) {
+      return await this.deps.primary.feedback(params);
+    }
+    const fallback = await this.ensureFallback();
+    if (fallback?.feedback) {
+      return await fallback.feedback(params);
+    }
+    throw new Error("memory feedback is not supported by the active memory backend");
+  }
+
+  async doctor(
+    params?: Parameters<NonNullable<MemorySearchManager["doctor"]>>[0],
+  ): Promise<MemoryDoctorReport> {
+    this.ensureOpen();
+    if (!this.primaryFailed && this.deps.primary.doctor) {
+      return await this.deps.primary.doctor(params);
+    }
+    const fallback = await this.ensureFallback();
+    if (fallback?.doctor) {
+      return await fallback.doctor(params);
+    }
+    return {
+      backend: this.primaryFailed ? "builtin" : "qmd",
+      checkedAtMs: Date.now(),
+      checks: [
+        {
+          id: "backend",
+          status: this.primaryFailed ? "warn" : "ok",
+          message: this.primaryFailed
+            ? `primary qmd backend failed: ${this.lastError ?? "unknown"}`
+            : "qmd backend active",
+        },
+      ],
+    };
   }
 
   async close() {

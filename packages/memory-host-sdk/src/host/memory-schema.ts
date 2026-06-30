@@ -1,6 +1,7 @@
 // Memory Host SDK module implements memory schema behavior.
 import type { DatabaseSync } from "node:sqlite";
 import { formatErrorMessage } from "./error-utils.js";
+import { ensureMemoryMetadataColumns } from "./memory-metadata.js";
 
 // SQLite schema setup for builtin memory index, embedding cache, and FTS.
 
@@ -93,6 +94,11 @@ function migrateCanonicalMemoryIndexSourcesPrimaryKey(db: DatabaseSync): void {
         hash TEXT NOT NULL,
         mtime INTEGER NOT NULL,
         size INTEGER NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'workspace',
+        lifecycle TEXT NOT NULL DEFAULT 'active',
+        valid_from INTEGER,
+        valid_until INTEGER,
+        bundle_hash TEXT,
         PRIMARY KEY (path, source)
       );
       INSERT INTO ${MEMORY_INDEX_SOURCES_TABLE} (path, source, hash, mtime, size)
@@ -278,6 +284,11 @@ export function ensureMemoryIndexSchema(params: {
       hash TEXT NOT NULL,
       mtime INTEGER NOT NULL,
       size INTEGER NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'workspace',
+      lifecycle TEXT NOT NULL DEFAULT 'active',
+      valid_from INTEGER,
+      valid_until INTEGER,
+      bundle_hash TEXT,
       PRIMARY KEY (path, source)
     );
     CREATE TABLE IF NOT EXISTS ${MEMORY_INDEX_CHUNKS_TABLE} (
@@ -290,7 +301,19 @@ export function ensureMemoryIndexSchema(params: {
       model TEXT NOT NULL,
       text TEXT NOT NULL,
       embedding TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'workspace',
+      lifecycle TEXT NOT NULL DEFAULT 'active',
+      valid_from INTEGER,
+      valid_until INTEGER,
+      bundle_hash TEXT,
+      confidence REAL NOT NULL DEFAULT 1.0,
+      supersedes TEXT,
+      superseded_by TEXT,
+      feedback_score REAL NOT NULL DEFAULT 0,
+      feedback_count INTEGER NOT NULL DEFAULT 0,
+      last_feedback_at INTEGER,
+      last_feedback_kind TEXT
     );
     CREATE TABLE IF NOT EXISTS ${MEMORY_INDEX_STATE_TABLE} (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -299,6 +322,11 @@ export function ensureMemoryIndexSchema(params: {
     INSERT OR IGNORE INTO ${MEMORY_INDEX_STATE_TABLE} (id, revision) VALUES (1, 0);
   `);
   migrateCanonicalMemoryIndexSourcesPrimaryKey(params.db);
+  ensureMemoryMetadataColumns({
+    db: params.db,
+    sourcesTable: MEMORY_INDEX_SOURCES_TABLE,
+    chunksTable: MEMORY_INDEX_CHUNKS_TABLE,
+  });
   params.db.exec(`
 
     CREATE TRIGGER IF NOT EXISTS memory_index_sources_revision_after_insert
@@ -341,6 +369,16 @@ export function ensureMemoryIndexSchema(params: {
       ON ${MEMORY_INDEX_CHUNKS_TABLE}(path);
     CREATE INDEX IF NOT EXISTS idx_memory_index_chunks_source
       ON ${MEMORY_INDEX_CHUNKS_TABLE}(source);
+    CREATE INDEX IF NOT EXISTS idx_memory_index_sources_scope_lifecycle
+      ON ${MEMORY_INDEX_SOURCES_TABLE}(scope, lifecycle);
+    CREATE INDEX IF NOT EXISTS idx_memory_index_chunks_scope_lifecycle
+      ON ${MEMORY_INDEX_CHUNKS_TABLE}(scope, lifecycle);
+    CREATE INDEX IF NOT EXISTS idx_memory_index_chunks_valid_until
+      ON ${MEMORY_INDEX_CHUNKS_TABLE}(valid_until);
+    CREATE INDEX IF NOT EXISTS idx_memory_index_chunks_superseded_by
+      ON ${MEMORY_INDEX_CHUNKS_TABLE}(superseded_by);
+    CREATE INDEX IF NOT EXISTS idx_memory_index_chunks_bundle_hash
+      ON ${MEMORY_INDEX_CHUNKS_TABLE}(bundle_hash);
   `);
   migrateLegacyMemoryIndexTables(params.db, params.embeddingCacheTable);
   if (params.cacheEnabled) {

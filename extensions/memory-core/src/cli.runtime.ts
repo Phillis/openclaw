@@ -1,9 +1,15 @@
 // Memory Core plugin module implements cli behavior.
+import { createHash } from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { MemoryEmbeddingProbeResult } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import {
+  normalizeMemoryFeedbackKind,
+  normalizeMemoryScope,
+  type MemoryDoctorReport,
+  type MemoryEmbeddingProbeResult,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
   resolveMemoryDreamingConfig,
   resolveMemoryRemDreamingConfig,
@@ -33,7 +39,10 @@ import {
   withProgressTotals,
 } from "./cli.host.runtime.js";
 import type {
+  MemoryBundleCommandOptions,
   MemoryCommandOptions,
+  MemoryEvalCommandOptions,
+  MemoryFeedbackCommandOptions,
   MemoryPromoteCommandOptions,
   MemoryPromoteExplainOptions,
   MemoryRemBackfillOptions,
@@ -358,6 +367,49 @@ function normalizeRelativePath(baseDir: string, filePath: string): string {
   return path.relative(baseDir, filePath).replace(/\\/g, "/");
 }
 
+function normalizeBundlePath(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim().replace(/\\/g, "/") : "";
+  const cleaned = raw
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/");
+  return cleaned || "memory-entry.md";
+}
+
+function normalizeBundleEntryContent(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\r\n/g, "\n") : "";
+}
+
+function renderImportedMemoryBundleMarkdown(params: {
+  bundleHash: string;
+  sourcePath: string;
+  entries: Array<{ path: string; content: string; scope?: string; kind?: string }>;
+}): string {
+  const lines = [
+    "---",
+    "openclaw_memory_bundle: true",
+    `bundle_hash: ${params.bundleHash}`,
+    `source_path: ${JSON.stringify(shortenHomePath(params.sourcePath))}`,
+    "---",
+    "",
+    `# Imported Memory Bundle ${params.bundleHash.slice(0, 12)}`,
+    "",
+  ];
+  for (const entry of params.entries) {
+    lines.push(`## ${entry.path}`, "");
+    if (entry.scope || entry.kind) {
+      lines.push(
+        [entry.scope ? `scope=${entry.scope}` : null, entry.kind ? `kind=${entry.kind}` : null]
+          .filter(Boolean)
+          .join(" "),
+        "",
+      );
+    }
+    lines.push(entry.content.trimEnd(), "");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
 function groundedMarkdownToDiaryLines(markdown: string): string[] {
   return markdown
     .split(/\r?\n/)
@@ -502,6 +554,20 @@ async function withMemoryManagerForAgent(params: {
     },
     run: params.run,
   });
+}
+
+function normalizeCliScopes(
+  values?: string[],
+): Array<"agent" | "workspace" | "project" | "thread" | "shared" | "ephemeral"> {
+  const allowed = new Set(["agent", "workspace", "project", "thread", "shared", "ephemeral"]);
+  const scopes = (values ?? [])
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter(
+      (value): value is "agent" | "workspace" | "project" | "thread" | "shared" | "ephemeral" =>
+        allowed.has(value),
+    );
+  return Array.from(new Set(scopes));
 }
 
 async function checkReadableFile(pathname: string): Promise<{ exists: boolean; issue?: string }> {
@@ -1266,6 +1332,8 @@ export async function runMemorySearch(
           maxResults: opts.maxResults,
           minScore: opts.minScore,
           sessionKey,
+          scopes: normalizeCliScopes(opts.scope),
+          explain: Boolean(opts.explain),
         });
       } catch (err) {
         const message = formatErrorMessage(err);
@@ -1315,11 +1383,298 @@ export async function runMemorySearch(
           )}`,
         );
         lines.push(colorize(rich, theme.muted, result.snippet));
+        if (opts.explain && result.trace) {
+          lines.push(
+            colorize(
+              rich,
+              theme.muted,
+              `trace: scope=${result.trace.scope ?? "unknown"} lifecycle=${result.trace.lifecycle ?? "unknown"} freshness=${result.trace.freshness ?? "unknown"} reason=${result.trace.reason}`,
+            ),
+          );
+        }
         lines.push("");
       }
       defaultRuntime.log(lines.join("\n").trim());
     },
   });
+}
+
+export async function runMemoryFeedback(opts: MemoryFeedbackCommandOptions) {
+  if (!opts.path || !opts.kind) {
+    defaultRuntime.error("Memory feedback requires --path and --kind.");
+    process.exitCode = 1;
+    return;
+  }
+  const kind = normalizeMemoryFeedbackKind(opts.kind);
+  if (!kind) {
+    defaultRuntime.error(`Unsupported memory feedback kind: ${opts.kind}`);
+    process.exitCode = 1;
+    return;
+  }
+  const scope = opts.scope ? normalizeMemoryScope(opts.scope) : undefined;
+  if (opts.scope && !scope) {
+    defaultRuntime.error(`Unsupported memory scope: ${opts.scope}`);
+    process.exitCode = 1;
+    return;
+  }
+  const { config: cfg, diagnostics } = await loadMemoryCommandConfig("memory feedback");
+  emitMemorySecretResolveDiagnostics(diagnostics, { json: Boolean(opts.json) });
+  const agentId = resolveAgent(cfg, opts.agent);
+  await withMemoryManagerForAgent({
+    cfg,
+    agentId,
+    purpose: "cli",
+    run: async (manager) => {
+      if (!manager.feedback) {
+        defaultRuntime.error("Active memory backend does not support feedback.");
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        const result = await manager.feedback({
+          path: opts.path!,
+          source: opts.source,
+          startLine: opts.from,
+          endLine: opts.to,
+          kind,
+          scope,
+          supersededBy: opts.supersededBy,
+          duplicateOf: opts.duplicateOf,
+        });
+        if (opts.json) {
+          defaultRuntime.writeJson(result);
+        } else {
+          defaultRuntime.log(
+            `Memory feedback recorded: updated=${result.updated} scope=${result.scope ?? "unchanged"} lifecycle=${result.lifecycle ?? "unchanged"}`,
+          );
+        }
+      } catch (err) {
+        defaultRuntime.error(`Memory feedback failed: ${formatErrorMessage(err)}`);
+        process.exitCode = 1;
+      }
+    },
+  });
+}
+
+export async function runMemoryDoctor(opts: MemoryCommandOptions) {
+  const { config: cfg, diagnostics } = await loadMemoryCommandConfig("memory doctor");
+  emitMemorySecretResolveDiagnostics(diagnostics, { json: Boolean(opts.json) });
+  const agentIds = resolveAgentIds(cfg, opts.agent);
+  const reports: Array<{ agentId: string; report: MemoryDoctorReport }> = [];
+  for (const agentId of agentIds) {
+    await withMemoryManagerForAgent({
+      cfg,
+      agentId,
+      purpose: "cli",
+      run: async (manager) => {
+        const report: MemoryDoctorReport = manager.doctor
+          ? await manager.doctor({ deep: Boolean(opts.deep) })
+          : {
+              backend: manager.status().backend,
+              checkedAtMs: Date.now(),
+              checks: [{ id: "backend", status: "ok", message: "backend active" }],
+            };
+        reports.push({ agentId, report });
+      },
+    });
+  }
+  if (opts.json) {
+    defaultRuntime.writeJson(reports);
+    return;
+  }
+  const rich = isRich();
+  for (const entry of reports) {
+    defaultRuntime.log(
+      `${colorize(rich, theme.heading, "Memory Doctor")} ${colorize(rich, theme.muted, `(${entry.agentId})`)}`,
+    );
+    for (const check of entry.report.checks) {
+      const color =
+        check.status === "ok" ? theme.success : check.status === "warn" ? theme.warn : theme.error;
+      defaultRuntime.log(
+        `${colorize(rich, color, check.status.toUpperCase())} ${check.id}: ${check.message}`,
+      );
+      if (check.detail) {
+        defaultRuntime.log(colorize(rich, theme.muted, `  ${check.detail}`));
+      }
+    }
+  }
+}
+
+export async function runMemoryBundle(opts: MemoryBundleCommandOptions) {
+  const { config: cfg, diagnostics } = await loadMemoryCommandConfig("memory bundle");
+  emitMemorySecretResolveDiagnostics(diagnostics, { json: Boolean(opts.json) });
+  const agentId = resolveAgent(cfg, opts.agent);
+  await withMemoryManagerForAgent({
+    cfg,
+    agentId,
+    purpose: "cli",
+    run: async (manager) => {
+      const status = manager.status();
+      const workspaceDir = status.workspaceDir?.trim();
+      if (!workspaceDir) {
+        defaultRuntime.error("Memory bundle requires a workspace-backed memory manager.");
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.input) {
+        const inputPath = path.resolve(opts.input);
+        const raw = await fs.readFile(inputPath, "utf-8");
+        const parsed = JSON.parse(raw) as {
+          schema?: string;
+          entries?: Array<{ path?: unknown; content?: unknown; scope?: unknown; kind?: unknown }>;
+          bundleHash?: string;
+        };
+        if (parsed.schema !== "openclaw.memory.bundle.v1") {
+          throw new Error(`Unsupported memory bundle schema: ${parsed.schema ?? "missing"}`);
+        }
+        const entries = Array.isArray(parsed.entries)
+          ? parsed.entries
+              .map((entry) => ({
+                path: normalizeBundlePath(entry.path),
+                content: normalizeBundleEntryContent(entry.content),
+                scope: typeof entry.scope === "string" ? entry.scope : undefined,
+                kind: typeof entry.kind === "string" ? entry.kind : undefined,
+              }))
+              .filter((entry) => entry.content.trim().length > 0)
+          : [];
+        const bundleHash =
+          typeof parsed.bundleHash === "string" && /^[a-f0-9]{64}$/i.test(parsed.bundleHash)
+            ? parsed.bundleHash.toLowerCase()
+            : createHash("sha256").update(raw).digest("hex");
+        const bundleDir = path.join(workspaceDir, "memory", "bundles");
+        const importPath = path.join(bundleDir, `${bundleHash}.md`);
+        const alreadyImported = fsSync.existsSync(importPath);
+        if (!alreadyImported) {
+          await fs.mkdir(bundleDir, { recursive: true });
+          await fs.writeFile(
+            importPath,
+            renderImportedMemoryBundleMarkdown({
+              bundleHash,
+              sourcePath: inputPath,
+              entries,
+            }),
+          );
+        }
+        const result = {
+          input: inputPath,
+          output: importPath,
+          bundleHash,
+          entries: entries.length,
+          imported: alreadyImported ? 0 : entries.length,
+          skipped: alreadyImported ? entries.length : 0,
+          mode: alreadyImported ? "already-imported" : "imported",
+        };
+        if (opts.json) {
+          defaultRuntime.writeJson(result);
+        } else {
+          defaultRuntime.log(
+            `Memory bundle ${result.mode}: entries=${result.entries} imported=${result.imported} hash=${result.bundleHash} output=${shortenHomePath(result.output)}`,
+          );
+        }
+        return;
+      }
+      const files = await listMemoryFiles(workspaceDir, status.extraPaths ?? []);
+      const entries = await Promise.all(
+        files.map(async (filePath) => ({
+          path: normalizeRelativePath(workspaceDir, filePath),
+          content: await fs.readFile(filePath, "utf-8"),
+          scope: filePath.includes(`${path.sep}memory${path.sep}`) ? "workspace" : "workspace",
+        })),
+      );
+      const bundle = {
+        schema: "openclaw.memory.bundle.v1",
+        exportedAt: new Date().toISOString(),
+        agentId,
+        workspaceDir: shortenHomePath(workspaceDir),
+        entries,
+      };
+      const serialized = JSON.stringify(bundle, null, 2);
+      const bundleHash = createHash("sha256").update(serialized).digest("hex");
+      const output = opts.output ? path.resolve(opts.output) : undefined;
+      const payload = JSON.stringify({ ...bundle, bundleHash }, null, 2);
+      if (output) {
+        await fs.writeFile(output, payload);
+      }
+      if (opts.json) {
+        defaultRuntime.writeJson({ ...bundle, bundleHash, output });
+      } else {
+        defaultRuntime.log(
+          `Memory bundle exported: entries=${entries.length} hash=${bundleHash}${output ? ` output=${shortenHomePath(output)}` : ""}`,
+        );
+      }
+    },
+  });
+}
+
+export async function runMemoryEval(opts: MemoryEvalCommandOptions) {
+  if (!opts.file) {
+    defaultRuntime.error("Memory eval requires --file.");
+    process.exitCode = 1;
+    return;
+  }
+  const { config: cfg, diagnostics } = await loadMemoryCommandConfig("memory eval");
+  emitMemorySecretResolveDiagnostics(diagnostics, { json: Boolean(opts.json) });
+  const agentId = resolveAgent(cfg, opts.agent);
+  const filePath = path.resolve(opts.file);
+  const raw = await fs.readFile(filePath, "utf-8");
+  const parsed = JSON.parse(raw) as {
+    checks?: Array<{ query: string; expect?: string | string[]; maxResults?: number }>;
+  };
+  const checks = (parsed.checks ?? []).slice(0, opts.limit ?? parsed.checks?.length ?? 0);
+  const results: Array<{
+    query: string;
+    passed: boolean;
+    expected: string[];
+    hits: Array<{ path: string; startLine: number; endLine: number; score: number }>;
+  }> = [];
+  await withMemoryManagerForAgent({
+    cfg,
+    agentId,
+    purpose: "cli",
+    run: async (manager) => {
+      for (const check of checks) {
+        const hits = await manager.search(check.query, {
+          maxResults: check.maxResults ?? 5,
+          sessionKey: buildCliMemorySearchSessionKey(agentId),
+        });
+        const expected = Array.isArray(check.expect)
+          ? check.expect
+          : check.expect
+            ? [check.expect]
+            : [];
+        const haystack = hits.map((hit) => `${hit.path}\n${hit.snippet}`.toLowerCase()).join("\n");
+        results.push({
+          query: check.query,
+          expected,
+          passed:
+            expected.length === 0 ||
+            expected.every((item) => haystack.includes(item.toLowerCase())),
+          hits: hits.map((hit) => ({
+            path: hit.path,
+            startLine: hit.startLine,
+            endLine: hit.endLine,
+            score: hit.score,
+          })),
+        });
+      }
+    },
+  });
+  const passed = results.filter((result) => result.passed).length;
+  const summary = {
+    file: filePath,
+    total: results.length,
+    passed,
+    failed: results.length - passed,
+    results,
+  };
+  if (opts.json) {
+    defaultRuntime.writeJson(summary);
+    return;
+  }
+  defaultRuntime.log(`Memory eval: ${passed}/${results.length} passed`);
+  for (const result of results.filter((entry) => !entry.passed)) {
+    defaultRuntime.log(`FAIL ${result.query} expected=${result.expected.join(", ")}`);
+  }
 }
 
 export async function runMemoryPromote(opts: MemoryPromoteCommandOptions) {
