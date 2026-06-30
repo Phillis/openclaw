@@ -2,6 +2,18 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.6.10-1
+
+### Highlights
+
+- **Memory quality and diagnostics:** Memory now has explicit scopes, retrieval traces, doctor checks, feedback actions, source lifecycle metadata, portable workspace bundles, and golden recall evaluation support.
+- **Runtime stability fixes:** Native hook relay concurrency is bounded, isolated cron runtime defaults are slimmer, active-memory recall churn is reduced, and agent-scoped bootstrap prompt reporting is corrected.
+
+### Fixes
+
+- **Memory lifecycle and recall:** Add stale/superseded metadata, feedback-driven adjustments, scoped filtering, bundle import dedupe, and release coverage for the new memory flows.
+- **Agent runtime:** Avoid unbounded native hook relay work, reduce isolated cron overhead, and keep bootstrap prompt reporting tied to the correct agent scope.
+
 ## 2026.6.10
 
 ### Highlights
