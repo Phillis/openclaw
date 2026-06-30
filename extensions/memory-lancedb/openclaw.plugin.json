@@ -2,10 +2,10 @@
   "id": "memory-lancedb",
   "name": "Memory LanceDB",
   "description": "OpenClaw LanceDB-backed long-term memory plugin with auto-recall, auto-capture, and vector search.",
-  "commandAliases": [{ "name": "ltm" }],
+  "commandAliases": [{ "name": "ltm" }, { "name": "memory" }],
   "activation": {
     "onStartup": false,
-    "onCommands": ["ltm"]
+    "onCommands": ["ltm", "memory"]
   },
   "kind": "memory",
   "contracts": {

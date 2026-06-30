@@ -109,6 +109,7 @@ export function resolveManifestToolOwnerInRegistry(params: {
 export function resolveManifestCommandAliasOwnerInRegistry(params: {
   command: string | undefined;
   registry: PluginManifestCommandAliasRegistry;
+  preferredPluginIds?: readonly string[];
 }): PluginManifestCommandAliasRecord | undefined {
   const normalizedCommand = normalizeOptionalLowercaseString(params.command);
   if (!normalizedCommand) {
@@ -119,12 +120,31 @@ export function resolveManifestCommandAliasOwnerInRegistry(params: {
     (plugin) => normalizeOptionalLowercaseString(plugin.id) === normalizedCommand,
   );
 
-  for (const plugin of params.registry.plugins) {
+  const pluginById = new Map(
+    params.registry.plugins.map((plugin) => [
+      normalizeOptionalLowercaseString(plugin.id) ?? plugin.id,
+      plugin,
+    ]),
+  );
+  const orderedPlugins = [
+    ...(params.preferredPluginIds ?? [])
+      .map((pluginId) => pluginById.get(normalizeOptionalLowercaseString(pluginId) ?? pluginId))
+      .filter((plugin): plugin is (typeof params.registry.plugins)[number] => Boolean(plugin)),
+    ...params.registry.plugins,
+  ];
+  const seen = new Set<string>();
+
+  for (const plugin of orderedPlugins) {
+    const normalizedPluginId = normalizeOptionalLowercaseString(plugin.id) ?? plugin.id;
+    if (seen.has(normalizedPluginId)) {
+      continue;
+    }
+    seen.add(normalizedPluginId);
     const alias = plugin.commandAliases?.find(
       (entry) => normalizeOptionalLowercaseString(entry.name) === normalizedCommand,
     );
     if (alias) {
-      if (commandIsPluginId && normalizeOptionalLowercaseString(plugin.id) !== normalizedCommand) {
+      if (commandIsPluginId && normalizedPluginId !== normalizedCommand) {
         continue;
       }
       return {

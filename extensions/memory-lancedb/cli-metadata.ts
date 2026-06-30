@@ -13,6 +13,11 @@ export default definePluginEntry({
           description: "Inspect and query LanceDB-backed memory",
           hasSubcommands: true,
         },
+        {
+          name: "memory",
+          description: "Search, inspect, and maintain the active LanceDB memory backend",
+          hasSubcommands: true,
+        },
       ],
     });
   },

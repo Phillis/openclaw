@@ -850,6 +850,7 @@ describe("memory plugin e2e", () => {
       run: async (dynamicMemoryPlugin) => {
         const registeredTools: Array<{ tool: any; opts: { name?: string } }> = [];
         const registerMemoryCapability = vi.fn();
+        const registerCli = vi.fn();
         const mockApi = {
           id: "memory-lancedb",
           name: "Memory (LanceDB)",
@@ -876,7 +877,7 @@ describe("memory plugin e2e", () => {
           registerTool: (tool: any, opts: { name?: string }) => {
             registeredTools.push({ tool, opts });
           },
-          registerCli: vi.fn(),
+          registerCli,
           registerService: vi.fn(),
           on: vi.fn(),
           resolvePath: (filePath: string) => filePath,
@@ -933,6 +934,28 @@ describe("memory plugin e2e", () => {
           limit: 3,
         });
         expect(recallAfterFeedback.details?.count).toBe(0);
+
+        const registrar = firstMockArg(registerCli as unknown as MockCallSource, "cli registrar");
+        const program = new Command();
+        (registrar as (params: { program: Command }) => void)({ program });
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        try {
+          await program.parseAsync(["node", "openclaw", "ltm", "bundle"]);
+          const activeBundle = JSON.parse(log.mock.calls.at(-1)?.[0] ?? "{}") as {
+            entries?: unknown[];
+          };
+          expect(activeBundle.entries).toHaveLength(0);
+
+          await program.parseAsync(["node", "openclaw", "ltm", "bundle", "--include-inactive"]);
+          const fullBundle = JSON.parse(log.mock.calls.at(-1)?.[0] ?? "{}") as {
+            entries?: Array<{ id?: string; lifecycle?: string }>;
+          };
+          expect(fullBundle.entries).toEqual([
+            expect.objectContaining({ id: memoryId, lifecycle: "stale" }),
+          ]);
+        } finally {
+          log.mockRestore();
+        }
       },
     });
   });
@@ -1090,6 +1113,8 @@ describe("memory plugin e2e", () => {
           await program.parseAsync(["node", "openclaw", "ltm", "list", "--limit", "+03"]);
 
           expect(limit).toHaveBeenCalledWith(3);
+          await program.parseAsync(["node", "openclaw", "memory", "list", "--limit", "2"]);
+          expect(limit).toHaveBeenLastCalledWith(2);
         } finally {
           log.mockRestore();
         }

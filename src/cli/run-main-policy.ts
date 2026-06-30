@@ -32,6 +32,18 @@ const BARE_PARENT_DEFAULT_HELP_COMMANDS = new Set([
   ...getSubCliParentDefaultHelpCommands(),
 ]);
 
+function isSelectedPluginSlot(params: { config?: OpenClawConfig; pluginId: string }): boolean {
+  const slots = params.config?.plugins?.slots;
+  if (!slots || typeof slots !== "object") {
+    return false;
+  }
+  return Object.values(slots).some(
+    (slotPluginId) =>
+      typeof slotPluginId === "string" &&
+      normalizeOptionalLowercaseString(slotPluginId) === params.pluginId,
+  );
+}
+
 function hasHelpFlag(argv: string[]): boolean {
   return hasFlag(argv, "-h") || hasFlag(argv, "--help");
 }
@@ -265,7 +277,11 @@ export function resolveMissingPluginCommandMessage(
       });
   const parentPluginId = commandAlias?.pluginId;
   if (parentPluginId) {
-    if (allow.length > 0 && !allow.includes(parentPluginId)) {
+    if (
+      allow.length > 0 &&
+      !allow.includes(parentPluginId) &&
+      !isSelectedPluginSlot({ config, pluginId: parentPluginId })
+    ) {
       if (parentPluginId === normalizedPluginId) {
         return (
           `The \`openclaw ${normalizedPluginId}\` command is unavailable because ` +

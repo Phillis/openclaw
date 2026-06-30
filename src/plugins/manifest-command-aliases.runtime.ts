@@ -31,9 +31,16 @@ export function resolveManifestCommandAliasOwner(params: {
       workspaceDir: params.workspaceDir,
       env: params.env,
     }).manifestRegistry;
+  const preferredPluginIds = resolveManifestActivationPluginIds({
+    trigger: { kind: "command", command: params.command ?? "" },
+    config: params.config,
+    workspaceDir: params.workspaceDir,
+    env: params.env,
+  });
   return resolveManifestCommandAliasOwnerInRegistry({
     command: params.command,
     registry,
+    preferredPluginIds,
   });
 }
 

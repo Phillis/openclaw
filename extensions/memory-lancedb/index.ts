@@ -2481,6 +2481,13 @@ export default definePluginEntry({
     api.registerCli(
       ({ program }) => {
         const memory = program.command("ltm").description("LanceDB memory plugin commands");
+        if (
+          !program.commands.some(
+            (command) => command.name() === "memory" || command.aliases().includes("memory"),
+          )
+        ) {
+          memory.alias("memory");
+        }
 
         memory
           .command("list")
@@ -2568,6 +2575,11 @@ export default definePluginEntry({
           .option("--output <path>", "Write exported bundle to path")
           .option("--input <path>", "Import bundle from path")
           .option("--limit <n>", "Max exported rows", "1000")
+          .option(
+            "--include-inactive",
+            "Include stale, superseded, and tombstoned rows in exports",
+            false,
+          )
           .action(async (opts) => {
             if (opts.input) {
               const inputPath = path.resolve(opts.input);
@@ -2645,7 +2657,7 @@ export default definePluginEntry({
 
             const limit = parsePositiveIntegerOption(opts.limit, "--limit") ?? 1000;
             const entries = await db.list(limit, {
-              includeInactive: true,
+              includeInactive: Boolean(opts.includeInactive),
               orderByCreatedAt: true,
             });
             const bundle = {
