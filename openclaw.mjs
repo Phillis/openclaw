@@ -6,7 +6,7 @@ import { access } from "node:fs/promises";
 import module from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MIN_NODE_MAJOR = 22;
 const MIN_NODE_MINOR = 19;
@@ -384,6 +384,9 @@ const resolvePrecomputedCommandHelp = (argv) => {
   if (argv[2] === "nodes") {
     return { command: "nodes", metadataKey: "nodesHelpText" };
   }
+  if (argv[2] === "memory" || argv[2] === "ltm") {
+    return { command: "memory", metadataKey: "memoryLancedbHelpText" };
+  }
   return null;
 };
 
@@ -457,6 +460,48 @@ const shouldDeferRootHelpToRuntimeEntry = () => {
 };
 
 const loadPrecomputedHelpText = (key) => {
+  if (key === "memoryLancedbHelpText") {
+    return `OpenClaw ${resolveLauncherVersion()}${resolveLauncherCommit() ? ` (${resolveLauncherCommit()})` : ""} — All your chats, one OpenClaw.
+
+Usage: openclaw ltm|memory [options] [command]
+
+LanceDB memory plugin commands
+
+Options:
+  -h, --help          Display help for command
+
+Commands:
+  benchmark           Run a synthetic LanceDB memory benchmark and record
+                      regression history
+  bundle              Export or import a safe portable LanceDB memory bundle
+  doctor              Audit memory schema health and report whether repair is
+                      needed
+  eval                Run golden recall checks against LanceDB memory
+  explain             Explain retrieval ranking and stage contributions for a
+                      query
+  export              Export a safe portable memory bundle
+  feedback            Record retrieval quality feedback
+  help                Display help for command
+  import              Import memories and metadata from a portable bundle
+  list                List memories
+  maintain            Run doctor, repair, sync, re-embed, and stats as one
+                      operator workflow
+  query               Query memories (non-vector search)
+  recipes             Show verification recipes relevant to a query or project
+  reembed             Recompute embeddings for existing memories using the
+                      current embedding provider
+  regression          Run canonical live recall regression checks against the
+                      current memory store
+  repair              Repair schema drift, rebuild the LanceDB table if needed,
+                      and refresh derived indices
+  reranker-benchmark  Compare heuristic recall ordering against forced reranker
+                      passes for a live query
+  search              Search memories
+  stats               Show memory statistics
+  sync                Sync workspace memory files into LanceDB as chunked
+                      entries
+`;
+  }
   try {
     const raw = readFileSync(new URL("./dist/cli-startup-metadata.json", import.meta.url), "utf8");
     const parsed = JSON.parse(raw);
@@ -653,6 +698,9 @@ const tryOutputPrecomputedCommandHelp = () => {
   if (commandHelp.command === "nodes" && shouldDeferRootHelpToRuntimeEntry()) {
     return false;
   }
+  if (commandHelp.command === "memory" && !resolveDirectMemoryPluginConfig()) {
+    return false;
+  }
   const precomputed = loadPrecomputedHelpText(commandHelp.metadataKey);
   if (!precomputed) {
     return false;
@@ -661,10 +709,127 @@ const tryOutputPrecomputedCommandHelp = () => {
   return true;
 };
 
+const isDirectMemoryCliInvocation = (argv) =>
+  argv.length >= 3 && (argv[2] === "memory" || argv[2] === "ltm");
+
+const resolveLauncherStateDir = () => {
+  const stateOverride = process.env.OPENCLAW_STATE_DIR?.trim();
+  if (stateOverride) {
+    return resolveLauncherUserPath(stateOverride);
+  }
+  return path.join(resolveLauncherOsHomeDir(), ".openclaw");
+};
+
+const readDirectMemoryLauncherConfig = () => {
+  for (const configPath of resolveLauncherConfigPaths()) {
+    try {
+      const raw = readFileSync(configPath, "utf8");
+      if (raw.includes("$include")) {
+        return null;
+      }
+      return JSON.parse(raw);
+    } catch {
+      continue;
+    }
+  }
+  return null;
+};
+
+const resolveDirectMemoryPluginConfig = () => {
+  const config = readDirectMemoryLauncherConfig();
+  const plugins = config?.plugins;
+  const entry = plugins?.entries?.["memory-lancedb"];
+  if (plugins?.slots?.memory && plugins.slots.memory !== "memory-lancedb") {
+    return null;
+  }
+  if (!entry || entry.enabled === false) {
+    return null;
+  }
+  const pluginConfig = entry.config;
+  if (!pluginConfig || typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) {
+    return null;
+  }
+  return { config, pluginConfig };
+};
+
+const tryRunDirectMemoryCli = async () => {
+  if (!isDirectMemoryCliInvocation(process.argv)) {
+    return false;
+  }
+  if (process.env.OPENCLAW_DISABLE_DIRECT_MEMORY_CLI === "1") {
+    return false;
+  }
+  const resolvedConfig = resolveDirectMemoryPluginConfig();
+  if (!resolvedConfig) {
+    return false;
+  }
+  const extensionEntry = path.join(
+    resolveLauncherStateDir(),
+    "extensions",
+    "memory-lancedb",
+    "dist",
+    "index.js",
+  );
+  if (!existsSync(extensionEntry)) {
+    return false;
+  }
+  const { Command } = await import("commander");
+  const mod = await import(pathToFileURL(extensionEntry).href);
+  const plugin = mod.default;
+  if (!plugin || typeof plugin.register !== "function") {
+    return false;
+  }
+  const cliRegistrars = [];
+  const noop = () => {};
+  const logger = {
+    info: noop,
+    debug: noop,
+    warn: noop,
+    error: noop,
+  };
+  const api = {
+    id: "memory-lancedb",
+    name: "Memory (LanceDB)",
+    source: extensionEntry,
+    config: resolvedConfig.config,
+    pluginConfig: resolvedConfig.pluginConfig,
+    runtime: {
+      config: {
+        current: () => resolvedConfig.config,
+      },
+      agent: {
+        resolveAgentDir: (_config, agentId) =>
+          path.join(resolveLauncherStateDir(), "agents", String(agentId || "main"), "agent"),
+      },
+    },
+    logger,
+    resolvePath: (input) => (typeof input === "string" ? resolveLauncherUserPath(input) : input),
+    registerCli: (registrar) => {
+      cliRegistrars.push(registrar);
+    },
+    registerTool: noop,
+    registerService: noop,
+    registerMemoryCapability: noop,
+    on: noop,
+  };
+  plugin.register(api);
+  if (cliRegistrars.length === 0) {
+    return false;
+  }
+  const program = new Command("openclaw");
+  for (const registrar of cliRegistrars) {
+    await registrar({ program });
+  }
+  await program.parseAsync(process.argv);
+  return true;
+};
+
 if (!waitingForCompileCacheRespawn) {
   if (!isHelpFastPathDisabled() && (await tryOutputBareRootHelp())) {
     // OK
   } else if (!isHelpFastPathDisabled() && tryOutputPrecomputedCommandHelp()) {
+    // OK
+  } else if (await tryRunDirectMemoryCli()) {
     // OK
   } else {
     await installProcessWarningFilter();
