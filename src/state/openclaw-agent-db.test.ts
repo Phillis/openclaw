@@ -1947,7 +1947,7 @@ describe("openclaw agent database", () => {
     ]);
   });
 
-  it("rejects stale secondary indexes before writable initialization", () => {
+  it("defers exhaustive secondary-index validation to offline maintenance", () => {
     const stateDir = createTempStateDir();
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const created = openOpenClawAgentDatabase({ agentId: "worker-1", env });
@@ -1977,15 +1977,29 @@ describe("openclaw agent database", () => {
       before.close();
     }
 
-    expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
-      /integrity_check failed.*missing from index unsafe_index_records_value/iu,
-    );
+    expect(openOpenClawAgentDatabase({ agentId: "worker-1", env }).db.isOpen).toBe(true);
+    closeOpenClawAgentDatabasesForTest();
+    const afterRuntimeOpen = new DatabaseSync(databasePath, { readOnly: true });
+    let metadataAfterRuntimeOpen: unknown;
+    try {
+      metadataAfterRuntimeOpen = afterRuntimeOpen
+        .prepare(
+          "SELECT schema_version, updated_at FROM schema_meta WHERE meta_key = 'primary' LIMIT 1",
+        )
+        .get();
+      expect(metadataAfterRuntimeOpen).toEqual(
+        expect.objectContaining({ schema_version: OPENCLAW_AGENT_SCHEMA_VERSION }),
+      );
+      expect(metadataAfterRuntimeOpen).not.toEqual(metadataBefore);
+    } finally {
+      afterRuntimeOpen.close();
+    }
     const independentlyManaged = new DatabaseSync(databasePath);
     try {
       expect(() =>
-        ensureOpenClawAgentDatabaseSchema(independentlyManaged, {
+        assertOpenClawAgentDatabaseForMaintenance(independentlyManaged, {
           agentId: "worker-1",
-          env,
+          pathname: databasePath,
         }),
       ).toThrow(/integrity_check failed.*missing from index unsafe_index_records_value/iu);
     } finally {
@@ -2000,7 +2014,7 @@ describe("openclaw agent database", () => {
             "SELECT schema_version, updated_at FROM schema_meta WHERE meta_key = 'primary' LIMIT 1",
           )
           .get(),
-      ).toEqual(metadataBefore);
+      ).toEqual(metadataAfterRuntimeOpen);
       expect(after.prepare("PRAGMA integrity_check").all()).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -2010,6 +2024,50 @@ describe("openclaw agent database", () => {
       );
     } finally {
       after.close();
+    }
+  });
+
+  it("uses the bounded integrity gate for runtime opens", () => {
+    const stateDir = createTempStateDir();
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const created = openOpenClawAgentDatabase({ agentId: "worker-1", env });
+    const databasePath = created.path;
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+    createUnsafeIndexDrift(databasePath);
+
+    expect(openOpenClawAgentDatabase({ agentId: "worker-1", env }).db.isOpen).toBe(true);
+  });
+
+  it("rejects foreign-key violations for native hook workers", () => {
+    const stateDir = createTempStateDir();
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const created = openOpenClawAgentDatabase({ agentId: "worker-1", env });
+    const databasePath = created.path;
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+
+    const { DatabaseSync } = requireNodeSqlite();
+    const corrupted = new DatabaseSync(databasePath);
+    try {
+      corrupted.exec("PRAGMA foreign_keys = OFF;");
+      corrupted
+        .prepare(
+          "INSERT INTO session_entries (session_key, session_id, entry_json, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run("orphan", "missing-session", "{}", 1);
+    } finally {
+      corrupted.close();
+    }
+
+    const originalTitle = process.title;
+    try {
+      process.title = "openclaw-hooks";
+      expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
+        /foreign_key_check failed.*session_entries/iu,
+      );
+    } finally {
+      process.title = originalTitle;
     }
   });
 

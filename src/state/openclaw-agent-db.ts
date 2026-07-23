@@ -18,7 +18,7 @@ import {
   repairCanonicalSqliteUniqueIndexes,
   type CanonicalSqliteUniqueIndex,
 } from "../infra/sqlite-index-schema.js";
-import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { assertSqliteFastIntegrity, assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import {
   assertSqliteSchemaContains,
   type SqliteSchemaCompatibility,
@@ -640,6 +640,9 @@ export function assertOpenClawAgentDatabaseForMaintenance(
   database: DatabaseSync,
   options: { agentId: string; pathname: string },
 ): void {
+  // Offline maintenance, backup, and recovery paths can afford the exhaustive
+  // secondary-index scan that would make every runtime opener contend.
+  assertSqliteIntegrity(database, options.pathname);
   const agentId = normalizeAgentId(options.agentId);
   const metadata = readExistingSchemaMeta(database);
   if (!metadata) {
@@ -994,9 +997,11 @@ function assertAgentDatabaseIntegrityBeforeMutation(
   pathname: string,
 ): void {
   database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
-  // Writable open permits interrupted journal recovery. Schema and connection
-  // setup must wait until full table/index consistency is proven afterward.
-  assertSqliteIntegrity(database, pathname);
+  // Runtime opens can happen concurrently across isolated runs. Repeating the
+  // exhaustive secondary-index scan here makes otherwise healthy databases
+  // contend for seconds. Keep structural and referential checks synchronous;
+  // offline maintenance/backup/recovery retains the full integrity gate.
+  assertSqliteFastIntegrity(database, pathname);
 }
 
 /** Open or return a cached per-agent database after schema and owner validation. */
