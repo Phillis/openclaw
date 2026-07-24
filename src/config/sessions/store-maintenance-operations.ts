@@ -217,6 +217,7 @@ async function applyEnforcedMaintenance(params: {
       rememberRemovedSessionFile(removedSessionFiles, entry);
     },
     preserveKeys: preserveSessionKeys,
+    preserveHumanSessions: params.maintenance.preserveHumanSessions,
   });
   const countAfterPrune = Object.keys(params.operation.store).length;
   const shouldRunCapMaintenance =
@@ -231,6 +232,7 @@ async function applyEnforcedMaintenance(params: {
           rememberRemovedSessionFile(removedSessionFiles, entry);
         },
         preserveKeys: preserveSessionKeys,
+        preserveHumanSessions: params.maintenance.preserveHumanSessions,
       })
     : 0;
   const referencedSessionIds = collectReferencedSessionIds(params.operation.store);

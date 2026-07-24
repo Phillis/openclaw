@@ -44,6 +44,8 @@ export type ResolvedSessionMaintenanceConfig = {
   mode: SessionMaintenanceMode;
   pruneAfterMs: number;
   maxEntries: number;
+  /** Keep threaded/group/channel conversation routes outside age/count retention by default. */
+  preserveHumanSessions?: boolean;
   modelRunPruneAfterMs: number;
   resetArchiveRetentionMs: number | null;
   maxDiskBytes: number | null;
@@ -157,6 +159,7 @@ export function resolveMaintenanceConfigFromInput(
     mode: maintenance?.mode ?? DEFAULT_SESSION_MAINTENANCE_MODE,
     pruneAfterMs,
     maxEntries: maintenance?.maxEntries ?? DEFAULT_SESSION_MAX_ENTRIES,
+    preserveHumanSessions: maintenance?.preserveHumanSessions ?? true,
     modelRunPruneAfterMs: DEFAULT_MODEL_RUN_PRUNE_AFTER_MS,
     resetArchiveRetentionMs: resolveResetArchiveRetentionMs(maintenance),
     maxDiskBytes,
@@ -255,13 +258,21 @@ export function pruneStaleEntries(
     log?: boolean;
     onPruned?: (params: { key: string; entry: SessionEntry }) => void;
     preserveKeys?: ReadonlySet<string>;
+    preserveHumanSessions?: boolean;
   } = {},
 ): number {
   const maxAgeMs = overrideMaxAgeMs ?? resolveMaintenanceConfigFromInput().pruneAfterMs;
   const cutoffMs = Date.now() - maxAgeMs;
   let pruned = 0;
   for (const [key, entry] of Object.entries(store)) {
-    if (shouldPreserveMaintenanceEntry({ key, entry, preserveKeys: opts.preserveKeys })) {
+    if (
+      shouldPreserveMaintenanceEntry({
+        key,
+        entry,
+        preserveKeys: opts.preserveKeys,
+        preserveHumanSessions: opts.preserveHumanSessions,
+      })
+    ) {
       continue;
     }
     if (entry?.updatedAt != null && entry.updatedAt < cutoffMs) {
@@ -418,6 +429,7 @@ export function shouldPreserveMaintenanceEntry(params: {
   key: string;
   entry: SessionEntry | undefined;
   preserveKeys?: ReadonlySet<string>;
+  preserveHumanSessions?: boolean;
 }): boolean {
   // Archived sessions are user-shelved; only an explicit sessions.delete may remove them.
   if (params.entry?.archivedAt !== undefined) {
@@ -430,7 +442,8 @@ export function shouldPreserveMaintenanceEntry(params: {
   return (
     params.entry?.modelSelectionLocked === true ||
     params.preserveKeys?.has(params.key) === true ||
-    isProtectedSessionMaintenanceEntry(params.key, params.entry)
+    (params.preserveHumanSessions !== false &&
+      isProtectedSessionMaintenanceEntry(params.key, params.entry))
   );
 }
 
@@ -539,10 +552,16 @@ export function capEntryCount(
     log?: boolean;
     onCapped?: (params: { key: string; entry: SessionEntry }) => void;
     preserveKeys?: ReadonlySet<string>;
+    preserveHumanSessions?: boolean;
   } = {},
 ): number {
   const preservedCount = Object.entries(store).filter(([key, entry]) =>
-    shouldPreserveMaintenanceEntry({ key, entry, preserveKeys: opts.preserveKeys }),
+    shouldPreserveMaintenanceEntry({
+      key,
+      entry,
+      preserveKeys: opts.preserveKeys,
+      preserveHumanSessions: opts.preserveHumanSessions,
+    }),
   ).length;
   const maxRemovableEntries = Math.max(0, maxEntries - preservedCount);
   // Protected entries reduce the removable budget instead of being counted as deletion targets.
@@ -552,6 +571,7 @@ export function capEntryCount(
         key,
         entry: store[key],
         preserveKeys: opts.preserveKeys,
+        preserveHumanSessions: opts.preserveHumanSessions,
       }),
   );
   if (keys.length <= maxRemovableEntries) {

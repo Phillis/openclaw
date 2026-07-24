@@ -29,6 +29,7 @@ import type { SessionEntry } from "./types.js";
 type SessionDiskBudgetConfig = {
   maxDiskBytes: number | null;
   highWaterBytes: number | null;
+  preserveHumanSessions?: boolean;
 };
 
 export type SessionDiskBudgetSweepResult = {
@@ -837,7 +838,14 @@ export async function enforceSessionDiskBudget(params: {
       if (!entry) {
         continue;
       }
-      if (shouldPreserveMaintenanceEntry({ key, entry, preserveKeys: params.preserveKeys })) {
+      if (
+        shouldPreserveMaintenanceEntry({
+          key,
+          entry,
+          preserveKeys: params.preserveKeys,
+          preserveHumanSessions: params.maintenance.preserveHumanSessions,
+        })
+      ) {
         continue;
       }
       const previousProjectedBytes = projectedStoreBytes;

@@ -255,6 +255,13 @@ export type SessionMaintenanceConfig = {
   /** Maximum number of session entries to keep. Default: 500. */
   maxEntries?: number;
   /**
+   * Whether age/count retention also applies to threaded, group, and channel
+   * conversations. Default: true (keep human conversation routes indefinitely).
+   * Set false when the configured retention window is the source of truth and
+   * old transcripts should be archived out of the live SQLite store.
+   */
+  preserveHumanSessions?: boolean;
+  /**
    * Age-based retention for archived transcripts (`*.reset.<timestamp>` and
    * `*.deleted.<timestamp>`). Default and `false`: keep archives until the
    * disk budget evicts them oldest-first; a duration opts into deletion.

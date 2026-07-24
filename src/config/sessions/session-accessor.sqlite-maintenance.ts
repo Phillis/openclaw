@@ -172,6 +172,7 @@ export function applySqliteSessionEntryMaintenance(
       log: false,
       onPruned: rememberRemovedEntry,
       preserveKeys,
+      preserveHumanSessions: maintenance.preserveHumanSessions,
     });
   }
   if (
@@ -185,6 +186,7 @@ export function applySqliteSessionEntryMaintenance(
       log: false,
       onCapped: rememberRemovedEntry,
       preserveKeys,
+      preserveHumanSessions: maintenance.preserveHumanSessions,
     });
   }
   const referencedSessionIds = collectProjectedReferencedSqliteSessionIds({

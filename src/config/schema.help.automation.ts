@@ -78,6 +78,8 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
     "Removes entries older than this duration (for example `30d` or `12h`) during maintenance passes. Use this as the primary age-retention control and align it with data retention policy.",
   "session.maintenance.maxEntries":
     "Caps total session entry count retained in the store to prevent unbounded growth over time. Use lower limits for constrained environments, or higher limits when longer history is required.",
+  "session.maintenance.preserveHumanSessions":
+    "Keeps threaded, group, and channel conversations outside the configured age/count retention policy by default. Set false only when the retention window should archive old human conversations out of the live SQLite store.",
   "session.maintenance.resetArchiveRetention":
     "Age-based retention for archived transcripts (`*.reset.<timestamp>` and `*.deleted.<timestamp>`). Defaults to keeping archives until the disk budget evicts them oldest-first; set a duration (for example `30d`) to opt into wall-clock deletion, or `false` to disable it explicitly.",
   "session.maintenance.maxDiskBytes":

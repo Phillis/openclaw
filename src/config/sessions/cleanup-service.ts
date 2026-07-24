@@ -407,6 +407,7 @@ async function previewStoreCleanup(params: {
   const pruned = pruneStaleEntries(previewStore, params.maintenance.pruneAfterMs, {
     log: false,
     preserveKeys: preserveSessionKeys,
+    preserveHumanSessions: params.maintenance.preserveHumanSessions,
     onPruned: ({ key }) => {
       staleKeys.add(key);
     },
@@ -414,6 +415,7 @@ async function previewStoreCleanup(params: {
   const capped = capEntryCount(previewStore, params.maintenance.maxEntries, {
     log: false,
     preserveKeys: preserveSessionKeys,
+    preserveHumanSessions: params.maintenance.preserveHumanSessions,
     onCapped: ({ key }) => {
       cappedKeys.add(key);
     },

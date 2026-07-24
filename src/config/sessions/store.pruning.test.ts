@@ -111,6 +111,24 @@ describe("pruneStaleEntries", () => {
     expect(store).toHaveProperty("agent:main:discord:channel:ops");
   });
 
+  it("can enforce retention for durable external conversation entries", () => {
+    const now = Date.now();
+    const threadKey = "agent:main:slack:channel:C123:thread:1710000000.000100";
+    const store = makeStore([
+      [threadKey, makeEntry(now - 31 * DAY_MS)],
+      [
+        "agent:main:harness-owned:locked",
+        { ...makeEntry(now - 31 * DAY_MS), modelSelectionLocked: true },
+      ],
+    ]);
+
+    const pruned = pruneStaleEntries(store, 30 * DAY_MS, { preserveHumanSessions: false });
+
+    expect(pruned).toBe(1);
+    expect(store[threadKey]).toBeUndefined();
+    expect(store).toHaveProperty("agent:main:harness-owned:locked");
+  });
+
   it("preserves model-locked harness sessions even when stale", () => {
     const now = Date.now();
     const lockedKey = "agent:main:harness-owned:locked";
@@ -672,6 +690,23 @@ describe("capEntryCount", () => {
     expect(store).toHaveProperty("recent");
     expect(store.oldest).toBeUndefined();
     expect(store.old).toBeUndefined();
+  });
+
+  it("can cap durable external conversation entries when configured", () => {
+    const now = Date.now();
+    const threadKey = "agent:main:discord:channel:123456:thread:987654";
+    const store = makeStore([
+      [threadKey, makeEntry(now - 5 * DAY_MS)],
+      ["newest", makeEntry(now)],
+      ["recent", makeEntry(now - DAY_MS)],
+    ]);
+
+    const evicted = capEntryCount(store, 2, { preserveHumanSessions: false });
+
+    expect(evicted).toBe(1);
+    expect(store[threadKey]).toBeUndefined();
+    expect(store).toHaveProperty("newest");
+    expect(store).toHaveProperty("recent");
   });
 
   it("preserves model-locked harness sessions when capping", () => {
