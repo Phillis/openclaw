@@ -103,6 +103,11 @@ export type RunEmbeddedAgentParams = {
   trigger?: EmbeddedRunTrigger;
   /** Stable cron job identifier populated for cron-triggered runs. */
   jobId?: string;
+  /**
+   * Stable hash-only identity for the source prompt before runtime wrapping.
+   * Isolated cron callers populate this from the stored `agentTurn` message.
+   */
+  sourcePromptHash?: `sha256:${string}`;
   /** Relative workspace path that memory-triggered writes are allowed to append to. */
   memoryFlushWritePath?: string;
   /** Delivery target for topic/thread routing. */

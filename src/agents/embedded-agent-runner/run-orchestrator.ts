@@ -347,6 +347,7 @@ async function runEmbeddedAgentInternal(
           const hookCtx = {
             runId: params.runId,
             jobId: params.jobId,
+            ...(params.sourcePromptHash ? { sourcePromptHash: params.sourcePromptHash } : {}),
             agentId: workspaceResolution.agentId,
             sessionKey: resolvedSessionKey,
             sessionId: params.sessionId,

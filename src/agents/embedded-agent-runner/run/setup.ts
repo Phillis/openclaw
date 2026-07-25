@@ -39,6 +39,7 @@ import { readAgentModelContextTokens } from "../model-context-tokens.js";
 
 type HookContext = {
   runId?: string;
+  sourcePromptHash?: `sha256:${string}`;
   agentId?: string;
   sessionKey?: string;
   sessionId: string;
