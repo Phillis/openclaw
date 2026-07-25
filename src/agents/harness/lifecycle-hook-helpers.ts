@@ -25,6 +25,16 @@ const FINALIZE_RETRY_BUDGET_MAX_ENTRIES = 2048;
 
 type AgentHarnessHookRunner = ReturnType<typeof getGlobalHookRunner>;
 type FinalizeRetryBudget = Map<string, Map<string, number>>;
+type AgentEndHookDispatchParams = {
+  event: PluginHookAgentEndEvent;
+  ctx: AgentHarnessHookContext;
+  hookRunner?: AgentHarnessHookRunner;
+};
+type DeferredAgentEndHook = {
+  latest?: AgentEndHookDispatchParams;
+};
+
+const deferredAgentEndHooks = new Map<string, DeferredAgentEndHook>();
 
 /** Returns the current global hook runner for harness lifecycle hooks. */
 export function getAgentHarnessHookRunner(): AgentHarnessHookRunner {
@@ -116,21 +126,94 @@ async function executeAgentHarnessAgentEndHook(params: {
   }
 }
 
+function resolveAgentEndRunId(params: AgentEndHookDispatchParams): string | undefined {
+  return params.event.runId ?? params.ctx.runId;
+}
+
+function bufferDeferredAgentEndHook(params: AgentEndHookDispatchParams): boolean {
+  const runId = resolveAgentEndRunId(params);
+  if (!runId) {
+    return false;
+  }
+  const deferred = deferredAgentEndHooks.get(runId);
+  if (!deferred) {
+    return false;
+  }
+  deferred.latest = {
+    ...params,
+    event: {
+      ...params.event,
+      terminal: false,
+    },
+  };
+  return true;
+}
+
+/**
+ * Defers candidate-level agent_end hooks until the outer model fallback chain
+ * knows which candidate actually ended the run.
+ */
+export function beginAgentHarnessAgentEndDeferral(runId: string): void {
+  deferredAgentEndHooks.set(runId, {
+    latest: {
+      event: {
+        runId,
+        messages: [],
+        success: false,
+        terminal: false,
+      },
+      ctx: { runId },
+    },
+  });
+}
+
+/**
+ * Emits exactly one terminal agent_end hook using the latest candidate
+ * transcript and the authoritative outer fallback outcome.
+ */
+export async function finalizeAgentHarnessAgentEndDeferral(params: {
+  runId: string;
+  success: boolean;
+  error?: string;
+  durationMs?: number;
+}): Promise<boolean> {
+  const deferred = deferredAgentEndHooks.get(params.runId);
+  deferredAgentEndHooks.delete(params.runId);
+  const latest = deferred?.latest;
+  if (!latest) {
+    return false;
+  }
+  const { error: candidateError, ...candidateEvent } = latest.event;
+  const error = params.success ? undefined : (params.error ?? candidateError);
+  await executeAgentHarnessAgentEndHook({
+    ...latest,
+    event: {
+      ...candidateEvent,
+      success: params.success,
+      terminal: true,
+      ...(params.durationMs !== undefined ? { durationMs: params.durationMs } : {}),
+      ...(error ? { error } : {}),
+    },
+    unrefTimeout: false,
+  });
+  return true;
+}
+
 /** Starts agent_end hooks with unref timeout behavior. */
-export function runAgentHarnessAgentEndHook(params: {
-  event: PluginHookAgentEndEvent;
-  ctx: AgentHarnessHookContext;
-  hookRunner?: AgentHarnessHookRunner;
-}): void {
+export function runAgentHarnessAgentEndHook(params: AgentEndHookDispatchParams): void {
+  if (bufferDeferredAgentEndHook(params)) {
+    return;
+  }
   void executeAgentHarnessAgentEndHook({ ...params, unrefTimeout: true });
 }
 
 /** Runs agent_end hooks and waits for completion. */
-export async function awaitAgentHarnessAgentEndHook(params: {
-  event: PluginHookAgentEndEvent;
-  ctx: AgentHarnessHookContext;
-  hookRunner?: AgentHarnessHookRunner;
-}): Promise<void> {
+export async function awaitAgentHarnessAgentEndHook(
+  params: AgentEndHookDispatchParams,
+): Promise<void> {
+  if (bufferDeferredAgentEndHook(params)) {
+    return;
+  }
   await executeAgentHarnessAgentEndHook({ ...params, unrefTimeout: false });
 }
 

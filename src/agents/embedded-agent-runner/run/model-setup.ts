@@ -33,18 +33,33 @@ export async function resolveEmbeddedRunModelSetup(params: {
   const runParams = params.runParams;
   const hookSelection = await resolveHookModelSelection({
     prompt: runParams.prompt,
-    attachments: buildBeforeModelResolveAttachments(runParams.images),
+    attachments: buildBeforeModelResolveAttachments(runParams.images, runParams.media),
     provider: params.provider,
     modelId: params.modelId,
+    requestedProvider: runParams.requestedProvider,
+    requestedModel: runParams.requestedModel,
+    fallbackUsed: runParams.fallbackUsed,
     modelSelectionLocked: runParams.modelSelectionLocked,
     hookRunner: params.hookRunner,
     hookContext: params.hookContext,
   });
   const modelSelectionChangedByHook =
     hookSelection.provider !== params.provider || hookSelection.modelId !== params.modelId;
+  const thinkingLevelChangedByHook = hookSelection.thinkingLevelOverride !== undefined;
+  if (hookSelection.thinkingLevelOverride !== undefined) {
+    runParams.thinkLevel = hookSelection.thinkingLevelOverride;
+  }
+  if (hookSelection.fastModeOverride !== undefined) {
+    // The progress controller reads this same run-local object at dispatch, so
+    // the override reaches retries and tool continuations without global state.
+    runParams.fastMode = hookSelection.fastModeOverride;
+  }
   let provider = hookSelection.provider;
   const modelId = hookSelection.modelId;
   const requestedModelId = modelId;
+  const requestedProvider = runParams.requestedProvider ?? provider;
+  const requestedModel = runParams.requestedModel ?? modelId;
+  const fallbackUsed = runParams.fallbackUsed === true;
   const requestStreamTransportOverrides = resolveRequestStreamTransportOverrides(
     runParams.streamParams,
   );
@@ -205,7 +220,11 @@ export async function resolveEmbeddedRunModelSetup(params: {
     provider,
     modelId,
     requestedModelId,
+    requestedProvider,
+    requestedModel,
+    fallbackUsed,
     modelSelectionChangedByHook,
+    thinkingLevelChangedByHook,
     requestStreamTransportOverrides,
     expectedHarnessArtifact,
     agentHarness,

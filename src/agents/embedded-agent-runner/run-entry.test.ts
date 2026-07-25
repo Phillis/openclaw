@@ -1,5 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../../plugins/hook-runner-global.js";
+import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
+import { runAgentHarnessAgentEndHook } from "../harness/lifecycle-hook-helpers.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 
 type CandidateOptions = {
@@ -79,6 +85,7 @@ function makeResult(params: {
 
 describe("runEmbeddedAgentEntry", () => {
   beforeEach(() => {
+    resetGlobalHookRunner();
     state.ensureSelectedAgentHarnessPlugin.mockClear();
     state.runWithModelFallback
       .mockReset()
@@ -122,6 +129,10 @@ describe("runEmbeddedAgentEntry", () => {
           ],
         };
       });
+  });
+
+  afterEach(() => {
+    resetGlobalHookRunner();
   });
 
   it("keeps shared fallback and terminal behavior aligned across entry modes", async () => {
@@ -375,5 +386,269 @@ describe("runEmbeddedAgentEntry", () => {
 
     expect(result.outcome).toBe("exhausted");
     expect(result.result.payloads).toEqual([]);
+  });
+
+  it("emits one terminal agent_end when the primary succeeds before configured fallbacks", async () => {
+    state.runWithModelFallback.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      const result = await params.run(params.provider, params.model, {
+        isFinalFallbackAttempt: false,
+      });
+      return {
+        outcome: "completed" as const,
+        result,
+        provider: params.provider,
+        model: params.model,
+        attempts: [],
+      };
+    });
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
+      runAgentEnd: vi.fn(async () => undefined),
+    };
+    const { runEmbeddedAgentEntry } = await import("./run-entry.js");
+
+    await runEmbeddedAgentEntry({
+      selection: { cfg: {}, provider: "primary-provider", model: "primary-model" },
+      identity: { runId: "primary-success", agentId: "main", sessionId: "session-1" },
+      harness: {
+        workspaceDir: "/tmp/workspace",
+        preparation: { kind: "direct" },
+        resolveRuntimeOverride: () => undefined,
+      },
+      behavior: { kind: "maintenance" },
+      sessionOverride: { kind: "preserve" },
+      runCandidate: async (provider, model) => {
+        runAgentHarnessAgentEndHook({
+          event: { messages: [`${provider}/${model}`], success: true, terminal: true },
+          ctx: { runId: "primary-success" },
+          hookRunner: hookRunner as never,
+        });
+        return makeResult({ provider, model });
+      },
+    });
+
+    expect(hookRunner.runAgentEnd).toHaveBeenCalledOnce();
+    expect(hookRunner.runAgentEnd.mock.calls[0]?.[0]).toEqual({
+      messages: ["primary-provider/primary-model"],
+      success: true,
+      terminal: true,
+      durationMs: expect.any(Number),
+    });
+  });
+
+  it("emits one terminal agent_end when a middle fallback succeeds", async () => {
+    state.runWithModelFallback.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      await params.run(params.provider, params.model, {
+        isFinalFallbackAttempt: false,
+      });
+      const provider = "middle-provider";
+      const model = "middle-model";
+      const result = await params.run(provider, model, {
+        isFinalFallbackAttempt: false,
+      });
+      return {
+        outcome: "completed" as const,
+        result,
+        provider,
+        model,
+        attempts: [],
+      };
+    });
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
+      runAgentEnd: vi.fn(async () => undefined),
+    };
+    const { runEmbeddedAgentEntry } = await import("./run-entry.js");
+
+    await runEmbeddedAgentEntry({
+      selection: { cfg: {}, provider: "primary-provider", model: "primary-model" },
+      identity: { runId: "middle-success", agentId: "main", sessionId: "session-1" },
+      harness: {
+        workspaceDir: "/tmp/workspace",
+        preparation: { kind: "direct" },
+        resolveRuntimeOverride: () => undefined,
+      },
+      behavior: { kind: "maintenance" },
+      sessionOverride: { kind: "preserve" },
+      runCandidate: async (provider, model) => {
+        runAgentHarnessAgentEndHook({
+          event: { messages: [`${provider}/${model}`], success: true, terminal: true },
+          ctx: { runId: "middle-success" },
+          hookRunner: hookRunner as never,
+        });
+        return makeResult({ provider, model });
+      },
+    });
+
+    expect(hookRunner.runAgentEnd).toHaveBeenCalledOnce();
+    expect(hookRunner.runAgentEnd.mock.calls[0]?.[0]).toEqual({
+      messages: ["middle-provider/middle-model"],
+      success: true,
+      terminal: true,
+      durationMs: expect.any(Number),
+    });
+  });
+
+  it("emits one terminal failed agent_end for a non-retriable outer error", async () => {
+    state.runWithModelFallback.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      await params.run(params.provider, params.model, {
+        isFinalFallbackAttempt: false,
+      });
+      throw new Error("non-retriable outer failure");
+    });
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
+      runAgentEnd: vi.fn(async () => undefined),
+    };
+    const { runEmbeddedAgentEntry } = await import("./run-entry.js");
+
+    await expect(
+      runEmbeddedAgentEntry({
+        selection: { cfg: {}, provider: "primary-provider", model: "primary-model" },
+        identity: { runId: "terminal-error", agentId: "main", sessionId: "session-1" },
+        harness: {
+          workspaceDir: "/tmp/workspace",
+          preparation: { kind: "direct" },
+          resolveRuntimeOverride: () => undefined,
+        },
+        behavior: { kind: "maintenance" },
+        sessionOverride: { kind: "preserve" },
+        runCandidate: async (provider, model) => {
+          runAgentHarnessAgentEndHook({
+            event: {
+              messages: [`${provider}/${model}`],
+              success: false,
+              terminal: true,
+              error: "candidate failed",
+            },
+            ctx: { runId: "terminal-error" },
+            hookRunner: hookRunner as never,
+          });
+          return makeResult({ provider, model });
+        },
+      }),
+    ).rejects.toThrow("non-retriable outer failure");
+
+    expect(hookRunner.runAgentEnd).toHaveBeenCalledOnce();
+    expect(hookRunner.runAgentEnd.mock.calls[0]?.[0]).toEqual({
+      messages: ["primary-provider/primary-model"],
+      success: false,
+      terminal: true,
+      error: "non-retriable outer failure",
+      durationMs: expect.any(Number),
+    });
+  });
+
+  it("emits one terminal agent_end when all candidates throw before agent_end", async () => {
+    state.runWithModelFallback.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      await params
+        .run(params.provider, params.model, {
+          isFinalFallbackAttempt: false,
+        })
+        .catch(() => undefined);
+      await params
+        .run("fallback-provider", "fallback-model", {
+          isFinalFallbackAttempt: true,
+        })
+        .catch(() => undefined);
+      throw new Error("all candidates failed during setup");
+    });
+    const agentEndHandler = vi.fn(async () => undefined);
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "agent_end", handler: agentEndHandler }]),
+    );
+    const { runEmbeddedAgentEntry } = await import("./run-entry.js");
+
+    await expect(
+      runEmbeddedAgentEntry({
+        selection: { cfg: {}, provider: "primary-provider", model: "primary-model" },
+        identity: { runId: "pre-agent-end-errors", agentId: "main", sessionId: "session-1" },
+        harness: {
+          workspaceDir: "/tmp/workspace",
+          preparation: { kind: "direct" },
+          resolveRuntimeOverride: () => undefined,
+        },
+        behavior: { kind: "maintenance" },
+        sessionOverride: { kind: "preserve" },
+        runCandidate: async () => {
+          throw new Error("setup failed before agent_end");
+        },
+      }),
+    ).rejects.toThrow("all candidates failed during setup");
+
+    expect(agentEndHandler).toHaveBeenCalledOnce();
+    expect(agentEndHandler.mock.calls[0]?.[0]).toEqual({
+      runId: "pre-agent-end-errors",
+      messages: [],
+      success: false,
+      terminal: true,
+      error: "all candidates failed during setup",
+      durationMs: expect.any(Number),
+    });
+  });
+
+  it("reports outer fallback-chain duration on the terminal agent_end", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    state.runWithModelFallback.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      await params.run(params.provider, params.model, {
+        isFinalFallbackAttempt: false,
+      });
+      nowSpy.mockReturnValue(1_400);
+      const provider = "fallback-provider";
+      const model = "fallback-model";
+      const result = await params.run(provider, model, {
+        isFinalFallbackAttempt: true,
+      });
+      nowSpy.mockReturnValue(1_750);
+      return {
+        outcome: "completed" as const,
+        result,
+        provider,
+        model,
+        attempts: [],
+      };
+    });
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
+      runAgentEnd: vi.fn(async () => undefined),
+    };
+    const { runEmbeddedAgentEntry } = await import("./run-entry.js");
+
+    try {
+      await runEmbeddedAgentEntry({
+        selection: { cfg: {}, provider: "primary-provider", model: "primary-model" },
+        identity: { runId: "fallback-duration", agentId: "main", sessionId: "session-1" },
+        harness: {
+          workspaceDir: "/tmp/workspace",
+          preparation: { kind: "direct" },
+          resolveRuntimeOverride: () => undefined,
+        },
+        behavior: { kind: "maintenance" },
+        sessionOverride: { kind: "preserve" },
+        runCandidate: async (provider, model) => {
+          runAgentHarnessAgentEndHook({
+            event: {
+              messages: [`${provider}/${model}`],
+              success: true,
+              terminal: true,
+              durationMs: 10,
+            },
+            ctx: { runId: "fallback-duration" },
+            hookRunner: hookRunner as never,
+          });
+          return makeResult({ provider, model });
+        },
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(hookRunner.runAgentEnd).toHaveBeenCalledOnce();
+    expect(hookRunner.runAgentEnd.mock.calls[0]?.[0]).toEqual({
+      messages: ["fallback-provider/fallback-model"],
+      success: true,
+      terminal: true,
+      durationMs: 750,
+    });
   });
 });

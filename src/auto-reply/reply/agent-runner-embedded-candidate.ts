@@ -57,6 +57,9 @@ export async function runEmbeddedFallbackCandidate(params: {
   runtimeConfig: OpenClawConfig;
   provider: string;
   model: string;
+  requestedProvider: string;
+  requestedModel: string;
+  fallbackUsed: boolean;
   sessionRuntimeOverride?: string;
   candidateThinkLevel?: ThinkLevel;
   candidateFastMode: Pick<RunEmbeddedAgentParams, "fastMode" | "fastModeAutoOnSeconds">;
@@ -204,6 +207,9 @@ export async function runEmbeddedFallbackCandidate(params: {
         ...senderContext,
         ...runBaseParams,
         provider: embeddedRunProvider,
+        requestedProvider: params.requestedProvider,
+        requestedModel: params.requestedModel,
+        fallbackUsed: params.fallbackUsed,
         agentHarnessId: embeddedRunHarnessOverride,
         agentHarnessRuntimeOverride: embeddedRunHarnessOverride,
         fastModeStartedAtMs: params.fastModeStartedAtMs,

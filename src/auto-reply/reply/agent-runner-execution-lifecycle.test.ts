@@ -141,9 +141,13 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
     followupRun.media = [{ path: "/tmp/retry.png", contentType: "image/png" }];
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
       expect(freezeAbortMock).not.toHaveBeenCalled();
-      await params.run("anthropic", "claude").catch(() => undefined);
+      await params
+        .run("anthropic", "claude", { isFinalFallbackAttempt: false })
+        .catch(() => undefined);
       expect(freezeAbortMock).not.toHaveBeenCalled();
-      const result = await params.run("openai", "gpt-5.5");
+      const result = await params.run("openai", "gpt-5.5", {
+        isFinalFallbackAttempt: true,
+      });
       expect(freezeAbortMock).not.toHaveBeenCalled();
       return {
         result,
@@ -170,6 +174,23 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
       followupRun.media,
       followupRun.media,
     ]);
+    expect(state.runEmbeddedAgentMock.mock.calls.map((call) => call[0])).toEqual([
+      expect.objectContaining({
+        requestedProvider: "anthropic",
+        requestedModel: "claude",
+        fallbackUsed: false,
+        isFinalFallbackAttempt: false,
+      }),
+      expect.objectContaining({
+        requestedProvider: "anthropic",
+        requestedModel: "claude",
+        fallbackUsed: true,
+        isFinalFallbackAttempt: true,
+      }),
+    ]);
+    // The outer fallback callback identifies the candidate transition but does
+    // not expose its causal code; do not manufacture one from the model change.
+    expect(state.runEmbeddedAgentMock.mock.calls[1]?.[0]).not.toHaveProperty("fallbackReason");
     expect(freezeAbortMock).toHaveBeenCalledTimes(1);
   });
 

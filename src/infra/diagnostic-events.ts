@@ -1,5 +1,6 @@
 // Defines and sanitizes runtime diagnostic event payloads.
 import { randomUUID } from "node:crypto";
+import type { FailoverReason } from "../agents/embedded-agent-helpers/types.js";
 import type { EmbeddedAgentExecutionPhase } from "../agents/embedded-agent-runner/execution-phase.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { TalkBrain, TalkEventType, TalkMode, TalkTransport } from "../talk/talk-events.js";
@@ -625,8 +626,18 @@ type DiagnosticModelCallBaseEvent = DiagnosticBaseEvent & {
   sessionId?: string;
   provider: string;
   model: string;
+  requestedProvider?: string;
+  requestedModel?: string;
+  effectiveProvider?: string;
+  effectiveModel?: string;
+  fallbackUsed?: boolean;
+  fallbackReason?: FailoverReason;
   api?: string;
   transport?: string;
+  /** Requested reasoning/think effort applied to this model call. */
+  reasoningEffort?: string;
+  /** Effective provider fast-mode state when this model call started. */
+  fastMode?: boolean;
   /** Defaults to request for emitters created before turn-level CLI diagnostics. */
   observationUnit?: "request" | "turn";
   contextTokenBudget?: number;

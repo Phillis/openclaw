@@ -337,9 +337,25 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     });
 
     expect(mockedGlobalHookRunner.runBeforeModelResolve).toHaveBeenCalledTimes(1);
+    expect(mockedGlobalHookRunner.runBeforeModelResolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        controlContractVersion: 1,
+        supportedOverrides: [
+          "modelOverride",
+          "providerOverride",
+          "thinkingLevelOverride",
+          "fastModeOverride",
+        ],
+        provider: "anthropic",
+        model: "initial-model",
+      }),
+      expect.objectContaining({ runId: "run-before-model-resolve-runtime-settings" }),
+    );
     expectMockCallFields(mockedRunEmbeddedAttempt, {
       provider: "openai",
       modelId: "hook-selected-model",
+      requestedProvider: "openai",
+      requestedModel: "hook-selected-model",
       requestedModelId: "hook-selected-model",
       fallbackActive: false,
       fallbackReason: null,
@@ -382,6 +398,32 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       provider: "openai",
       modelId: "gpt-5.5",
       thinkLevel: "xhigh",
+    });
+  });
+
+  it("applies hook-selected thinking and fast mode only to the current run", async () => {
+    useOpenAIPlatformAuthFixture();
+    mockedGlobalHookRunner.hasHooks.mockImplementation(
+      (hookName) => hookName === "before_model_resolve",
+    );
+    mockedGlobalHookRunner.runBeforeModelResolve.mockResolvedValueOnce({
+      thinkingLevelOverride: "medium",
+      fastModeOverride: true,
+    });
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      thinkLevel: "ultra",
+      fastMode: false,
+      runId: "run-before-model-resolve-controls",
+    });
+
+    expectMockCallFields(mockedRunEmbeddedAttempt, {
+      thinkLevel: "medium",
+      fastMode: true,
     });
   });
 

@@ -41,6 +41,7 @@ import {
   wrapStreamFnSanitizeMalformedToolCalls,
   wrapStreamFnTrimToolCallNames,
 } from "./attempt.tool-call-normalization.js";
+import { resolveFallbackTelemetryReason } from "./fallback-telemetry.js";
 import {
   resolveLlmFirstEventTimeoutMs,
   resolveLlmIdleTimeoutMs,
@@ -317,14 +318,21 @@ export function installEmbeddedAttemptStreamGuards(input: {
     };
   }
   let diagnosticModelCallSeq = 0;
+  const fallbackReason = resolveFallbackTelemetryReason(attempt.fallbackReason);
   session.agent.streamFn = wrapStreamFnWithDiagnosticModelCallEvents(session.agent.streamFn, {
     runId: attempt.runId,
     ...(attempt.sessionKey && { sessionKey: attempt.sessionKey }),
     ...(attempt.sessionId && { sessionId: attempt.sessionId }),
     provider: attempt.provider,
     model: attempt.modelId,
+    requestedProvider: attempt.requestedProvider ?? attempt.provider,
+    requestedModel: attempt.requestedModel ?? attempt.requestedModelId ?? attempt.modelId,
+    fallbackUsed: attempt.fallbackActive === true,
+    ...(fallbackReason ? { fallbackReason } : {}),
     api: attempt.model.api,
     transport: input.effectiveAgentTransport,
+    reasoningEffort: attempt.thinkLevel,
+    fastMode: attempt.fastMode,
     ...(attempt.contextWindowInfo?.tokens
       ? { contextTokenBudget: attempt.contextWindowInfo.tokens }
       : {}),

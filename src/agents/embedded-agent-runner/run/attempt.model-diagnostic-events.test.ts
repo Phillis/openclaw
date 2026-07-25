@@ -1255,6 +1255,21 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents", () => {
 
     async function* stream() {
       yield { type: "text", text: secretChunk };
+      yield {
+        type: "done",
+        message: {
+          role: "assistant",
+          content: [],
+          usage: {
+            input: 12,
+            output: 5,
+            cacheRead: 3,
+            cacheWrite: 1,
+            reasoningTokens: 2,
+            totalTokens: 23,
+          },
+        },
+      };
     }
     const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
       (() => stream()) as unknown as StreamFn,
@@ -1264,8 +1279,14 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents", () => {
         sessionId: "session-id",
         provider: "openai",
         model: "gpt-5.4",
+        requestedProvider: "anthropic",
+        requestedModel: "claude-sonnet-4-6",
+        fallbackUsed: true,
+        fallbackReason: "rate_limit",
         api: "openai-responses",
         transport: "http",
+        reasoningEffort: "low",
+        fastMode: () => true,
         contextTokenBudget: 150_000,
         contextWindowSource: "agentContextTokens",
         contextWindowReferenceTokens: 200_000,
@@ -1292,8 +1313,16 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents", () => {
     expect(startedEvent.sessionId).toBe("session-id");
     expect(startedEvent.provider).toBe("openai");
     expect(startedEvent.model).toBe("gpt-5.4");
+    expect(startedEvent.requestedProvider).toBe("anthropic");
+    expect(startedEvent.requestedModel).toBe("claude-sonnet-4-6");
+    expect(startedEvent.effectiveProvider).toBe("openai");
+    expect(startedEvent.effectiveModel).toBe("gpt-5.4");
+    expect(startedEvent.fallbackUsed).toBe(true);
+    expect(startedEvent.fallbackReason).toBe("rate_limit");
     expect(startedEvent.api).toBe("openai-responses");
     expect(startedEvent.transport).toBe("http");
+    expect(startedEvent.reasoningEffort).toBe("low");
+    expect(startedEvent.fastMode).toBe(true);
     expect(startedEvent.contextTokenBudget).toBe(150_000);
     expect(startedEvent.contextWindowSource).toBe("agentContextTokens");
     expect(startedEvent.contextWindowReferenceTokens).toBe(200_000);
@@ -1313,6 +1342,15 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents", () => {
     expect(endedEvent.contextTokenBudget).toBe(150_000);
     expect(endedEvent.contextWindowSource).toBe("agentContextTokens");
     expect(endedEvent.contextWindowReferenceTokens).toBe(200_000);
+    expect(endedEvent.usage).toEqual({
+      input: 12,
+      output: 5,
+      cacheRead: 3,
+      cacheWrite: 1,
+      reasoningTokens: 2,
+      promptTokens: 16,
+      total: 23,
+    });
     expectNumberField(endedEvent, "durationMs");
     expectNumberField(endedEvent, "responseStreamBytes");
     expectNumberField(endedEvent, "timeToFirstByteMs");

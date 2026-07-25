@@ -280,7 +280,60 @@ describe("embedded attempt phase lifecycle state", () => {
 
     expect(hoisted.runAgentEndSideEffects).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: expect.objectContaining({ success: false }),
+        event: expect.objectContaining({ success: false, terminal: true }),
+      }),
+    );
+  });
+
+  it("leaves outer fallback terminal ownership to the hook deferral boundary", async () => {
+    await completeEmbeddedAttemptAfterTurn({
+      attempt: {
+        runId: "run-1",
+        sessionId: "session-1",
+        sessionFile: "/tmp/session.jsonl",
+        isFinalFallbackAttempt: false,
+      } as never,
+      activeSession: {} as never,
+      sessionManager: { appendCustomEntry: vi.fn() } as never,
+      sessionLockController: { waitForSessionEvents: async () => undefined } as never,
+      withOwnedSessionWriteLock: async (operation) => await operation(),
+      state: {
+        promptError: new Error("primary failed"),
+        yieldAborted: false,
+        sessionIdUsed: "session-1",
+        messagesSnapshot: [],
+        prePromptMessageCount: 0,
+        contextEngineAfterTurnCheckpoint: null,
+        compactionOccurredThisAttempt: false,
+      },
+      readLifecycleState: () => ({
+        aborted: false,
+        timedOut: false,
+        idleTimedOut: false,
+        timedOutDuringCompaction: false,
+      }),
+      runtime: {
+        effectiveWorkspace: "/tmp/workspace",
+        agentDir: "/tmp/agent",
+        sessionAgentId: "main",
+        resolveActiveContextEnginePluginId: () => undefined,
+        shouldRecordCompletedBootstrapTurn: false,
+        cacheTrace: null,
+        anthropicPayloadLogger: null,
+        hookAgentId: "main",
+        diagnosticTrace: { traceId: "trace-1", spanId: "span-1" } as never,
+        skillWorkshopAvailable: false,
+        hookRunner: null,
+        promptStartedAt: Date.now(),
+      },
+    });
+
+    expect(hoisted.runAgentEndSideEffects).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          success: false,
+          terminal: true,
+        }),
       }),
     );
   });

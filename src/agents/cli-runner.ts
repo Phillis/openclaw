@@ -696,6 +696,7 @@ export async function runPreparedCliAgent(
   const buildFailedAgentEndEvent = (error: string) => ({
     messages: buildAgentEndMessages(),
     success: false,
+    terminal: true,
     error,
     durationMs: Date.now() - context.started,
   });
@@ -706,6 +707,7 @@ export async function runPreparedCliAgent(
       currentTurnMessages: [buildCliHookUserMessage(message)],
     }),
     success: false,
+    terminal: true,
     error: message,
     durationMs: Date.now() - context.started,
   });
@@ -1358,6 +1360,7 @@ export async function runPreparedCliAgent(
           event: {
             messages: buildAgentEndMessages(lastAssistant),
             success: true,
+            terminal: true,
             durationMs: Date.now() - context.started,
           },
           ctx: hookContext,
