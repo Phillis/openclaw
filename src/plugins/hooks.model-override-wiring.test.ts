@@ -81,6 +81,8 @@ describe("model override pipeline wiring", () => {
         ({
           modelOverride: "demo-local-model",
           providerOverride: "demo-local-provider",
+          thinkingLevelOverride: "medium",
+          fastModeOverride: true,
         }) as PluginHookBeforeModelResolveResult,
     );
 
@@ -129,21 +131,47 @@ describe("model override pipeline wiring", () => {
   describe("before_model_resolve (run.ts pattern)", () => {
     it.each([
       {
-        name: "hook receives prompt-only event and returns provider/model override",
-        event: { prompt: "PII text" },
+        name: "hook receives the versioned source selection and returns run controls",
+        event: {
+          controlContractVersion: 1 as const,
+          supportedOverrides: [
+            "modelOverride",
+            "providerOverride",
+            "thinkingLevelOverride",
+            "fastModeOverride",
+          ] as const,
+          prompt: "PII text",
+          provider: "source-provider",
+          model: "source-model",
+        },
         expected: {
           modelOverride: "demo-local-model",
           providerOverride: "demo-local-provider",
+          thinkingLevelOverride: "medium",
+          fastModeOverride: true,
         },
       },
       {
         name: "one broken before_model_resolve plugin does not block other overrides",
-        event: { prompt: "PII data" },
+        event: {
+          controlContractVersion: 1 as const,
+          supportedOverrides: [
+            "modelOverride",
+            "providerOverride",
+            "thinkingLevelOverride",
+            "fastModeOverride",
+          ] as const,
+          prompt: "PII data",
+          provider: "source-provider",
+          model: "source-model",
+        },
         withBrokenHook: true,
         catchErrors: true,
         expected: {
           modelOverride: "demo-local-model",
           providerOverride: "demo-local-provider",
+          thinkingLevelOverride: "medium",
+          fastModeOverride: true,
         },
       },
     ] as const)("$name", async ({ event, expected, withBrokenHook, catchErrors }) => {

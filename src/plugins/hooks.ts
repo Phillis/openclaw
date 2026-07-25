@@ -288,11 +288,20 @@ export function createHookRunner(
   const mergeBeforeModelResolve = (
     acc: PluginHookBeforeModelResolveResult | undefined,
     next: PluginHookBeforeModelResolveResult,
-  ): PluginHookBeforeModelResolveResult => ({
-    // Keep the first defined override so higher-priority hooks win.
-    modelOverride: firstDefined(acc?.modelOverride, next.modelOverride),
-    providerOverride: firstDefined(acc?.providerOverride, next.providerOverride),
-  });
+  ): PluginHookBeforeModelResolveResult => {
+    const thinkingLevelOverride = firstDefined(
+      acc?.thinkingLevelOverride,
+      next.thinkingLevelOverride,
+    );
+    const fastModeOverride = firstDefined(acc?.fastModeOverride, next.fastModeOverride);
+    return {
+      // Keep the first defined override so higher-priority hooks win.
+      modelOverride: firstDefined(acc?.modelOverride, next.modelOverride),
+      providerOverride: firstDefined(acc?.providerOverride, next.providerOverride),
+      ...(thinkingLevelOverride !== undefined ? { thinkingLevelOverride } : {}),
+      ...(fastModeOverride !== undefined ? { fastModeOverride } : {}),
+    };
+  };
 
   const mergeBeforePromptBuild = (
     acc: PluginHookBeforePromptBuildResult | undefined,
@@ -845,7 +854,12 @@ export function createHookRunner(
     ctx: PluginHookAgentContext,
     optionsLocal?: VoidHookRunOptions,
   ): Promise<void> {
-    return runVoidHook("agent_end", withAgentRunId(event, ctx), ctx, optionsLocal);
+    return runVoidHook(
+      "agent_end",
+      withAgentRunId({ ...event, terminal: event.terminal ?? true }, ctx),
+      ctx,
+      optionsLocal,
+    );
   }
 
   /**

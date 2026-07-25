@@ -225,6 +225,7 @@ export async function completeEmbeddedAttemptAfterTurn(
       event: {
         messages: state.messagesSnapshot,
         success: !lifecycleForAgentEnd.aborted && !state.promptError,
+        terminal: true,
         error: state.promptError ? formatErrorMessage(state.promptError) : undefined,
         durationMs: Date.now() - runtime.promptStartedAt,
       },

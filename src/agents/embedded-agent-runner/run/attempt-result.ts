@@ -16,6 +16,7 @@ import type { PromptCacheBreak, PromptCacheChange } from "../prompt-cache-observ
 import { observeReplayMetadata, replayMetadataFromState } from "../replay-state.js";
 import { finalizeEmbeddedAttempt } from "./attempt-finalize.js";
 import { shouldRunLlmOutputHooksForAttempt } from "./attempt.run-decisions.js";
+import { resolveFallbackTelemetryReason } from "./fallback-telemetry.js";
 import {
   buildAttemptReplayMetadata,
   hasAttemptTerminalState,
@@ -151,6 +152,8 @@ export function completeEmbeddedAttemptResult(
   input: CompleteEmbeddedAttemptResultInput,
 ): EmbeddedRunAttemptResult {
   const { attempt, state, subscription } = input;
+  const fastMode = typeof attempt.fastMode === "function" ? attempt.fastMode() : attempt.fastMode;
+  const fallbackReason = resolveFallbackTelemetryReason(attempt.fallbackReason);
   const {
     assistantTexts,
     didSendDeterministicApprovalPrompt,
@@ -228,6 +231,14 @@ export function completeEmbeddedAttemptResult(
           sessionId: attempt.sessionId,
           provider: attempt.provider,
           model: attempt.modelId,
+          requestedProvider: attempt.requestedProvider ?? attempt.provider,
+          requestedModel: attempt.requestedModel ?? attempt.requestedModelId ?? attempt.modelId,
+          effectiveProvider: attempt.provider,
+          effectiveModel: attempt.modelId,
+          fallbackUsed: attempt.fallbackActive === true,
+          ...(fallbackReason ? { fallbackReason } : {}),
+          reasoningEffort: attempt.thinkLevel,
+          ...(typeof fastMode === "boolean" ? { fastMode } : {}),
           ...(attempt.contextWindowInfo?.tokens
             ? { contextTokenBudget: attempt.contextWindowInfo.tokens }
             : {}),

@@ -1,12 +1,37 @@
+import type { ThinkLevel } from "../auto-reply/thinking.shared.js";
+
 // before_model_resolve hook
 export type PluginHookBeforeModelResolveAttachment = {
   kind: "image" | "video" | "audio" | "document" | "other";
   mimeType?: string;
 };
 
+export type PluginHookBeforeModelResolveOverrideName =
+  | "modelOverride"
+  | "providerOverride"
+  | "thinkingLevelOverride"
+  | "fastModeOverride";
+
 export type PluginHookBeforeModelResolveEvent = {
+  /**
+   * Versioned host contract for model-resolution controls. Older hosts omit
+   * this field, allowing plugins to degrade without guessing from host version.
+   */
+  readonly controlContractVersion?: 1;
+  /** Result fields this host will honor for the current run. */
+  readonly supportedOverrides?: readonly PluginHookBeforeModelResolveOverrideName[];
   /** User prompt for this run. No session messages are available yet in this phase. */
   prompt: string;
+  /** Provider selected before model-routing hooks run. */
+  provider?: string;
+  /** Model selected before model-routing hooks run. */
+  model?: string;
+  /** Original primary provider before a configured fallback candidate was selected. */
+  requestedProvider?: string;
+  /** Original primary model before a configured fallback candidate was selected. */
+  requestedModel?: string;
+  /** True when this hook is resolving a non-primary configured fallback candidate. */
+  fallbackUsed?: boolean;
   /** Attachment metadata for file-aware model routing. */
   attachments?: PluginHookBeforeModelResolveAttachment[];
 };
@@ -16,6 +41,10 @@ export type PluginHookBeforeModelResolveResult = {
   modelOverride?: string;
   /** Override the provider for this agent run. E.g. "local-provider" */
   providerOverride?: string;
+  /** Override the run's reasoning effort after the selected model is resolved. */
+  thinkingLevelOverride?: ThinkLevel;
+  /** Enable or disable provider fast mode for this run. */
+  fastModeOverride?: boolean;
 };
 
 // before_prompt_build hook
