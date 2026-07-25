@@ -328,6 +328,7 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       ...overflowBaseRunParams,
       provider: "anthropic",
       model: "initial-model",
+      sourcePromptHash: `sha256:${"a".repeat(64)}`,
       runId: "run-before-model-resolve-runtime-settings",
     });
 
@@ -344,7 +345,10 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
         provider: "anthropic",
         model: "initial-model",
       }),
-      expect.objectContaining({ runId: "run-before-model-resolve-runtime-settings" }),
+      expect.objectContaining({
+        runId: "run-before-model-resolve-runtime-settings",
+        sourcePromptHash: `sha256:${"a".repeat(64)}`,
+      }),
     );
     expectMockCallFields(mockedRunEmbeddedAttempt, {
       provider: "openai",

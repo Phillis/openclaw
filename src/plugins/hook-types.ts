@@ -254,6 +254,14 @@ export const isConversationHookName = (hookName: PluginHookName): boolean =>
 export type PluginHookAgentContext = {
   runId?: string;
   jobId?: string;
+  /**
+   * Stable identity for a caller-owned source prompt before runtime wrapping.
+   *
+   * Currently populated for non-empty isolated cron `agentTurn` payloads as
+   * `sha256:` plus the full lowercase SHA-256 digest of the canonicalized
+   * stored message. The raw source prompt is never exposed through this field.
+   */
+  sourcePromptHash?: `sha256:${string}`;
   trace?: DiagnosticTraceContext;
   agentId?: string;
   sessionKey?: string;

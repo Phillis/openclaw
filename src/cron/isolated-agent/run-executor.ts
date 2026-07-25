@@ -56,6 +56,7 @@ import type {
 } from "./run-session-state.js";
 import { syncCronSessionLiveSelection } from "./run-session-state.js";
 import { resolveFallbackCronSourceDeliveryPlan } from "./source-delivery-fallback.js";
+import { createCronSourcePromptHash } from "./source-prompt-hash.js";
 import { isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 
 type AgentTurnPayload = Extract<CronJob["payload"], { kind: "agentTurn" }> | null;
@@ -273,6 +274,9 @@ function createCronPromptExecutor(params: {
     params.cronSession.sessionEntry.systemPromptReport,
   );
   const bootstrapContextMode = resolveCronBootstrapContextMode(params.agentPayload);
+  // Compute once from the stored payload before any cron, delivery, or retry
+  // wrapper is applied. Every embedded fallback and continuation shares it.
+  const sourcePromptHash = createCronSourcePromptHash(params.agentPayload?.message);
   if (!params.sourceDelivery) {
     logWarn(
       `[cron:${params.job.id}] sourceDelivery is undefined; using fallback — possible build artifact mismatch`,
@@ -506,6 +510,7 @@ function createCronPromptExecutor(params: {
           agentId: params.agentId,
           trigger: "cron",
           jobId: params.job.id,
+          ...(sourcePromptHash ? { sourcePromptHash } : {}),
           cleanupBundleMcpOnRunEnd: params.usesDetachedRunSession === true,
           allowGatewaySubagentBinding: true,
           messageChannel,

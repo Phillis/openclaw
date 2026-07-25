@@ -70,6 +70,42 @@ describe("runCronIsolatedAgentTurn — payload.fallbacks", () => {
     expect(request?.prompt).not.toContain("[object Object]");
   });
 
+  it("forwards one raw-payload fingerprint across wrapped embedded fallback candidates", async () => {
+    const sourceMessage = "  Cafe\u0301\r\n\tweekly\u00a0report  ";
+    const expectedSourcePromptHash =
+      "sha256:88ec7d2417d3bacb289c2bb9d44e96b179c98d395e5242e822061e29ca481a2d";
+    runWithModelFallbackMock.mockImplementation(async ({ provider, model, run }) => {
+      await run(provider, model);
+      const result = await run("anthropic", "claude-sonnet-4-6");
+      return {
+        result,
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        attempts: [],
+      };
+    });
+
+    const result = await runCronIsolatedAgentTurn(
+      makeIsolatedAgentParamsFixture({
+        job: makeIsolatedAgentJobFixture({
+          payload: {
+            kind: "agentTurn",
+            message: sourceMessage,
+            fallbacks: ["anthropic/claude-sonnet-4-6"],
+          },
+        }),
+      }),
+    );
+
+    expect(result.status).toBe("ok");
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
+    for (const [request] of runEmbeddedAgentMock.mock.calls) {
+      expect(request.sourcePromptHash).toBe(expectedSourcePromptHash);
+      expect(request.prompt).not.toBe(sourceMessage);
+      expect(request.prompt).toContain("unattended scheduled run");
+    }
+  });
+
   it.each([
     {
       name: "passes payload.fallbacks as fallbacksOverride when defined",

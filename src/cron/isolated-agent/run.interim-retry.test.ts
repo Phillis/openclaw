@@ -19,6 +19,7 @@ const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
 
 function requireEmbeddedAgentCall(index: number): {
   prompt?: string;
+  sourcePromptHash?: string;
   suppressNextUserMessagePersistence?: boolean;
   userTurnTranscriptRecorder?: {
     markRuntimePersisted: (message: { role: "user"; content: string }) => void;
@@ -27,6 +28,7 @@ function requireEmbeddedAgentCall(index: number): {
   const call = runEmbeddedAgentMock.mock.calls[index]?.[0] as
     | {
         prompt?: string;
+        sourcePromptHash?: string;
         suppressNextUserMessagePersistence?: boolean;
         userTurnTranscriptRecorder?: {
           markRuntimePersisted: (message: { role: "user"; content: string }) => void;
@@ -111,6 +113,8 @@ describe("runCronIsolatedAgentTurn — interim ack retry", () => {
     const firstCall = requireEmbeddedAgentCall(0);
     const continuationCall = requireEmbeddedAgentCall(1);
     expect(continuationCall.prompt).toContain("previous response was only an acknowledgement");
+    expect(firstCall.sourcePromptHash).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(continuationCall.sourcePromptHash).toBe(firstCall.sourcePromptHash);
     expect(continuationCall.userTurnTranscriptRecorder).not.toBe(
       firstCall.userTurnTranscriptRecorder,
     );
