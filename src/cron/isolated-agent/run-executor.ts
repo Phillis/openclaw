@@ -37,8 +37,10 @@ import {
 import { resolveCronPayloadOutcome } from "./helpers.js";
 import { appendCronDeliveryInstruction } from "./run-delivery-trace.js";
 import {
+  beginAgentHarnessAgentEndDeferral,
   classifyEmbeddedAgentRunResultForModelFallback,
   ensureSelectedAgentHarnessPlugin,
+  finalizeAgentHarnessAgentEndDeferral,
   getCliSessionBinding,
   isCliProvider,
   LiveSessionModelSwitchError,
@@ -351,10 +353,16 @@ function createCronPromptExecutor(params: {
             errorContext: "cron user turn transcript",
           });
     pendingUserTurn = { promptText, recorder: userTurnTranscriptRecorder };
-    const fallbackResult = await runWithModelFallback({
+    const requestedProvider = params.liveSelection.provider;
+    const requestedModel = params.liveSelection.model;
+    const fallbackRunId = params.cronSession.sessionEntry.sessionId;
+    const fallbackStartedAtMs = Date.now();
+    let candidateIndex = 0;
+    beginAgentHarnessAgentEndDeferral(fallbackRunId);
+    const fallbackPromise = runWithModelFallback({
       cfg: params.cfgWithAgentDefaults,
-      provider: params.liveSelection.provider,
-      model: params.liveSelection.model,
+      provider: requestedProvider,
+      model: requestedModel,
       requestedRouteResolution: "resolved",
       runId: params.cronSession.sessionEntry.sessionId,
       sessionId: params.cronSession.sessionEntry.sessionId,
@@ -393,6 +401,11 @@ function createCronPromptExecutor(params: {
       canFallbackAfterError: () => !currentAttemptCommittedMedia(),
       mergeExhaustedResult: mergeEmbeddedAgentRunResultForModelFallbackExhaustion,
       run: async (providerOverride, modelOverride, runOptions) => {
+        const fallbackUsed =
+          candidateIndex > 0 ||
+          providerOverride !== requestedProvider ||
+          modelOverride !== requestedModel;
+        candidateIndex += 1;
         attemptMediaTaskIds = getGeneratedMediaTaskIdsForSessionKey(params.runSessionKey);
         if (params.abortSignal?.aborted) {
           throw new Error(params.abortReason());
@@ -600,6 +613,9 @@ function createCronPromptExecutor(params: {
           lane: resolveCronAgentLane(params.lane),
           provider: providerOverride,
           model: modelOverride,
+          requestedProvider,
+          requestedModel,
+          fallbackUsed,
           agentHarnessRuntimeOverride: sessionRuntimeOverride,
           modelFallbacksOverride: cronFallbacksOverride,
           authProfileId: params.liveSelection.authProfileId,
@@ -669,6 +685,23 @@ function createCronPromptExecutor(params: {
         );
         return result;
       },
+    });
+    let fallbackResult;
+    try {
+      fallbackResult = await fallbackPromise;
+    } catch (error) {
+      await finalizeAgentHarnessAgentEndDeferral({
+        runId: fallbackRunId,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - fallbackStartedAtMs,
+      });
+      throw error;
+    }
+    await finalizeAgentHarnessAgentEndDeferral({
+      runId: fallbackRunId,
+      success: fallbackResult.outcome !== "exhausted",
+      durationMs: Date.now() - fallbackStartedAtMs,
     });
     runResult = fallbackResult.result;
     fallbackProvider = fallbackResult.provider;

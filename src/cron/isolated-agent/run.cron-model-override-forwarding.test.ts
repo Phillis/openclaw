@@ -1,8 +1,10 @@
 // Cron model override forwarding tests cover passing overrides into agent runs.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  beginAgentHarnessAgentEndDeferralMock,
   clearCliSessionMock,
   clearFastTestEnv,
+  finalizeAgentHarnessAgentEndDeferralMock,
   getCliSessionBindingMock,
   ensureAgentWorkspaceMock,
   isCliProviderMock,
@@ -61,6 +63,7 @@ function makeParams(overrides?: Record<string, unknown>) {
 
 function makeSuccessfulRunResult(provider = "google", model = "gemini-2.0-flash") {
   return {
+    outcome: "completed",
     result: {
       payloads: [{ text: "summary done" }],
       meta: {
@@ -249,6 +252,58 @@ describe("runCronIsolatedAgentTurn — cron model override forwarding (#58065)",
     const embeddedCall = firstMockArg(runEmbeddedAgentMock);
     expect(embeddedCall.provider).toBe("google");
     expect(embeddedCall.model).toBe("gemini-2.0-flash");
+  });
+
+  it("correlates embedded fallback attempts and defers one terminal agent_end", async () => {
+    runWithModelFallbackMock.mockImplementation(async ({ provider, model, run }) => {
+      await run(provider, model, { isFinalFallbackAttempt: false });
+      const result = await run("openai", "gpt-5.4", {
+        isFinalFallbackAttempt: true,
+      });
+      return {
+        outcome: "completed",
+        result,
+        provider: "openai",
+        model: "gpt-5.4",
+        attempts: [],
+      };
+    });
+    runEmbeddedAgentMock.mockResolvedValue({
+      payloads: [{ text: "summary done" }],
+      meta: { agentMeta: { usage: { input: 10, output: 20 } } },
+    });
+
+    const result = await runCronIsolatedAgentTurn(makeParams());
+
+    expect(result.status).toBe("ok");
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
+    const primary = requireRecord(runEmbeddedAgentMock.mock.calls[0]?.[0]);
+    const fallback = requireRecord(runEmbeddedAgentMock.mock.calls[1]?.[0]);
+    expect(primary).toMatchObject({
+      provider: "google",
+      model: "gemini-2.0-flash",
+      requestedProvider: "google",
+      requestedModel: "gemini-2.0-flash",
+      fallbackUsed: false,
+    });
+    expect(fallback).toMatchObject({
+      provider: "openai",
+      model: "gpt-5.4",
+      requestedProvider: "google",
+      requestedModel: "gemini-2.0-flash",
+      fallbackUsed: true,
+    });
+    expect(beginAgentHarnessAgentEndDeferralMock).toHaveBeenCalledOnce();
+    expect(beginAgentHarnessAgentEndDeferralMock).toHaveBeenCalledWith("test-session-id");
+    expect(finalizeAgentHarnessAgentEndDeferralMock).toHaveBeenCalledOnce();
+    expect(finalizeAgentHarnessAgentEndDeferralMock).toHaveBeenCalledWith({
+      runId: "test-session-id",
+      success: true,
+      durationMs: expect.any(Number),
+    });
+    expect(finalizeAgentHarnessAgentEndDeferralMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      runEmbeddedAgentMock.mock.invocationCallOrder[1] ?? 0,
+    );
   });
 
   it("forwards isolated cron execution phase updates from embedded runs", async () => {
