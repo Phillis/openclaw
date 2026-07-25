@@ -38,7 +38,67 @@ describe("hook correlation fields", () => {
     );
 
     expect(handler).toHaveBeenCalledWith(
-      { messages: [], success: true, runId: "test-run-id" },
+      { messages: [], success: true, terminal: true, runId: "test-run-id" },
+      TEST_PLUGIN_AGENT_CTX,
+    );
+  });
+
+  it("preserves a non-terminal outer fallback candidate signal", async () => {
+    const handler = vi.fn(() => undefined);
+    addTestHook({
+      registry,
+      pluginId: "plugin-a",
+      hookName: "agent_end",
+      handler: handler as PluginHookRegistration["handler"],
+    });
+
+    const runner = createHookRunner(registry);
+    await runner.runAgentEnd(
+      {
+        messages: [],
+        success: false,
+        terminal: false,
+      },
+      TEST_PLUGIN_AGENT_CTX,
+    );
+
+    expect(handler).toHaveBeenCalledWith(
+      {
+        messages: [],
+        success: false,
+        terminal: false,
+        runId: "test-run-id",
+      },
+      TEST_PLUGIN_AGENT_CTX,
+    );
+  });
+
+  it("normalizes an explicitly undefined terminal signal to true", async () => {
+    const handler = vi.fn(() => undefined);
+    addTestHook({
+      registry,
+      pluginId: "plugin-a",
+      hookName: "agent_end",
+      handler: handler as PluginHookRegistration["handler"],
+    });
+
+    const runner = createHookRunner(registry);
+    await runner.runAgentEnd(
+      {
+        messages: [],
+        success: true,
+        terminal: undefined,
+      },
+      TEST_PLUGIN_AGENT_CTX,
+    );
+
+    expect(handler).toHaveBeenCalledWith(
+      {
+        messages: [],
+        success: true,
+        terminal: true,
+        runId: "test-run-id",
+      },
       TEST_PLUGIN_AGENT_CTX,
     );
   });

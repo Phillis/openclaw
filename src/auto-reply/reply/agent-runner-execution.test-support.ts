@@ -314,7 +314,14 @@ export type FallbackRunnerParams = {
   model: string;
   sessionId?: string;
   abortSignal?: AbortSignal;
-  run: (provider: string, model: string) => Promise<unknown>;
+  run: (
+    provider: string,
+    model: string,
+    options?: {
+      allowTransientCooldownProbe?: boolean;
+      isFinalFallbackAttempt?: boolean;
+    },
+  ) => Promise<unknown>;
   classifyResult?: (params: {
     result: { payloads?: Array<{ text?: string; isError?: boolean; isReasoning?: boolean }> };
     provider: string;

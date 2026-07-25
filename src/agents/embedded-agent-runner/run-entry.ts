@@ -5,6 +5,10 @@ import {
   buildAgentRunTerminalReplySnapshot,
   normalizeAgentRunTerminalReplySnapshot,
 } from "../agent-run-terminal-reply.js";
+import {
+  beginAgentHarnessAgentEndDeferral,
+  finalizeAgentHarnessAgentEndDeferral,
+} from "../harness/lifecycle-hook-helpers.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
 import type { ModelFallbackStepFields } from "../model-fallback-observation.js";
@@ -204,6 +208,7 @@ function buildTerminal(params: {
 export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
   params: EmbeddedAgentRunEntryParams<T>,
 ): Promise<EmbeddedAgentRunEntryResult<T>> {
+  const startedAtMs = Date.now();
   let candidateIndex = 0;
   const committedSideEffect =
     params.behavior.kind === "command-rpc" ? params.behavior.hasCommittedSideEffect : undefined;
@@ -222,88 +227,100 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
           return !evidence.hasDirectlySentBlockReply && !evidence.hasBlockReplyPipelineOutput;
         }
       : undefined;
-  const fallbackResult = await runWithModelFallback<T>({
-    ...params.selection,
-    ...params.identity,
-    abortSignal: params.abortSignal,
-    resolveAgentHarnessRuntimeOverride: params.harness.resolveRuntimeOverride,
-    prepareAgentHarnessRuntime: async ({ provider, model, agentHarnessRuntimeOverride }) => {
-      const prepare = () =>
-        ensureSelectedAgentHarnessPlugin({
-          config: params.selection.cfg,
-          provider,
-          modelId: model,
-          agentId: params.identity.agentId,
-          sessionKey: params.harness.sessionKey,
-          agentHarnessId: agentHarnessRuntimeOverride,
-          agentHarnessRuntimeOverride,
-          workspaceDir: params.harness.workspaceDir,
-          pluginRegistry: requireActivePluginRegistry(),
-        });
-      if (params.harness.preparation.kind === "measured") {
-        await params.harness.preparation.run(prepare);
-      } else {
-        await prepare();
-      }
-    },
-    onFallbackStep: params.onFallbackStep,
-    ...(params.behavior.kind === "maintenance"
-      ? {}
-      : {
-          classifyResult: ({
-            result,
+  beginAgentHarnessAgentEndDeferral(params.identity.runId);
+  let fallbackResult;
+  try {
+    fallbackResult = await runWithModelFallback<T>({
+      ...params.selection,
+      ...params.identity,
+      abortSignal: params.abortSignal,
+      resolveAgentHarnessRuntimeOverride: params.harness.resolveRuntimeOverride,
+      prepareAgentHarnessRuntime: async ({ provider, model, agentHarnessRuntimeOverride }) => {
+        const prepare = () =>
+          ensureSelectedAgentHarnessPlugin({
+            config: params.selection.cfg,
             provider,
-            model,
-          }: {
-            result: T;
-            provider: string;
-            model: string;
-          }) => {
-            const deliveryEvidence =
-              params.behavior.kind === "channel-delivery"
-                ? params.behavior.readDeliveryEvidence()
-                : undefined;
-            const classification = classifyEmbeddedAgentRunResultForModelFallback({
+            modelId: model,
+            agentId: params.identity.agentId,
+            sessionKey: params.harness.sessionKey,
+            agentHarnessId: agentHarnessRuntimeOverride,
+            agentHarnessRuntimeOverride,
+            workspaceDir: params.harness.workspaceDir,
+            pluginRegistry: requireActivePluginRegistry(),
+          });
+        if (params.harness.preparation.kind === "measured") {
+          await params.harness.preparation.run(prepare);
+        } else {
+          await prepare();
+        }
+      },
+      onFallbackStep: params.onFallbackStep,
+      ...(params.behavior.kind === "maintenance"
+        ? {}
+        : {
+            classifyResult: ({
               result,
               provider,
               model,
-              ...deliveryEvidence,
-            });
-            const effectiveClassification =
-              params.behavior.kind === "followup-delivery"
-                ? preserveFollowupResultForDelivery(classification)
-                : classification;
-            return effectiveClassification && committedSideEffect?.()
-              ? undefined
-              : effectiveClassification;
-          },
-        }),
-    ...(canFallbackAfterError ? { canFallbackAfterError } : {}),
-    ...(params.behavior.kind === "maintenance"
-      ? {}
-      : {
-          mergeExhaustedResult: ({
-            latestResult,
-            preferredResult,
-          }: {
-            latestResult: T;
-            preferredResult: T;
-          }) =>
-            mergeEmbeddedAgentRunResultForModelFallbackExhaustion({
+            }: {
+              result: T;
+              provider: string;
+              model: string;
+            }) => {
+              const deliveryEvidence =
+                params.behavior.kind === "channel-delivery"
+                  ? params.behavior.readDeliveryEvidence()
+                  : undefined;
+              const classification = classifyEmbeddedAgentRunResultForModelFallback({
+                result,
+                provider,
+                model,
+                ...deliveryEvidence,
+              });
+              const effectiveClassification =
+                params.behavior.kind === "followup-delivery"
+                  ? preserveFollowupResultForDelivery(classification)
+                  : classification;
+              return effectiveClassification && committedSideEffect?.()
+                ? undefined
+                : effectiveClassification;
+            },
+          }),
+      ...(canFallbackAfterError ? { canFallbackAfterError } : {}),
+      ...(params.behavior.kind === "maintenance"
+        ? {}
+        : {
+            mergeExhaustedResult: ({
               latestResult,
               preferredResult,
-            }) as T,
-        }),
-    run: async (provider, model, options) => {
-      const isFallbackRetry = candidateIndex > 0;
-      candidateIndex += 1;
-      return params.runCandidate(provider, model, {
-        allowTransientCooldownProbe: options?.allowTransientCooldownProbe,
-        isFinalFallbackAttempt: options?.isFinalFallbackAttempt,
-        isFallbackRetry,
-      });
-    },
-  });
+            }: {
+              latestResult: T;
+              preferredResult: T;
+            }) =>
+              mergeEmbeddedAgentRunResultForModelFallbackExhaustion({
+                latestResult,
+                preferredResult,
+              }) as T,
+          }),
+      run: async (provider, model, options) => {
+        const isFallbackRetry = candidateIndex > 0;
+        candidateIndex += 1;
+        return params.runCandidate(provider, model, {
+          allowTransientCooldownProbe: options?.allowTransientCooldownProbe,
+          isFinalFallbackAttempt: options?.isFinalFallbackAttempt,
+          isFallbackRetry,
+        });
+      },
+    });
+  } catch (error) {
+    await finalizeAgentHarnessAgentEndDeferral({
+      runId: params.identity.runId,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      durationMs: Date.now() - startedAtMs,
+    });
+    throw error;
+  }
   const abortFields =
     params.behavior.kind === "command-rpc"
       ? resolveAgentRunAbortLifecycleFields(params.abortSignal)
@@ -328,6 +345,12 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
     result,
     fallbackExhausted: settledResult.outcome === "exhausted",
     behavior: params.behavior,
+  });
+  await finalizeAgentHarnessAgentEndDeferral({
+    runId: params.identity.runId,
+    success: terminal.outcome.status === "ok",
+    error: terminal.outcome.error,
+    durationMs: Date.now() - startedAtMs,
   });
   let sessionOverrideSettled = false;
   const settleSessionOverride = async () => {

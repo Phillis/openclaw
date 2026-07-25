@@ -115,6 +115,10 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   authProfileIdSource?: "auto" | "user";
   provider: string;
   modelId: string;
+  /** Original primary provider before any configured fallback selected this attempt. */
+  requestedProvider?: string | null;
+  /** Original primary model before any configured fallback selected this attempt. */
+  requestedModel?: string | null;
   /** Operator-requested or initial model id before any fallback resolution. */
   requestedModelId?: string | null;
   /** True when this attempt is running after a model fallback decision. */

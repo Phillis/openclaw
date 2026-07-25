@@ -31,7 +31,21 @@ describe("phase hooks merger", () => {
     });
     const runner = createHookRunner(registry);
     if (params.hookName === "before_model_resolve") {
-      return await runner.runBeforeModelResolve({ prompt: "test" }, {});
+      return await runner.runBeforeModelResolve(
+        {
+          controlContractVersion: 1,
+          supportedOverrides: [
+            "modelOverride",
+            "providerOverride",
+            "thinkingLevelOverride",
+            "fastModeOverride",
+          ],
+          prompt: "test",
+          provider: "default-provider",
+          model: "default-model",
+        },
+        {},
+      );
     }
     return await runner.runBeforePromptBuild({ prompt: "test", messages: [] }, {});
   }
@@ -54,12 +68,22 @@ describe("phase hooks merger", () => {
       name: "before_model_resolve keeps higher-priority override values",
       hookName: "before_model_resolve" as const,
       hooks: [
-        { pluginId: "low", result: { modelOverride: "demo-low-priority-model" }, priority: 1 },
+        {
+          pluginId: "low",
+          result: {
+            modelOverride: "demo-low-priority-model",
+            thinkingLevelOverride: "low",
+            fastModeOverride: false,
+          },
+          priority: 1,
+        },
         {
           pluginId: "high",
           result: {
             modelOverride: "demo-high-priority-model",
             providerOverride: "demo-provider",
+            thinkingLevelOverride: "high",
+            fastModeOverride: true,
           },
           priority: 10,
         },
@@ -67,6 +91,8 @@ describe("phase hooks merger", () => {
       expected: {
         modelOverride: "demo-high-priority-model",
         providerOverride: "demo-provider",
+        thinkingLevelOverride: "high",
+        fastModeOverride: true,
       },
     },
     {

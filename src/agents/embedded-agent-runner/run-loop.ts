@@ -37,6 +37,7 @@ import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-st
 import type { PreparedEmbeddedRunInput } from "./run/execution-context.js";
 import { resolveRunFailoverDecision } from "./run/failover-policy.js";
 import { createEmbeddedRunFailoverRetryController } from "./run/failover-retry-controller.js";
+import { resolveFallbackTelemetryReason } from "./run/fallback-telemetry.js";
 import { buildErrorAgentMeta, resolveMaxRunRetryIterations } from "./run/helpers.js";
 import { createIdleTimeoutBreakerState } from "./run/idle-timeout-breaker.js";
 import {
@@ -139,11 +140,11 @@ export async function runPreparedEmbeddedLoop(
   const traceAttempts: TraceAttempt[] = [];
   const traceAttemptUsesFallback = (attempt: TraceAttempt): boolean =>
     attempt.result === "rotate_profile" || attempt.result === "fallback_model";
-  const resolveRuntimeFallbackReason = (): string | null => {
+  const resolveRuntimeFallbackReason = (): FailoverReason | null => {
     const fallbackAttempt = traceAttempts.findLast(
       (attempt) => attempt.result === "fallback_model" && typeof attempt.reason === "string",
     );
-    return fallbackAttempt?.reason ?? lastRetryFailoverReason ?? null;
+    return resolveFallbackTelemetryReason(fallbackAttempt?.reason ?? lastRetryFailoverReason);
   };
   const buildEmbeddedContextEngineRuntimeSettings = (settingsParams: {
     tokenBudget?: number | null;

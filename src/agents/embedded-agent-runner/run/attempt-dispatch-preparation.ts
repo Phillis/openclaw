@@ -3,6 +3,7 @@ import { resolveStorePath } from "../../../config/sessions.js";
 import { resolveSessionTranscriptRuntimeReadTarget } from "../../../config/sessions/session-accessor.js";
 import type { resolveContextEngine } from "../../../context-engine/registry.js";
 import { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js";
+import type { FailoverReason } from "../../embedded-agent-helpers/types.js";
 import { agentHarnessBuildsOpenClawTools } from "../../harness/selection.js";
 import { buildAgentRuntimePlan } from "../../runtime-plan/build.js";
 import { createEmbeddedRunReplayState } from "../replay-state.js";
@@ -34,7 +35,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
   modelId: string;
   startupStagesEmitted: boolean;
   bootstrapPromptWarningSignaturesSeen: string[];
-  resolveRuntimeFallbackReason: () => string | null;
+  resolveRuntimeFallbackReason: () => FailoverReason | null;
   observeToolOutcome: Parameters<typeof dispatchEmbeddedRunAttempt>[0]["control"]["onToolOutcome"];
   isTurnTainted: () => boolean;
   allocateToolOutcomeOrdinal: Parameters<
@@ -80,6 +81,9 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     runInput.laneController;
   const {
     requestedModelId,
+    requestedProvider,
+    requestedModel,
+    fallbackUsed,
     expectedHarnessArtifact,
     nativeModelOwned,
     authStorage,
@@ -211,7 +215,12 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       provider,
       modelId,
       requestedModelId,
-      fallbackActive: modelId !== requestedModelId || Boolean(input.resolveRuntimeFallbackReason()),
+      requestedProvider,
+      requestedModel,
+      fallbackActive:
+        fallbackUsed ||
+        modelId !== requestedModelId ||
+        Boolean(input.resolveRuntimeFallbackReason()),
       fallbackReason: input.resolveRuntimeFallbackReason(),
       agentHarnessId: runtime.agentHarness.id,
       expectedRuntimeArtifact: expectedHarnessArtifact?.artifact,

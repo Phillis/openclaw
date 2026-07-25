@@ -1,12 +1,17 @@
 /**
  * Resolves hook-selected model state and pre-model attachments for a run.
  */
+import { kindFromMime, mimeTypeFromFilePath } from "@openclaw/media-core/mime";
+import { normalizeThinkLevel } from "../../../auto-reply/thinking.shared.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import type { MediaFact } from "../../../media/media-facts.js";
 import type { ProviderRuntimeModel } from "../../../plugins/provider-runtime-model.types.js";
 import type {
   PluginHookBeforeModelResolveAttachment,
   PluginHookBeforeModelResolveEvent,
+  PluginHookBeforeModelResolveOverrideName,
+  PluginHookBeforeModelResolveResult,
 } from "../../../plugins/types.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -33,6 +38,7 @@ import { log } from "../logger.js";
 import { readAgentModelContextTokens } from "../model-context-tokens.js";
 
 type HookContext = {
+  runId?: string;
   agentId?: string;
   sessionKey?: string;
   sessionId: string;
@@ -47,8 +53,15 @@ type HookRunnerLike = {
   runBeforeModelResolve(
     input: PluginHookBeforeModelResolveEvent,
     context: HookContext,
-  ): Promise<{ providerOverride?: string; modelOverride?: string } | undefined>;
+  ): Promise<PluginHookBeforeModelResolveResult | undefined>;
 };
+
+const BEFORE_MODEL_RESOLVE_SUPPORTED_OVERRIDES = Object.freeze([
+  "modelOverride",
+  "providerOverride",
+  "thinkingLevelOverride",
+  "fastModeOverride",
+] as const satisfies readonly PluginHookBeforeModelResolveOverrideName[]);
 
 /** Durable harness sessions run only with their exact persisted identity and runtime lock. */
 export function resolveAgentHarnessRunAdmissionError(params: {
@@ -100,6 +113,9 @@ export async function resolveHookModelSelection(params: {
   attachments?: PluginHookBeforeModelResolveAttachment[];
   provider: string;
   modelId: string;
+  requestedProvider?: string;
+  requestedModel?: string;
+  fallbackUsed?: boolean;
   modelSelectionLocked?: boolean;
   hookRunner?: HookRunnerLike | null;
   hookContext: HookContext;
@@ -109,16 +125,24 @@ export async function resolveHookModelSelection(params: {
   if (params.modelSelectionLocked === true) {
     return { provider, modelId };
   }
-  let modelResolveOverride: { providerOverride?: string; modelOverride?: string } | undefined;
+  let modelResolveOverride: PluginHookBeforeModelResolveResult | undefined;
   const hookRunner = params.hookRunner;
 
   // Run before_model_resolve hooks early so plugins can override the
   // provider/model before resolveModel().
   if (hookRunner?.hasHooks("before_model_resolve")) {
     try {
-      const event: PluginHookBeforeModelResolveEvent = params.attachments
-        ? { prompt: params.prompt, attachments: params.attachments }
-        : { prompt: params.prompt };
+      const event: PluginHookBeforeModelResolveEvent = {
+        controlContractVersion: 1,
+        supportedOverrides: BEFORE_MODEL_RESOLVE_SUPPORTED_OVERRIDES,
+        prompt: params.prompt,
+        provider,
+        model: modelId,
+        ...(params.requestedProvider ? { requestedProvider: params.requestedProvider } : {}),
+        ...(params.requestedModel ? { requestedModel: params.requestedModel } : {}),
+        ...(params.fallbackUsed !== undefined ? { fallbackUsed: params.fallbackUsed } : {}),
+        ...(params.attachments ? { attachments: params.attachments } : {}),
+      };
       modelResolveOverride = await hookRunner.runBeforeModelResolve(event, params.hookContext);
     } catch (hookErr) {
       log.warn(`before_model_resolve hook failed: ${String(hookErr)}`);
@@ -133,28 +157,54 @@ export async function resolveHookModelSelection(params: {
     modelId = modelResolveOverride.modelOverride;
     log.info(`[hooks] model overridden to ${modelId}`);
   }
+  const thinkingLevelOverride = normalizeThinkLevel(modelResolveOverride?.thinkingLevelOverride);
+  const fastModeOverride =
+    typeof modelResolveOverride?.fastModeOverride === "boolean"
+      ? modelResolveOverride.fastModeOverride
+      : undefined;
 
   return {
     provider,
     modelId,
+    thinkingLevelOverride,
+    fastModeOverride,
   };
 }
 
 /**
- * Converts prompt image refs into the minimal attachment shape exposed to
- * before-model-resolve hooks. Empty image lists stay undefined so hook payloads
- * do not grow a meaningless attachments field.
+ * Converts current-turn media into the minimal attachment shape exposed to
+ * before-model-resolve hooks. Paths and URLs never cross the plugin boundary.
  */
 export function buildBeforeModelResolveAttachments(
   images: readonly { mimeType?: string }[] | undefined,
+  media?: readonly MediaFact[],
 ): PluginHookBeforeModelResolveAttachment[] | undefined {
-  if (!images?.length) {
-    return undefined;
+  const attachments: PluginHookBeforeModelResolveAttachment[] = [];
+  let mediaImageCount = 0;
+  for (const fact of media ?? []) {
+    if (!fact.kind && !fact.contentType && !fact.path && !fact.url) {
+      continue;
+    }
+    const inferredMimeType =
+      fact.contentType ?? mimeTypeFromFilePath(fact.path) ?? mimeTypeFromFilePath(fact.url);
+    const inferredKind = fact.kind ?? kindFromMime(inferredMimeType) ?? "unknown";
+    const kind: PluginHookBeforeModelResolveAttachment["kind"] =
+      inferredKind === "sticker" ? "image" : inferredKind === "unknown" ? "other" : inferredKind;
+    if (kind === "image") {
+      mediaImageCount += 1;
+    }
+    attachments.push({
+      kind,
+      ...(inferredMimeType ? { mimeType: inferredMimeType } : {}),
+    });
   }
-  return images.map((img) => ({
-    kind: "image",
-    mimeType: img.mimeType,
-  }));
+  for (const image of images?.slice(mediaImageCount) ?? []) {
+    attachments.push({
+      kind: "image",
+      ...(image.mimeType ? { mimeType: image.mimeType } : {}),
+    });
+  }
+  return attachments.length > 0 ? attachments : undefined;
 }
 
 /** Resolves a pinned non-default harness that owns native model selection. */

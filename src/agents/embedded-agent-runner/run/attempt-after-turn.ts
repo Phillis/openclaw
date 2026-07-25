@@ -192,6 +192,7 @@ export async function completeEmbeddedAttemptAfterTurn(
         messages: state.messagesSnapshot,
         success: !lifecycleForAgentEnd.aborted && !state.promptError,
         error: agentEndError,
+        terminal: true,
         durationMs: Date.now() - runtime.promptStartedAt,
       },
       ctx: buildEmbeddedAgentEndContext({

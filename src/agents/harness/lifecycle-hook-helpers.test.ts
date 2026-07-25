@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   awaitAgentHarnessAgentEndHook,
+  beginAgentHarnessAgentEndDeferral,
+  finalizeAgentHarnessAgentEndDeferral,
   runAgentHarnessAgentEndHook,
   runAgentHarnessBeforeAgentFinalizeHook,
   runAgentHarnessLlmInputHook,
@@ -112,6 +114,53 @@ describe("agent harness lifecycle hook helpers", () => {
       EVENT,
       expect.objectContaining({ runId: "run-1", sessionKey: "agent:main:session-1" }),
       { unrefTimeout: true },
+    );
+  });
+
+  it("buffers fallback candidates and emits one authoritative terminal agent_end", async () => {
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
+      runAgentEnd: vi.fn(async () => undefined),
+    };
+    const ctx = { runId: "outer-run", sessionKey: "agent:main:session-1" };
+
+    beginAgentHarnessAgentEndDeferral("outer-run");
+    runAgentHarnessAgentEndHook({
+      ctx,
+      event: {
+        messages: ["primary"],
+        success: false,
+        terminal: true,
+        error: "primary failed",
+      },
+      hookRunner: hookRunner as never,
+    });
+    runAgentHarnessAgentEndHook({
+      ctx,
+      event: {
+        messages: ["fallback"],
+        success: true,
+        terminal: true,
+      },
+      hookRunner: hookRunner as never,
+    });
+
+    expect(hookRunner.runAgentEnd).not.toHaveBeenCalled();
+    await expect(
+      finalizeAgentHarnessAgentEndDeferral({
+        runId: "outer-run",
+        success: true,
+      }),
+    ).resolves.toBe(true);
+    expect(hookRunner.runAgentEnd).toHaveBeenCalledOnce();
+    expect(hookRunner.runAgentEnd).toHaveBeenCalledWith(
+      {
+        messages: ["fallback"],
+        success: true,
+        terminal: true,
+      },
+      expect.objectContaining({ runId: "outer-run" }),
+      { unrefTimeout: false },
     );
   });
 

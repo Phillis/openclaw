@@ -217,6 +217,12 @@ export type RunEmbeddedAgentParams = {
   disableTools?: boolean;
   provider?: string;
   model?: string;
+  /** Original primary provider before the configured fallback chain selected this candidate. */
+  requestedProvider?: string;
+  /** Original primary model before the configured fallback chain selected this candidate. */
+  requestedModel?: string;
+  /** True when this run is executing a non-primary configured fallback candidate. */
+  fallbackUsed?: boolean;
   /** Effective model fallback chain for this session attempt. Undefined uses config defaults. */
   modelFallbacksOverride?: string[];
   /** Session-pinned embedded harness id. Prevents runtime hot-switching. */

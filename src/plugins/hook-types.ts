@@ -1,3 +1,4 @@
+import type { FailoverReason } from "../agents/embedded-agent-helpers/types.js";
 import type { AgentMessage } from "../agents/runtime/index.js";
 import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
@@ -46,6 +47,7 @@ import type {
 export type {
   PluginHookBeforeModelResolveAttachment,
   PluginHookBeforeModelResolveEvent,
+  PluginHookBeforeModelResolveOverrideName,
   PluginHookBeforeModelResolveResult,
   PluginHookBeforePromptBuildEvent,
   PluginHookBeforePromptBuildResult,
@@ -377,8 +379,24 @@ type PluginHookModelCallBaseEvent = {
   sessionId?: string;
   provider: string;
   model: string;
+  /** Original primary provider requested before fallback selection. */
+  requestedProvider?: string;
+  /** Original primary model requested before fallback selection. */
+  requestedModel?: string;
+  /** Explicit effective provider; mirrors `provider` for unambiguous attribution. */
+  effectiveProvider?: string;
+  /** Explicit effective model; mirrors `model` for unambiguous attribution. */
+  effectiveModel?: string;
+  /** True when the effective call is running on a fallback selection. */
+  fallbackUsed?: boolean;
+  /** Closed causal code when the host can attribute the fallback. */
+  fallbackReason?: FailoverReason;
   api?: string;
   transport?: string;
+  /** Requested reasoning/think effort applied to this model call. */
+  reasoningEffort?: string;
+  /** Effective provider fast-mode state when this model call started. */
+  fastMode?: boolean;
   /** Resolved effective context-token budget after model/config/agent caps. */
   contextTokenBudget?: number;
   /** Source that supplied the resolved context-token budget. */
@@ -398,6 +416,16 @@ export type PluginHookModelCallEndedEvent = PluginHookModelCallBaseEvent & {
   responseStreamBytes?: number;
   timeToFirstByteMs?: number;
   upstreamRequestIdHash?: string;
+  /** Provider-reported usage for this individual call, when available. */
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    reasoningTokens?: number;
+    promptTokens?: number;
+    total?: number;
+  };
 };
 
 export type PluginHookLlmOutputEvent = {
@@ -405,6 +433,18 @@ export type PluginHookLlmOutputEvent = {
   sessionId: string;
   provider: string;
   model: string;
+  /** Original primary provider requested before fallback selection. */
+  requestedProvider?: string;
+  /** Original primary model requested before fallback selection. */
+  requestedModel?: string;
+  /** Explicit effective provider; mirrors `provider` for unambiguous attribution. */
+  effectiveProvider?: string;
+  /** Explicit effective model; mirrors `model` for unambiguous attribution. */
+  effectiveModel?: string;
+  /** True when the effective output came from a fallback selection. */
+  fallbackUsed?: boolean;
+  /** Closed causal code when the host can attribute the fallback. */
+  fallbackReason?: FailoverReason;
   /** Resolved effective context-token budget after model/config/agent caps. */
   contextTokenBudget?: number;
   /** Source that supplied the resolved context-token budget. */
@@ -433,6 +473,8 @@ export type PluginHookLlmOutputEvent = {
     output?: number;
     cacheRead?: number;
     cacheWrite?: number;
+    reasoningTokens?: number;
+    promptTokens?: number;
     total?: number;
   };
   /**
@@ -449,6 +491,13 @@ export type PluginHookAgentEndEvent = {
   runId?: string;
   messages: unknown[];
   success: boolean;
+  /**
+   * True only when this event is terminal for the complete outer run. Model
+   * fallback candidates that may be followed by another candidate emit false.
+   * New hosts always populate this field; it remains optional so existing
+   * third-party harness source continues to compile.
+   */
+  terminal?: boolean;
   error?: string;
   durationMs?: number;
 };

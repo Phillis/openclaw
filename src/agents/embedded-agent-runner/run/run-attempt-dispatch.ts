@@ -3,6 +3,7 @@ import { createAgentHarnessTaskRuntimeScope } from "../../../tasks/agent-harness
 import type { ToolOutcomeObserver } from "../../agent-tools.before-tool-call.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
 import { resolveDelegationCapability } from "../../delegation-capability.js";
+import type { FailoverReason } from "../../embedded-agent-helpers/types.js";
 import type { AgentHarnessRuntimeArtifactBinding } from "../../harness/runtime-artifact.types.js";
 import { appendIncognitoSystemPrompt } from "../../incognito-system-prompt.js";
 import { applyAuthHeaderOverride, applyLocalNoAuthHeaderOverride } from "../../model-auth.js";
@@ -41,9 +42,11 @@ type AttemptRuntime = {
   prompt: string;
   provider: string;
   modelId: string;
+  requestedProvider: string;
+  requestedModel: string;
   requestedModelId: string;
   fallbackActive: boolean;
-  fallbackReason: string | null;
+  fallbackReason: FailoverReason | null;
   agentHarnessId: string;
   expectedRuntimeArtifact?: AgentHarnessRuntimeArtifactBinding;
   runtimePlan: AgentRuntimePlan;
@@ -277,6 +280,8 @@ export async function dispatchEmbeddedRunAttempt(input: {
     disableTools: params.disableTools,
     provider: runtime.provider,
     modelId: runtime.modelId,
+    requestedProvider: runtime.requestedProvider,
+    requestedModel: runtime.requestedModel,
     requestedModelId: runtime.requestedModelId,
     fallbackActive: runtime.fallbackActive,
     fallbackReason: runtime.fallbackReason,

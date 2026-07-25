@@ -1064,7 +1064,21 @@ ${channelPluginSource({
     expect(registry.plugins.find((entry) => entry.id === "hook-policy")?.status).toBe("loaded");
     expect(registry.typedHooks.map((entry) => entry.hookName)).toEqual(["before_model_resolve"]);
     const runner = createHookRunner(registry);
-    const result = await runner.runBeforeModelResolve({ prompt: "hello" }, {});
+    const result = await runner.runBeforeModelResolve(
+      {
+        controlContractVersion: 1,
+        supportedOverrides: [
+          "modelOverride",
+          "providerOverride",
+          "thinkingLevelOverride",
+          "fastModeOverride",
+        ],
+        prompt: "hello",
+        provider: "default-provider",
+        model: "default-model",
+      },
+      {},
+    );
     expect(result).toEqual({
       modelOverride: "demo-model",
       providerOverride: "demo-provider",

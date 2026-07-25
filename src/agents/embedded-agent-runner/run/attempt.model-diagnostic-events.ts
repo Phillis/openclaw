@@ -46,8 +46,14 @@ type ModelCallDiagnosticContext = {
   sessionId?: string;
   provider: string;
   model: string;
+  requestedProvider?: string;
+  requestedModel?: string;
+  fallbackUsed?: boolean;
+  fallbackReason?: PluginHookModelCallStartedEvent["fallbackReason"];
   api?: string;
   transport?: string;
+  reasoningEffort?: string;
+  fastMode?: boolean | (() => boolean | undefined);
   contextTokenBudget?: number;
   contextWindowSource?: PluginHookContextWindowSource;
   contextWindowReferenceTokens?: number;
@@ -76,6 +82,7 @@ type ModelCallEndedHookFields = Pick<
   | "timeToFirstByteMs"
   | "failureKind"
   | "upstreamRequestIdHash"
+  | "usage"
 >;
 type ModelCallSizeTimingFields = Pick<
   Extract<DiagnosticEventInput, { type: "model.call.completed" }>,
@@ -387,6 +394,7 @@ function baseModelCallEvent(
   trace: DiagnosticTraceContext,
   promptStats: ModelCallPromptStats | undefined,
 ): ModelCallEventBase {
+  const fastMode = typeof ctx.fastMode === "function" ? ctx.fastMode() : ctx.fastMode;
   return {
     runId: ctx.runId,
     callId,
@@ -394,8 +402,16 @@ function baseModelCallEvent(
     ...(ctx.sessionId && { sessionId: ctx.sessionId }),
     provider: ctx.provider,
     model: ctx.model,
+    ...(ctx.requestedProvider ? { requestedProvider: ctx.requestedProvider } : {}),
+    ...(ctx.requestedModel ? { requestedModel: ctx.requestedModel } : {}),
+    effectiveProvider: ctx.provider,
+    effectiveModel: ctx.model,
+    ...(ctx.fallbackUsed !== undefined ? { fallbackUsed: ctx.fallbackUsed } : {}),
+    ...(ctx.fallbackReason ? { fallbackReason: ctx.fallbackReason } : {}),
     ...(ctx.api && { api: ctx.api }),
     ...(ctx.transport && { transport: ctx.transport }),
+    ...(ctx.reasoningEffort ? { reasoningEffort: ctx.reasoningEffort } : {}),
+    ...(typeof fastMode === "boolean" ? { fastMode } : {}),
     observationUnit: "request",
     ...(ctx.contextTokenBudget ? { contextTokenBudget: ctx.contextTokenBudget } : {}),
     ...(ctx.contextWindowSource ? { contextWindowSource: ctx.contextWindowSource } : {}),
@@ -492,8 +508,16 @@ function modelCallHookEventBase(eventBase: ModelCallEventBase): PluginHookModelC
     ...(eventBase.sessionId ? { sessionId: eventBase.sessionId } : {}),
     provider: eventBase.provider,
     model: eventBase.model,
+    ...(eventBase.requestedProvider ? { requestedProvider: eventBase.requestedProvider } : {}),
+    ...(eventBase.requestedModel ? { requestedModel: eventBase.requestedModel } : {}),
+    ...(eventBase.effectiveProvider ? { effectiveProvider: eventBase.effectiveProvider } : {}),
+    ...(eventBase.effectiveModel ? { effectiveModel: eventBase.effectiveModel } : {}),
+    ...(eventBase.fallbackUsed !== undefined ? { fallbackUsed: eventBase.fallbackUsed } : {}),
+    ...(eventBase.fallbackReason ? { fallbackReason: eventBase.fallbackReason } : {}),
     ...(eventBase.api ? { api: eventBase.api } : {}),
     ...(eventBase.transport ? { transport: eventBase.transport } : {}),
+    ...(eventBase.reasoningEffort ? { reasoningEffort: eventBase.reasoningEffort } : {}),
+    ...(typeof eventBase.fastMode === "boolean" ? { fastMode: eventBase.fastMode } : {}),
     ...(eventBase.contextTokenBudget ? { contextTokenBudget: eventBase.contextTokenBudget } : {}),
     ...(eventBase.contextWindowSource
       ? { contextWindowSource: eventBase.contextWindowSource }
@@ -598,6 +622,7 @@ function emitModelCallCompleted(
       durationMs,
       outcome: "completed",
       ...sizeTimingFields,
+      ...modelCallUsageField(state),
     });
   }
 }
@@ -636,6 +661,7 @@ function emitModelCallError(
       outcome: "error",
       ...sizeTimingFields,
       ...fields,
+      ...modelCallUsageField(state),
     });
   }
 }
