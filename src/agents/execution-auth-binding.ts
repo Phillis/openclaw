@@ -44,7 +44,7 @@ function normalizeIdentity(value: string | undefined, lowercase = false): string
   return normalized ? (lowercase ? normalized.toLowerCase() : normalized) : undefined;
 }
 
-export const PREPARED_AUTH_BINDING_SCHEMA_VERSION = "openclaw-prepared-auth-binding/v1";
+const PREPARED_AUTH_BINDING_SCHEMA_VERSION = "openclaw-prepared-auth-binding/v1";
 
 export type PreparedAuthBinding = {
   schemaVersion: typeof PREPARED_AUTH_BINDING_SCHEMA_VERSION;
@@ -69,7 +69,7 @@ export type PreparedAuthBindingContext =
       expected: PreparedAuthBinding;
     };
 
-export type PreparedAuthBindingMismatchField =
+type PreparedAuthBindingMismatchField =
   | "auth.binding"
   | "auth.key"
   | "auth.mode"
@@ -183,7 +183,7 @@ function validatePreparedAuthBindingShape(
   return fields;
 }
 
-export function preparedAuthBindingKeyId(key: Uint8Array): string {
+function preparedAuthBindingKeyId(key: Uint8Array): string {
   return `sha256:${crypto
     .createHash("sha256")
     .update(PREPARED_AUTH_KEY_ID_DOMAIN)
@@ -268,7 +268,7 @@ export function buildPreparedAuthBinding(params: {
   };
 }
 
-export function comparePreparedAuthBindings(
+function comparePreparedAuthBindings(
   expected: PreparedAuthBinding,
   actual: PreparedAuthBinding,
 ): PreparedAuthBindingMismatchField[] {

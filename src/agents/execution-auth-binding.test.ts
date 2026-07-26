@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPreparedAuthBinding,
-  comparePreparedAuthBindings,
   fingerprintAuthProfileCredential,
   fingerprintAuthProfileOwnerShape,
   fingerprintAwsSdkRuntimeOwner,
   fingerprintOpaqueRuntimeOwner,
   fingerprintResolvedAuthProfileCredential,
   fingerprintResolvedProviderAuth,
-  preparedAuthBindingKeyId,
   PreparedAuthBindingDriftError,
   resolvePreparedAuthBindingProfileId,
   verifyPreparedAuthBinding,
@@ -279,6 +277,34 @@ describe("prepared cross-process auth bindings", () => {
     expires: 1,
     accountId: overrides.accountId ?? "account-a",
   });
+  const bindingKeyId = (bindingKey: Uint8Array) =>
+    buildPreparedAuthBinding({
+      key: bindingKey,
+      scopeSha256,
+      provider: "openai",
+      profileId: "openai:chatgpt",
+      credential: credential(),
+    }).keyId;
+  const verifyMismatchFields = (params: {
+    expected: ReturnType<typeof buildPreparedAuthBinding>;
+    profileId: string;
+    accountId?: string;
+  }) => {
+    try {
+      verifyPreparedAuthBinding({
+        expected: params.expected,
+        key,
+        scopeSha256,
+        provider: "openai",
+        profileId: params.profileId,
+        credential: credential(params.accountId ? { accountId: params.accountId } : {}),
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(PreparedAuthBindingDriftError);
+      return (error as PreparedAuthBindingDriftError).mismatchFields;
+    }
+    throw new Error("expected prepared auth binding verification to reject");
+  };
 
   it("stays stable across token refreshes while preserving the same owner", () => {
     const build = (access: string, refresh: string) =>
@@ -291,16 +317,16 @@ describe("prepared cross-process auth bindings", () => {
       });
 
     expect(build("access-a", "refresh-a")).toEqual(build("access-b", "refresh-b"));
-    expect(preparedAuthBindingKeyId(key)).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(bindingKeyId(key)).toMatch(/^sha256:[a-f0-9]{64}$/u);
   });
 
   it("matches the router campaign-key identity vectors", () => {
-    expect(preparedAuthBindingKeyId(Buffer.alloc(32))).toBe(
+    expect(bindingKeyId(Buffer.alloc(32))).toBe(
       "sha256:9f410be1d37e93db132a1765dd223489381112cf6fccc89351afebc318664dab",
     );
-    expect(
-      preparedAuthBindingKeyId(Buffer.from(Array.from({ length: 32 }, (_, index) => index))),
-    ).toBe("sha256:aea7c0361f13404b3f92786b5e7b0c2cc0351edd6a1479c96063eaa4a8965f29");
+    expect(bindingKeyId(Buffer.from(Array.from({ length: 32 }, (_, index) => index)))).toBe(
+      "sha256:aea7c0361f13404b3f92786b5e7b0c2cc0351edd6a1479c96063eaa4a8965f29",
+    );
   });
 
   it("rejects profile and account substitution with redacted field labels", () => {
@@ -311,23 +337,19 @@ describe("prepared cross-process auth bindings", () => {
       profileId: "openai:chatgpt",
       credential: credential(),
     });
-    const profileSubstitution = buildPreparedAuthBinding({
-      key,
-      scopeSha256,
-      provider: "openai",
-      profileId: "openai:other",
-      credential: credential(),
-    });
-    const ownerSubstitution = buildPreparedAuthBinding({
-      key,
-      scopeSha256,
-      provider: "openai",
-      profileId: "openai:chatgpt",
-      credential: credential({ accountId: "account-b" }),
-    });
-
-    expect(comparePreparedAuthBindings(expected, profileSubstitution)).toEqual(["auth.profile"]);
-    expect(comparePreparedAuthBindings(expected, ownerSubstitution)).toEqual(["auth.owner"]);
+    expect(
+      verifyMismatchFields({
+        expected,
+        profileId: "openai:other",
+      }),
+    ).toEqual(["auth.profile"]);
+    expect(
+      verifyMismatchFields({
+        expected,
+        profileId: "openai:chatgpt",
+        accountId: "account-b",
+      }),
+    ).toEqual(["auth.owner"]);
     expect(() =>
       verifyPreparedAuthBinding({
         expected,
