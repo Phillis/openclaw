@@ -26,6 +26,10 @@ import { resolveModelAsync } from "./embedded-agent-runner/model.js";
 import {
   fingerprintAuthProfileCredential,
   fingerprintResolvedProviderAuth,
+  PreparedAuthBindingDriftError,
+  resolvePreparedAuthBindingProfileId,
+  type PreparedAuthBinding,
+  type PreparedAuthBindingContext,
 } from "./execution-auth-binding.js";
 import { resolveAgentHarnessPolicy } from "./harness/policy.js";
 import {
@@ -33,7 +37,9 @@ import {
   applyLocalNoAuthHeaderOverride,
   formatMissingAuthError,
   getApiKeyForModel,
+  getApiKeyForModelWithPreparedAuthBinding,
   resolveApiKeyForProvider,
+  resolveApiKeyForProviderWithPreparedAuthBinding,
   type ResolvedProviderAuth,
 } from "./model-auth.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
@@ -80,6 +86,8 @@ export type PreparedSimpleCompletionModel =
       auth: ResolvedProviderAuth;
       /** Non-reversible owner proof captured from the same auth snapshot. */
       sourceAuthFingerprint?: string;
+      /** Campaign-scoped profile/owner proof that remains stable across process restarts. */
+      preparedAuthBinding?: PreparedAuthBinding;
     }
   | {
       error: string;
@@ -101,6 +109,7 @@ type PreparedSimpleCompletionModelForAgent =
       model: Model;
       auth: ResolvedProviderAuth;
       sourceAuthFingerprint?: string;
+      preparedAuthBinding?: PreparedAuthBinding;
     }
   | {
       error: string;
@@ -238,8 +247,51 @@ export async function prepareSimpleCompletionModel(params: {
   useAsyncModelResolution?: boolean;
   skipAgentDiscovery?: boolean;
   bindAuthOwner?: boolean;
+  preparedAuthBinding?: PreparedAuthBindingContext;
   modelResolver?: typeof resolveModelAsync;
 }): Promise<PreparedSimpleCompletionModel> {
+  const needsAuthStore = Boolean(params.bindAuthOwner || params.preparedAuthBinding);
+  const authStore = needsAuthStore
+    ? ensureAuthProfileStore(params.agentDir, {
+        readOnly: true,
+        allowKeychainPrompt: false,
+        config: params.cfg,
+      })
+    : undefined;
+  let effectiveProfileId = params.profileId;
+  if (params.preparedAuthBinding?.mode === "verify") {
+    if (!authStore) {
+      throw new PreparedAuthBindingDriftError(["auth.profile"]);
+    }
+    const resolvedProfileId = resolvePreparedAuthBindingProfileId({
+      key: params.preparedAuthBinding.key,
+      scopeSha256: params.preparedAuthBinding.scopeSha256,
+      expected: params.preparedAuthBinding.expected,
+      store: authStore,
+      provider: params.provider,
+    });
+    if (effectiveProfileId && effectiveProfileId !== resolvedProfileId) {
+      throw new PreparedAuthBindingDriftError(["auth.profile"]);
+    }
+    effectiveProfileId = resolvedProfileId;
+  }
+  const locksProfile = Boolean(
+    effectiveProfileId && (params.bindAuthOwner || params.preparedAuthBinding),
+  );
+  const resolveProviderAuth = (authParams: Parameters<typeof resolveApiKeyForProvider>[0]) =>
+    params.preparedAuthBinding
+      ? resolveApiKeyForProviderWithPreparedAuthBinding({
+          ...authParams,
+          preparedAuthBinding: params.preparedAuthBinding,
+        })
+      : resolveApiKeyForProvider(authParams);
+  const resolveModelAuth = (authParams: Parameters<typeof getApiKeyForModel>[0]) =>
+    params.preparedAuthBinding
+      ? getApiKeyForModelWithPreparedAuthBinding({
+          ...authParams,
+          preparedAuthBinding: params.preparedAuthBinding,
+        })
+      : getApiKeyForModel(authParams);
   const workspaceDir = resolveSimpleCompletionModelResolverWorkspace(params.modelResolver);
   const resolved = await (params.modelResolver ?? resolveModelAsync)(
     params.provider,
@@ -253,7 +305,7 @@ export async function prepareSimpleCompletionModel(params: {
         : {}),
       ...(params.skipAgentDiscovery ? { skipAgentDiscovery: true } : {}),
       workspaceDir,
-      authProfileId: params.profileId,
+      authProfileId: effectiveProfileId,
       preferredProfile: params.preferredProfile,
     },
   );
@@ -277,36 +329,29 @@ export async function prepareSimpleCompletionModel(params: {
     routeResolution?.kind === "routes" && routeResolution.routes.length > 1;
 
   let auth: ResolvedProviderAuth;
-  const authStore = params.bindAuthOwner
-    ? ensureAuthProfileStore(params.agentDir, {
-        readOnly: true,
-        allowKeychainPrompt: false,
-        config: params.cfg,
-      })
-    : undefined;
   try {
     auth = resolvesAuthBeforePhysicalRoute
-      ? await resolveApiKeyForProvider({
+      ? await resolveProviderAuth({
           provider: initialModel.provider,
           cfg: params.cfg,
           agentDir: params.agentDir,
           workspaceDir,
-          profileId: params.profileId,
+          profileId: effectiveProfileId,
           preferredProfile: params.preferredProfile,
           ...(authStore ? { store: authStore } : {}),
-          ...(params.bindAuthOwner && params.profileId ? { lockedProfile: true } : {}),
+          ...(locksProfile ? { lockedProfile: true } : {}),
           modelId: initialModel.id,
           secretSentinels: true,
         })
-      : await getApiKeyForModel({
+      : await resolveModelAuth({
           model: initialModel,
           cfg: params.cfg,
           agentDir: params.agentDir,
           workspaceDir,
-          profileId: params.profileId,
+          profileId: effectiveProfileId,
           preferredProfile: params.preferredProfile,
           ...(authStore ? { store: authStore } : {}),
-          ...(params.bindAuthOwner && params.profileId ? { lockedProfile: true } : {}),
+          ...(locksProfile ? { lockedProfile: true } : {}),
           secretSentinels: true,
         });
     if (routeResolution?.kind === "routes") {
@@ -345,7 +390,7 @@ export async function prepareSimpleCompletionModel(params: {
         authProfileProvider: initialModel.provider,
         authProfileMode: auth.mode,
         sessionAuthProfileId: auth.profileId,
-        sessionAuthProfileSource: params.profileId ? "user" : "auto",
+        sessionAuthProfileSource: effectiveProfileId ? "user" : "auto",
         modelRoute: {
           provider: initialModel.provider,
           modelId: initialModel.id,
@@ -384,7 +429,7 @@ export async function prepareSimpleCompletionModel(params: {
             ),
         })) ?? initialModel;
       if (resolvesAuthBeforePhysicalRoute) {
-        auth = await getApiKeyForModel({
+        auth = await resolveModelAuth({
           model: resolvedModel,
           cfg: params.cfg,
           agentDir: params.agentDir,
@@ -392,12 +437,15 @@ export async function prepareSimpleCompletionModel(params: {
           profileId: auth.profileId,
           preferredProfile: params.preferredProfile,
           ...(authStore ? { store: authStore } : {}),
-          ...(params.bindAuthOwner && params.profileId ? { lockedProfile: true } : {}),
+          ...(auth.profileId && needsAuthStore ? { lockedProfile: true } : {}),
           secretSentinels: true,
         });
       }
     }
   } catch (err) {
+    if (err instanceof PreparedAuthBindingDriftError) {
+      throw err;
+    }
     return {
       error: `Auth lookup failed for provider "${initialModel.provider}": ${formatErrorMessage(err)}`,
     };
@@ -431,10 +479,18 @@ export async function prepareSimpleCompletionModel(params: {
     resolvedModel = runtimeCredential.model;
   }
 
+  const authWithPreparedBinding = auth as ResolvedProviderAuth & {
+    preparedAuthBinding?: PreparedAuthBinding;
+  };
+  const preparedAuthBinding = params.preparedAuthBinding
+    ? authWithPreparedBinding.preparedAuthBinding
+    : undefined;
+  const { preparedAuthBinding: _preparedAuthBinding, ...providerAuth } = authWithPreparedBinding;
   const resolvedAuth: ResolvedProviderAuth = {
-    ...auth,
+    ...providerAuth,
     apiKey: authValue,
   };
+  const resolvedProfileId = auth.profileId?.trim();
   const profileCredential = params.profileId ? authStore?.profiles[params.profileId] : undefined;
   const sourceAuthFingerprint = params.bindAuthOwner
     ? profileCredential?.type === "oauth" && params.profileId
@@ -444,6 +500,17 @@ export async function prepareSimpleCompletionModel(params: {
         })
       : fingerprintResolvedProviderAuth(auth)
     : undefined;
+  if (params.preparedAuthBinding) {
+    if (!resolvedProfileId || auth.source !== `profile:${resolvedProfileId}`) {
+      throw new PreparedAuthBindingDriftError(["auth.profile"]);
+    }
+    if (auth.mode !== "oauth") {
+      throw new PreparedAuthBindingDriftError(["auth.mode"]);
+    }
+    if (!preparedAuthBinding) {
+      throw new PreparedAuthBindingDriftError(["auth.binding"]);
+    }
+  }
   const modelRuntime = getModelRegistryRuntime(resolved.modelRegistry);
 
   return {
@@ -456,6 +523,7 @@ export async function prepareSimpleCompletionModel(params: {
     ),
     auth: resolvedAuth,
     ...(sourceAuthFingerprint ? { sourceAuthFingerprint } : {}),
+    ...(preparedAuthBinding ? { preparedAuthBinding } : {}),
   };
 }
 
@@ -472,6 +540,7 @@ export async function prepareSimpleCompletionModelForAgent(params: {
   useAsyncModelResolution?: boolean;
   skipAgentDiscovery?: boolean;
   bindAuthOwner?: boolean;
+  preparedAuthBinding?: PreparedAuthBindingContext;
   modelResolver?: typeof resolveModelAsync;
 }): Promise<PreparedSimpleCompletionModelForAgent> {
   const selection = resolveSimpleCompletionSelectionForAgent({
@@ -501,6 +570,7 @@ export async function prepareSimpleCompletionModelForAgent(params: {
     useAsyncModelResolution: params.useAsyncModelResolution,
     skipAgentDiscovery: params.skipAgentDiscovery,
     bindAuthOwner: params.bindAuthOwner,
+    preparedAuthBinding: params.preparedAuthBinding,
     modelResolver: params.modelResolver,
   });
   if ("error" in prepared) {
@@ -516,6 +586,7 @@ export async function prepareSimpleCompletionModelForAgent(params: {
     ...(prepared.sourceAuthFingerprint
       ? { sourceAuthFingerprint: prepared.sourceAuthFingerprint }
       : {}),
+    ...(prepared.preparedAuthBinding ? { preparedAuthBinding: prepared.preparedAuthBinding } : {}),
   };
 }
 

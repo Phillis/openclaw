@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPreparedAuthBinding,
+  comparePreparedAuthBindings,
   fingerprintAuthProfileCredential,
   fingerprintAuthProfileOwnerShape,
   fingerprintAwsSdkRuntimeOwner,
   fingerprintOpaqueRuntimeOwner,
   fingerprintResolvedAuthProfileCredential,
   fingerprintResolvedProviderAuth,
+  preparedAuthBindingKeyId,
+  PreparedAuthBindingDriftError,
+  resolvePreparedAuthBindingProfileId,
+  verifyPreparedAuthBinding,
 } from "./execution-auth-binding.js";
 
 function jwt(claims: Record<string, unknown>): string {
@@ -253,5 +259,220 @@ describe("execution auth binding fingerprints", () => {
         AWS_SECRET_ACCESS_KEY: "secret-a",
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("prepared cross-process auth bindings", () => {
+  const key = Buffer.alloc(32, 0x42);
+  const scopeSha256 = `sha256:${"1".repeat(64)}`;
+  const credential = (
+    overrides: Partial<{
+      access: string;
+      refresh: string;
+      accountId: string;
+    }> = {},
+  ) => ({
+    type: "oauth" as const,
+    provider: "openai",
+    access: overrides.access ?? "access-a",
+    refresh: overrides.refresh ?? "refresh-a",
+    expires: 1,
+    accountId: overrides.accountId ?? "account-a",
+  });
+
+  it("stays stable across token refreshes while preserving the same owner", () => {
+    const build = (access: string, refresh: string) =>
+      buildPreparedAuthBinding({
+        key,
+        scopeSha256,
+        provider: "openai",
+        profileId: "openai:chatgpt",
+        credential: credential({ access, refresh }),
+      });
+
+    expect(build("access-a", "refresh-a")).toEqual(build("access-b", "refresh-b"));
+    expect(preparedAuthBindingKeyId(key)).toMatch(/^sha256:[a-f0-9]{64}$/u);
+  });
+
+  it("matches the router campaign-key identity vectors", () => {
+    expect(preparedAuthBindingKeyId(Buffer.alloc(32))).toBe(
+      "sha256:9f410be1d37e93db132a1765dd223489381112cf6fccc89351afebc318664dab",
+    );
+    expect(
+      preparedAuthBindingKeyId(Buffer.from(Array.from({ length: 32 }, (_, index) => index))),
+    ).toBe("sha256:aea7c0361f13404b3f92786b5e7b0c2cc0351edd6a1479c96063eaa4a8965f29");
+  });
+
+  it("rejects profile and account substitution with redacted field labels", () => {
+    const expected = buildPreparedAuthBinding({
+      key,
+      scopeSha256,
+      provider: "openai",
+      profileId: "openai:chatgpt",
+      credential: credential(),
+    });
+    const profileSubstitution = buildPreparedAuthBinding({
+      key,
+      scopeSha256,
+      provider: "openai",
+      profileId: "openai:other",
+      credential: credential(),
+    });
+    const ownerSubstitution = buildPreparedAuthBinding({
+      key,
+      scopeSha256,
+      provider: "openai",
+      profileId: "openai:chatgpt",
+      credential: credential({ accountId: "account-b" }),
+    });
+
+    expect(comparePreparedAuthBindings(expected, profileSubstitution)).toEqual(["auth.profile"]);
+    expect(comparePreparedAuthBindings(expected, ownerSubstitution)).toEqual(["auth.owner"]);
+    expect(() =>
+      verifyPreparedAuthBinding({
+        expected,
+        key,
+        scopeSha256,
+        provider: "openai",
+        profileId: "openai:chatgpt",
+        credential: credential({ accountId: "account-b" }),
+      }),
+    ).toThrow(PreparedAuthBindingDriftError);
+  });
+
+  it("recovers exactly one approved profile without ambient fallback", () => {
+    const expected = buildPreparedAuthBinding({
+      key,
+      scopeSha256,
+      provider: "openai",
+      profileId: "openai:approved",
+      credential: credential(),
+    });
+    const store = {
+      version: 1,
+      profiles: {
+        "openai:ambient": credential({ accountId: "account-b" }),
+        "openai:approved": credential({ access: "rotated", refresh: "rotated-refresh" }),
+      },
+    };
+
+    expect(
+      resolvePreparedAuthBindingProfileId({
+        key,
+        scopeSha256,
+        expected,
+        store,
+        provider: "openai",
+      }),
+    ).toBe("openai:approved");
+  });
+
+  it.each([
+    {
+      label: "missing owner",
+      stored: {
+        type: "oauth" as const,
+        provider: "openai",
+        access: "access",
+        refresh: "refresh",
+        expires: 1,
+      },
+      fields: ["auth.owner"],
+    },
+    {
+      label: "auth mode substitution",
+      stored: {
+        type: "api_key" as const,
+        provider: "openai",
+        key: "api-key",
+      },
+      fields: ["auth.mode"],
+    },
+    {
+      label: "provider substitution",
+      stored: {
+        type: "oauth" as const,
+        provider: "anthropic",
+        access: "access",
+        refresh: "refresh",
+        expires: 1,
+        accountId: "account-a",
+      },
+      fields: ["auth.provider"],
+    },
+  ])("reports $label without exposing profile or owner values", ({ stored, fields }) => {
+    const expected = buildPreparedAuthBinding({
+      key,
+      scopeSha256,
+      provider: "openai",
+      profileId: "openai:approved",
+      credential: credential(),
+    });
+    let error: unknown;
+    try {
+      resolvePreparedAuthBindingProfileId({
+        key,
+        scopeSha256,
+        expected,
+        store: {
+          version: 1,
+          profiles: { "openai:approved": stored },
+        },
+        provider: "openai",
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(PreparedAuthBindingDriftError);
+    expect((error as PreparedAuthBindingDriftError).mismatchFields).toEqual(fields);
+    expect(JSON.stringify(error)).not.toContain("openai:approved");
+    expect(JSON.stringify(error)).not.toContain("account-a");
+  });
+
+  it("fails closed on unavailable owner identity or a different campaign key", () => {
+    expect(() =>
+      buildPreparedAuthBinding({
+        key,
+        scopeSha256,
+        provider: "openai",
+        profileId: "openai:chatgpt",
+        credential: {
+          type: "oauth",
+          provider: "openai",
+          access: "secret-access",
+          refresh: "secret-refresh",
+          expires: 1,
+        },
+      }),
+    ).toThrow(PreparedAuthBindingDriftError);
+
+    const expected = buildPreparedAuthBinding({
+      key,
+      scopeSha256,
+      provider: "openai",
+      profileId: "openai:chatgpt",
+      credential: credential(),
+    });
+    let error: unknown;
+    try {
+      resolvePreparedAuthBindingProfileId({
+        key: Buffer.alloc(32, 0x24),
+        scopeSha256,
+        expected,
+        store: {
+          version: 1,
+          profiles: { "openai:chatgpt": credential() },
+        },
+        provider: "openai",
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(PreparedAuthBindingDriftError);
+    expect((error as PreparedAuthBindingDriftError).mismatchFields).toEqual(["auth.key"]);
+    const serialized = JSON.stringify(error);
+    expect(serialized).not.toContain("openai:chatgpt");
+    expect(serialized).not.toContain("account-a");
+    expect(serialized).not.toContain("secret");
   });
 });

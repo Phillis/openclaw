@@ -14,8 +14,14 @@ import {
 import type { OAuthCredential } from "./auth-profiles/types.js";
 import type { ClaudeCliCredential } from "./cli-credentials.js";
 import {
+  buildPreparedAuthBinding,
+  PreparedAuthBindingDriftError,
+  type PreparedAuthBinding,
+} from "./execution-auth-binding.js";
+import {
   createRuntimeProviderAuthLookup,
   getApiKeyForModel,
+  getApiKeyForModelWithPreparedAuthBinding,
   hasAvailableAuthForProvider,
   hasRuntimeAvailableProviderAuth,
   resolveApiKeyForProvider,
@@ -428,13 +434,92 @@ describe("getApiKeyForModel", () => {
         const store = ensureAuthProfileStore(process.env.OPENCLAW_AGENT_DIR, {
           allowKeychainPrompt: false,
         });
-        const apiKey = await getApiKeyForModel({
+        const preparedAuthBindingKey = Buffer.alloc(32, 0x42);
+        const preparedAuthBindingScope = `sha256:${"1".repeat(64)}`;
+        const apiKey = await getApiKeyForModelWithPreparedAuthBinding({
           model,
           profileId: "openai:default",
           store,
           agentDir: process.env.OPENCLAW_AGENT_DIR,
+          preparedAuthBinding: {
+            mode: "capture",
+            key: preparedAuthBindingKey,
+            scopeSha256: preparedAuthBindingScope,
+          },
         });
         expect(apiKey.apiKey).toBe(oauthFixture.access);
+        const expected = buildPreparedAuthBinding({
+          key: preparedAuthBindingKey,
+          scopeSha256: preparedAuthBindingScope,
+          provider: "openai",
+          profileId: "openai:default",
+          credential: {
+            type: "oauth",
+            provider: "openai",
+            ...oauthFixture,
+          },
+        });
+        expect(
+          (
+            apiKey as typeof apiKey & {
+              preparedAuthBinding?: PreparedAuthBinding;
+            }
+          ).preparedAuthBinding,
+        ).toEqual(expected);
+
+        const refreshedAuth = await getApiKeyForModelWithPreparedAuthBinding({
+          model,
+          profileId: "openai:default",
+          store: {
+            version: 1,
+            profiles: {
+              "openai:default": {
+                type: "oauth",
+                provider: "openai",
+                ...oauthFixture,
+                access: "rotated-access",
+                refresh: "rotated-refresh",
+              },
+            },
+          },
+          preparedAuthBinding: {
+            mode: "verify",
+            key: preparedAuthBindingKey,
+            scopeSha256: preparedAuthBindingScope,
+            expected,
+          },
+        });
+        expect(
+          (
+            refreshedAuth as typeof refreshedAuth & {
+              preparedAuthBinding?: PreparedAuthBinding;
+            }
+          ).preparedAuthBinding,
+        ).toEqual(expected);
+
+        await expect(
+          getApiKeyForModelWithPreparedAuthBinding({
+            model,
+            profileId: "openai:default",
+            store: {
+              version: 1,
+              profiles: {
+                "openai:default": {
+                  type: "oauth",
+                  provider: "openai",
+                  ...oauthFixture,
+                  accountId: "substituted-account",
+                },
+              },
+            },
+            preparedAuthBinding: {
+              mode: "verify",
+              key: preparedAuthBindingKey,
+              scopeSha256: preparedAuthBindingScope,
+              expected,
+            },
+          }),
+        ).rejects.toBeInstanceOf(PreparedAuthBindingDriftError);
       },
     );
   });

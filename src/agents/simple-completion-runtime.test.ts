@@ -71,7 +71,9 @@ vi.mock("./model-auth.js", () => ({
       `No API key resolved for provider "${provider}" (auth mode: ${auth.mode}, checked: ${auth.source}).`,
   ),
   getApiKeyForModel: hoisted.getApiKeyForModelMock,
+  getApiKeyForModelWithPreparedAuthBinding: hoisted.getApiKeyForModelMock,
   resolveApiKeyForProvider: hoisted.getApiKeyForModelMock,
+  resolveApiKeyForProviderWithPreparedAuthBinding: hoisted.getApiKeyForModelMock,
   applyLocalNoAuthHeaderOverride: hoisted.applyLocalNoAuthHeaderOverrideMock,
 }));
 
