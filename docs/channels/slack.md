@@ -832,6 +832,69 @@ Notes:
 - Only `clientPingTimeout` has an OpenClaw default (`15000`). `serverPingTimeout` and `pingPongLoggingEnabled` are passed to the Slack SDK only when configured.
 - Socket Mode restart backoff starts around 2 seconds and caps around 30 seconds. Recoverable start, start-wait, and disconnect failures retry until the channel stops. Permanent account and credential errors such as invalid auth, revoked tokens, or missing scopes fail fast instead of retrying forever.
 
+## Read-only account and channel access proof
+
+Authenticated operators with `operator.read` can verify that one explicit Slack credential
+belongs to the expected workspace identity and can read one exact conversation:
+
+```bash
+openclaw gateway call slack.access.verify --timeout 30000 --params '{
+  "contractVersion": "openclaw-slack-access-proof/v1",
+  "accountId": "ops",
+  "credentialKind": "bot",
+  "expectedUserId": "U0123456789",
+  "expectedBotId": "B0123456789",
+  "expectedTeamId": "T0123456789",
+  "channelId": "C0123456789",
+  "expectedApiUrl": "https://slack.com/api/",
+  "totalTimeoutMs": 25000
+}'
+```
+
+The verifier uses one zero-retry Slack client for `auth.test`, `conversations.info`,
+and `conversations.history` with `limit: 1`. The optional `totalTimeoutMs` is a
+whole-operation response deadline capped at 30 seconds. Its result contains only the
+requested and resolved account, credential kind and source, expected and authenticated
+user/bot/team IDs, exact channel ID, pinned Slack API URL, and verification booleans. It
+never returns the token, a token fingerprint, channel metadata, message content, message
+timestamps, raw Slack errors, or scope details. An empty conversation history is a
+successful access proof.
+
+The request is intentionally strict:
+
+- `accountId` is required and must already be in canonical lowercase form.
+- `channelId` must be an exact uppercase Slack conversation ID. Names and aliases are
+  rejected.
+- `credentialKind` selects only `botToken` or `userToken`; there is no cross-kind
+  fallback. This proof selection is independent of the account's `postAs` setting.
+- `expectedUserId`, `expectedBotId`, and `expectedTeamId` are required exact identity
+  bindings from `auth.test`. For a bot credential, `expectedUserId` is Slack's bot-user
+  `user_id` (the `U…`/`W…` identity), not the human reviewer or operator. A user
+  credential requires `expectedBotId: null`.
+- `expectedApiUrl` must be exactly `https://slack.com/api/`. The verifier supplies that
+  URL explicitly, so an ambient `SLACK_API_URL` cannot redirect this proof.
+- A named account must own the selected credential under
+  `channels.slack.accounts.<accountId>`. It cannot inherit the root/default/environment
+  credential for this proof.
+- An effective `enterpriseOrgInstall: true` setting, or an org-installed identity reported
+  by `auth.test`, is rejected before channel access.
+- The explicit `default` account reports whether its selected credential came from its
+  account entry, the root Slack configuration, or the corresponding default-only
+  environment variable.
+- Provider rejection, incomplete identity, channel mismatch, timeout, or malformed
+  response fails closed with a coarse stage/code and no raw provider payload.
+
+This RPC returns a current identity-and-access observation for deployment admission and
+diagnostics. The raw result has no nonce, process/configuration binding, observation time,
+expiry, or signature and is therefore not a replay-resistant receipt by itself. A rollout
+controller must consume it immediately and bind it into a separately authenticated,
+freshness- and process-bound rollout receipt.
+`operation: "read"` and `performedWrites: false` attest only what this invocation did;
+they do not claim that the selected OAuth token lacks write scopes. The RPC neither
+grants Slack write authority nor replaces normal channel authorization. Version 1 is
+for workspace-installed Slack credentials; enterprise-wide org installations require a
+future contract that binds the enterprise identity and target team.
+
 ## Manifest and scope checklist
 
 The base Slack app manifest is the same for Socket Mode and HTTP Request URLs. Only the `settings` block (and the slash command `url`) differs.

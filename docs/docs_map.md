@@ -888,6 +888,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Quick setup
   - H2: User identity (post as a real person)
   - H2: Socket Mode transport tuning
+  - H2: Read-only account and channel access proof
   - H2: Manifest and scope checklist
   - H3: Additional manifest settings
   - H2: Token model

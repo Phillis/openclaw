@@ -1,6 +1,25 @@
 // Slack plugin entrypoint registers its OpenClaw integration.
 import { defineBundledChannelEntry } from "openclaw/plugin-sdk/channel-entry-contract";
+import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { registerSlackPluginHttpRoutes } from "./http-routes-api.js";
+
+const loadSlackAccessVerifyRuntime = createLazyRuntimeModule(
+  () => import("./access-verify.runtime.js"),
+);
+
+export function registerSlackFullRuntime(
+  api: Parameters<typeof registerSlackPluginHttpRoutes>[0],
+): void {
+  registerSlackPluginHttpRoutes(api);
+  api.registerGatewayMethod(
+    "slack.access.verify",
+    async (ctx) => {
+      const { handleSlackAccessVerify } = await loadSlackAccessVerifyRuntime();
+      await handleSlackAccessVerify(ctx);
+    },
+    { scope: "operator.read" },
+  );
+}
 
 export default defineBundledChannelEntry({
   id: "slack",
@@ -23,5 +42,5 @@ export default defineBundledChannelEntry({
     specifier: "./account-inspect-api.js",
     exportName: "inspectSlackReadOnlyAccount",
   },
-  registerFull: registerSlackPluginHttpRoutes,
+  registerFull: registerSlackFullRuntime,
 });

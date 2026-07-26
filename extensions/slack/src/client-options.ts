@@ -3,7 +3,10 @@ import type { Agent } from "node:http";
 import type { RetryOptions, WebClientOptions } from "@slack/web-api";
 import { createNodeProxyAgent } from "openclaw/plugin-sdk/fetch-runtime";
 
-export type SlackLookupClientOptions = Pick<WebClientOptions, "agent" | "slackApiUrl" | "timeout">;
+export type SlackLookupClientOptions = Pick<
+  WebClientOptions,
+  "agent" | "requestInterceptor" | "slackApiUrl" | "timeout"
+>;
 
 export const SLACK_DEFAULT_RETRY_OPTIONS: RetryOptions = {
   retries: 2,

@@ -241,6 +241,25 @@ describe("slack web client config", () => {
     });
   });
 
+  it("keeps an explicit lookup API root authoritative over SLACK_API_URL", () => {
+    process.env.SLACK_API_URL = "https://attacker.invalid/api/";
+    const customAgent = {} as never;
+
+    createSlackLookupClient("lookup-fixture", {
+      agent: customAgent,
+      slackApiUrl: "https://slack.com/api/",
+      timeout: 7_500,
+    });
+
+    expect(WebClient).toHaveBeenCalledWith("lookup-fixture", {
+      agent: customAgent,
+      rejectRateLimitedCalls: true,
+      retryConfig: { retries: 0 },
+      slackApiUrl: "https://slack.com/api/",
+      timeout: 7_500,
+    });
+  });
+
   it("respects explicit write client concurrency overrides", () => {
     const options = resolveSlackWriteClientOptions({ maxRequestConcurrency: 5 });
 
