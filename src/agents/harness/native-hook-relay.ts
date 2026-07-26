@@ -37,7 +37,6 @@ import { callGatewayTool } from "../tools/gateway.js";
 import { runAgentHarnessAfterToolCallHook } from "./hook-helpers.js";
 import { runAgentHarnessBeforeAgentFinalizeHook } from "./lifecycle-hook-helpers.js";
 import {
-  invokeNativeHookRelayBridge,
   isNativeHookRelayBridgeStaleRegistrationError,
   isRetryableNativeHookRelayBridgeLookupError,
   NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR,
@@ -55,7 +54,6 @@ import {
   NATIVE_HOOK_RELAY_EVENTS,
   readNativeHookRelayEvent,
   readNativeHookRelayProvider,
-  renderNativeHookRelayUnavailableResponse,
   type NativeHookRelayEvent,
   type NativeHookRelayProcessResponse,
   type NativeHookRelayProvider,
@@ -69,11 +67,6 @@ export type {
   NativeHookRelayProcessResponse,
   NativeHookRelayProvider,
 } from "./native-hook-relay-wire.js";
-export {
-  invokeNativeHookRelayBridge,
-  isNativeHookRelayBridgeStaleRegistrationError,
-  renderNativeHookRelayUnavailableResponse,
-};
 
 type NativeHookRelayInvocation = {
   provider: NativeHookRelayProvider;

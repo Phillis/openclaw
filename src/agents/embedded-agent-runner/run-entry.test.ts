@@ -4,6 +4,8 @@ import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
 } from "../../plugins/hook-runner-global.js";
+import type { PluginHookHandlerMap } from "../../plugins/hook-types.js";
+import type { HookRunner } from "../../plugins/hooks.js";
 import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { runAgentHarnessAgentEndHook } from "../harness/lifecycle-hook-helpers.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
@@ -286,7 +288,7 @@ describe("runEmbeddedAgentEntry", () => {
     });
     const hookRunner = {
       hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
-      runAgentEnd: vi.fn(async () => undefined),
+      runAgentEnd: vi.fn<HookRunner["runAgentEnd"]>(async () => undefined),
     };
     const { runEmbeddedAgentEntry } = await import("./run-entry.js");
 
@@ -339,7 +341,7 @@ describe("runEmbeddedAgentEntry", () => {
     });
     const hookRunner = {
       hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
-      runAgentEnd: vi.fn(async () => undefined),
+      runAgentEnd: vi.fn<HookRunner["runAgentEnd"]>(async () => undefined),
     };
     const { runEmbeddedAgentEntry } = await import("./run-entry.js");
 
@@ -381,7 +383,7 @@ describe("runEmbeddedAgentEntry", () => {
     });
     const hookRunner = {
       hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
-      runAgentEnd: vi.fn(async () => undefined),
+      runAgentEnd: vi.fn<HookRunner["runAgentEnd"]>(async () => undefined),
     };
     const { runEmbeddedAgentEntry } = await import("./run-entry.js");
 
@@ -436,9 +438,14 @@ describe("runEmbeddedAgentEntry", () => {
         .catch(() => undefined);
       throw new Error("all candidates failed during setup");
     });
-    const agentEndHandler = vi.fn(async () => undefined);
+    const agentEndHandler = vi.fn<PluginHookHandlerMap["agent_end"]>(async () => undefined);
     initializeGlobalHookRunner(
-      createMockPluginRegistry([{ hookName: "agent_end", handler: agentEndHandler }]),
+      createMockPluginRegistry([
+        {
+          hookName: "agent_end",
+          handler: agentEndHandler as (...args: unknown[]) => unknown,
+        },
+      ]),
     );
     const { runEmbeddedAgentEntry } = await import("./run-entry.js");
 
@@ -493,7 +500,7 @@ describe("runEmbeddedAgentEntry", () => {
     });
     const hookRunner = {
       hasHooks: vi.fn((hookName: string) => hookName === "agent_end"),
-      runAgentEnd: vi.fn(async () => undefined),
+      runAgentEnd: vi.fn<HookRunner["runAgentEnd"]>(async () => undefined),
     };
     const { runEmbeddedAgentEntry } = await import("./run-entry.js");
 

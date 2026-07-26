@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 /** Stable hash-only identity for one stored cron `agentTurn` message. */
-export type CronSourcePromptHash = `sha256:${string}`;
+type CronSourcePromptHash = `sha256:${string}`;
 
 /**
  * Canonicalizes and hashes a stored cron prompt before any runtime wrapper is
