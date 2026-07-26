@@ -53,6 +53,13 @@ import {
 } from "./auth-profiles.js";
 import { OAuthRefreshFailureError } from "./auth-profiles/oauth-refresh-failure.js";
 import * as cliCredentials from "./cli-credentials.js";
+import {
+  buildPreparedAuthBinding,
+  PreparedAuthBindingDriftError,
+  verifyPreparedAuthBinding,
+  type PreparedAuthBinding,
+  type PreparedAuthBindingContext,
+} from "./execution-auth-binding.js";
 import { resolveProviderEnvAuthLookupMaps } from "./model-auth-env-vars.js";
 import {
   resolveEnvApiKey,
@@ -91,6 +98,44 @@ export {
 } from "./model-auth-runtime-shared.js";
 export type { ResolvedProviderAuth } from "./model-auth-runtime-shared.js";
 export type ProviderCredentialPrecedence = "profile-first" | "env-first";
+
+type ResolvedProviderAuthWithPreparedBinding = ResolvedProviderAuth & {
+  preparedAuthBinding?: PreparedAuthBinding;
+};
+
+function attachPreparedAuthBinding(params: {
+  auth: ResolvedProviderAuth;
+  context?: PreparedAuthBindingContext;
+  provider: string;
+  profileId: string;
+  credential: AuthProfileCredential;
+}): ResolvedProviderAuthWithPreparedBinding {
+  const context = params.context;
+  if (!context) {
+    return params.auth;
+  }
+  const preparedAuthBinding =
+    context.mode === "verify"
+      ? verifyPreparedAuthBinding({
+          expected: context.expected,
+          key: context.key,
+          scopeSha256: context.scopeSha256,
+          provider: params.provider,
+          profileId: params.profileId,
+          credential: params.credential,
+        })
+      : buildPreparedAuthBinding({
+          key: context.key,
+          scopeSha256: context.scopeSha256,
+          provider: params.provider,
+          profileId: params.profileId,
+          credential: params.credential,
+        });
+  return {
+    ...params.auth,
+    preparedAuthBinding,
+  };
+}
 
 function sentinelizeSecretRefProfileApiKey(params: {
   apiKey: string;
@@ -1191,8 +1236,7 @@ function resolveScopedAuthProfileStore(params: {
   });
 }
 
-/** Resolves the credential that should be used for one provider request. */
-export async function resolveApiKeyForProvider(params: {
+async function resolveApiKeyForProviderInternal(params: {
   provider: string;
   cfg?: OpenClawConfig;
   profileId?: string;
@@ -1213,6 +1257,8 @@ export async function resolveApiKeyForProvider(params: {
   modelApi?: string;
   /** Keep SecretRef-backed model credentials opaque until a sentinel-aware transport boundary. */
   secretSentinels?: boolean;
+  /** Produce only a privacy-safe campaign proof from the exact resolved profile credential. */
+  preparedAuthBinding?: PreparedAuthBindingContext;
 }): Promise<ResolvedProviderAuth> {
   const { provider, cfg, profileId, preferredProfile } = params;
   // A failed explicit ref owns the provider. Stop before profile/env discovery so requests cannot
@@ -1256,6 +1302,7 @@ export async function resolveApiKeyForProvider(params: {
     }
     const resolvedProfileId = resolved.profileId ?? profileId;
     const mode = resolved.profileType ?? store.profiles[resolvedProfileId]?.type;
+    const resolvedCredential = resolved.credential ?? store.profiles[resolvedProfileId];
     const result: ResolvedProviderAuth = {
       apiKey: sentinelizeSecretRefProfileApiKey({
         apiKey: resolved.apiKey,
@@ -1288,15 +1335,38 @@ export async function resolveApiKeyForProvider(params: {
         modelApi: params.modelApi,
       })
     ) {
-      return resolveApiKeyForProvider({
+      return resolveApiKeyForProviderInternal({
         ...params,
         store,
         profileId: undefined,
         lockedProfile: true,
       }) //
-        .catch(() => result);
+        .catch((error: unknown) => {
+          if (error instanceof PreparedAuthBindingDriftError) {
+            throw error;
+          }
+          if (!resolvedCredential) {
+            return result;
+          }
+          return attachPreparedAuthBinding({
+            auth: result,
+            context: params.preparedAuthBinding,
+            provider,
+            profileId: resolvedProfileId,
+            credential: resolvedCredential,
+          });
+        });
     }
-    return result;
+    if (!resolvedCredential) {
+      return result;
+    }
+    return attachPreparedAuthBinding({
+      auth: result,
+      context: params.preparedAuthBinding,
+      provider,
+      profileId: resolvedProfileId,
+      credential: resolvedCredential,
+    });
   }
 
   if (params.allowAuthProfileFallback !== false && (cfg?.auth?.profiles || cfg?.auth?.order)) {
@@ -1353,7 +1423,10 @@ export async function resolveApiKeyForProvider(params: {
           mode: resolvedMode,
         })
       ) {
-        return resolveApiKeyForProvider({ ...params, credentialPrecedence: "profile-first" });
+        return resolveApiKeyForProviderInternal({
+          ...params,
+          credentialPrecedence: "profile-first",
+        });
       }
       return {
         apiKey: sentinelizeConfigSecretRefEnvApiKey({
@@ -1482,7 +1555,13 @@ export async function resolveApiKeyForProvider(params: {
           preferredProfile,
           forModel: params.modelId,
         });
-  let deferredAuthProfileResult: ResolvedProviderAuth | null = null;
+  let deferredAuthProfileResult:
+    | {
+        auth: ResolvedProviderAuth;
+        profileId: string;
+        credential?: AuthProfileCredential;
+      }
+    | undefined;
   let refreshFailure: OAuthRefreshFailureError | undefined;
   for (const candidate of order) {
     let candidateMode: ResolvedProviderAuth["mode"] | undefined;
@@ -1517,6 +1596,7 @@ export async function resolveApiKeyForProvider(params: {
       if (resolved) {
         const resolvedProfileId = resolved.profileId ?? candidate;
         const mode = resolved.profileType ?? store.profiles[resolvedProfileId]?.type;
+        const resolvedCredential = resolved.credential ?? store.profiles[resolvedProfileId];
         const resolvedMode: ResolvedProviderAuth["mode"] = mode
           ? profileTypeToAuthMode(mode)
           : "api-key";
@@ -1549,12 +1629,28 @@ export async function resolveApiKeyForProvider(params: {
             modelApi: params.modelApi,
           })
         ) {
-          deferredAuthProfileResult ??= result;
+          deferredAuthProfileResult ??= {
+            auth: result,
+            profileId: resolvedProfileId,
+            credential: resolvedCredential,
+          };
           continue;
         }
-        return result;
+        if (!resolvedCredential) {
+          return result;
+        }
+        return attachPreparedAuthBinding({
+          auth: result,
+          context: params.preparedAuthBinding,
+          provider,
+          profileId: resolvedProfileId,
+          credential: resolvedCredential,
+        });
       }
     } catch (err) {
+      if (err instanceof PreparedAuthBindingDriftError) {
+        throw err;
+      }
       if (err instanceof SecretSurfaceUnavailableError) {
         throw err;
       }
@@ -1641,7 +1737,16 @@ export async function resolveApiKeyForProvider(params: {
   }
 
   if (deferredAuthProfileResult) {
-    return deferredAuthProfileResult;
+    if (!deferredAuthProfileResult.credential) {
+      return deferredAuthProfileResult.auth;
+    }
+    return attachPreparedAuthBinding({
+      auth: deferredAuthProfileResult.auth,
+      context: params.preparedAuthBinding,
+      provider,
+      profileId: deferredAuthProfileResult.profileId,
+      credential: deferredAuthProfileResult.credential,
+    });
   }
 
   const syntheticLocalAuth = resolveSyntheticLocalProviderAuth({
@@ -1696,6 +1801,41 @@ export async function resolveApiKeyForProvider(params: {
       `Configure auth for this agent (${formatCliCommand("openclaw agents add <id>")}) or copy only portable static auth profiles from the main agentDir.`,
     ].join(" "),
   );
+}
+
+/** Resolves the credential that should be used for one provider request. */
+export async function resolveApiKeyForProvider(params: {
+  provider: string;
+  cfg?: OpenClawConfig;
+  profileId?: string;
+  preferredProfile?: string;
+  store?: AuthProfileStore;
+  agentDir?: string;
+  workspaceDir?: string;
+  /** When true, treat profileId as a user-locked selection that must not be
+   *  silently overridden by env/config credentials. */
+  lockedProfile?: boolean;
+  forceRefresh?: boolean;
+  credentialPrecedence?: ProviderCredentialPrecedence;
+  /** Skip implicit profile discovery for a prepared env/config fallback attempt. */
+  allowAuthProfileFallback?: boolean;
+  /** Skip plugin setup fallback when the prepared route already excludes it. */
+  skipSetupProviderFallback?: boolean;
+  modelId?: string;
+  modelApi?: string;
+  /** Keep SecretRef-backed model credentials opaque until a sentinel-aware transport boundary. */
+  secretSentinels?: boolean;
+}): Promise<ResolvedProviderAuth> {
+  return resolveApiKeyForProviderInternal(params);
+}
+
+/** @internal Produces only a privacy-safe campaign proof; never exposes the resolved credential. */
+export async function resolveApiKeyForProviderWithPreparedAuthBinding(
+  params: Parameters<typeof resolveApiKeyForProvider>[0] & {
+    preparedAuthBinding: PreparedAuthBindingContext;
+  },
+): Promise<ResolvedProviderAuth> {
+  return resolveApiKeyForProviderInternal(params);
 }
 
 export type ModelAuthMode = "api-key" | "oauth" | "token" | "mixed" | "aws-sdk" | "unknown";
@@ -1858,6 +1998,40 @@ export async function hasAvailableAuthForProvider(params: {
   return false;
 }
 
+async function getApiKeyForModelInternal(params: {
+  model: Model;
+  cfg?: OpenClawConfig;
+  profileId?: string;
+  preferredProfile?: string;
+  store?: AuthProfileStore;
+  agentDir?: string;
+  workspaceDir?: string;
+  lockedProfile?: boolean;
+  credentialPrecedence?: ProviderCredentialPrecedence;
+  allowAuthProfileFallback?: boolean;
+  skipSetupProviderFallback?: boolean;
+  secretSentinels?: boolean;
+  preparedAuthBinding?: PreparedAuthBindingContext;
+}): Promise<ResolvedProviderAuth> {
+  return resolveApiKeyForProviderInternal({
+    provider: params.model.provider,
+    cfg: params.cfg,
+    profileId: params.profileId,
+    preferredProfile: params.preferredProfile,
+    store: params.store,
+    agentDir: params.agentDir,
+    workspaceDir: params.workspaceDir,
+    lockedProfile: params.lockedProfile,
+    credentialPrecedence: params.credentialPrecedence,
+    allowAuthProfileFallback: params.allowAuthProfileFallback,
+    skipSetupProviderFallback: params.skipSetupProviderFallback,
+    preparedAuthBinding: params.preparedAuthBinding,
+    modelId: params.model.id,
+    modelApi: params.model.api,
+    secretSentinels: params.secretSentinels,
+  });
+}
+
 /** Resolves request credentials from the provider attached to a model descriptor. */
 export async function getApiKeyForModel(params: {
   model: Model;
@@ -1873,22 +2047,16 @@ export async function getApiKeyForModel(params: {
   skipSetupProviderFallback?: boolean;
   secretSentinels?: boolean;
 }): Promise<ResolvedProviderAuth> {
-  return resolveApiKeyForProvider({
-    provider: params.model.provider,
-    cfg: params.cfg,
-    profileId: params.profileId,
-    preferredProfile: params.preferredProfile,
-    store: params.store,
-    agentDir: params.agentDir,
-    workspaceDir: params.workspaceDir,
-    lockedProfile: params.lockedProfile,
-    credentialPrecedence: params.credentialPrecedence,
-    allowAuthProfileFallback: params.allowAuthProfileFallback,
-    skipSetupProviderFallback: params.skipSetupProviderFallback,
-    modelId: params.model.id,
-    modelApi: params.model.api,
-    secretSentinels: params.secretSentinels,
-  });
+  return getApiKeyForModelInternal(params);
+}
+
+/** @internal Produces only a privacy-safe campaign proof; never exposes the resolved credential. */
+export async function getApiKeyForModelWithPreparedAuthBinding(
+  params: Parameters<typeof getApiKeyForModel>[0] & {
+    preparedAuthBinding: PreparedAuthBindingContext;
+  },
+): Promise<ResolvedProviderAuth> {
+  return getApiKeyForModelInternal(params);
 }
 
 /** Clears auth for local OpenAI-compatible servers that explicitly use no auth. */

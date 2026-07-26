@@ -1,5 +1,5 @@
 // OpenClaw TUI backend tests cover rescue status integration with the TUI backend.
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { SystemAgentInferenceUnavailableError } from "./inference-error.js";
@@ -7,6 +7,17 @@ import type { SystemAgentCommandDeps, SystemAgentOperation } from "./operations.
 import type { SystemAgentOverview } from "./overview.js";
 import { createSystemAgentVerifiedInferenceTestFixture } from "./system-agent.test-helpers.js";
 import { runSystemAgentTui, type SystemAgentTuiOptions } from "./tui-backend.js";
+
+const preparedCatalogMocks = vi.hoisted(() => ({
+  getPreparedModelCatalogSnapshot: vi.fn(),
+  loadPreparedModelCatalog: vi.fn(),
+}));
+
+vi.mock("../agents/prepared-model-catalog.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/prepared-model-catalog.js")>()),
+  getPreparedModelCatalogSnapshot: preparedCatalogMocks.getPreparedModelCatalogSnapshot,
+  loadPreparedModelCatalog: preparedCatalogMocks.loadPreparedModelCatalog,
+}));
 
 vi.mock("../plugins/providers.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../plugins/providers.js")>()),
@@ -90,6 +101,12 @@ function createRuntime(): RuntimeEnv {
 }
 
 describe("runSystemAgentTui", () => {
+  beforeEach(() => {
+    preparedCatalogMocks.getPreparedModelCatalogSnapshot.mockReset();
+    preparedCatalogMocks.getPreparedModelCatalogSnapshot.mockReturnValue(undefined);
+    preparedCatalogMocks.loadPreparedModelCatalog.mockReset();
+  });
+
   it("rejects a missing inference binding before overview, planner, TUI, or setup", async () => {
     const loadOverview = vi.fn(async () => overview);
     const planWithAssistant = vi.fn(async () => ({ reply: "ready" }));
@@ -236,6 +253,37 @@ describe("runSystemAgentTui", () => {
       createRuntime(),
     );
   });
+
+  it.each(["hit", "miss", "error"] as const)(
+    "starts without asynchronous catalog discovery on a cache %s",
+    async (mode) => {
+      if (mode === "hit") {
+        preparedCatalogMocks.getPreparedModelCatalogSnapshot.mockReturnValue({
+          entries: [
+            {
+              id: "gpt-5.5",
+              name: "GPT-5.5",
+              provider: "openai",
+              reasoning: true,
+            },
+          ],
+          routeVariants: [],
+        });
+      } else if (mode === "error") {
+        preparedCatalogMocks.getPreparedModelCatalogSnapshot.mockImplementation(() => {
+          throw new Error("catalog snapshot unavailable");
+        });
+      }
+      const verified = await createVerifiedTuiOptions({ loadOverview: async () => overview });
+      const runTui = vi.fn(async () => ({ exitReason: "exit" as const }));
+
+      await runSystemAgentTui({ ...verified, runTui }, createRuntime());
+
+      expect(runTui).toHaveBeenCalledOnce();
+      expect(preparedCatalogMocks.getPreparedModelCatalogSnapshot).toHaveBeenCalledOnce();
+      expect(preparedCatalogMocks.loadPreparedModelCatalog).not.toHaveBeenCalled();
+    },
+  );
 
   it("reports that /model cannot replace the active verified inference route", async () => {
     const verified = await createVerifiedTuiOptions({ loadOverview: async () => overview });

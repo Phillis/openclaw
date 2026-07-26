@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { HookRunner } from "../../../plugins/hooks.js";
 import { completeEmbeddedAttemptResult } from "./attempt-result.js";
 
 function completeResult(params?: {
@@ -160,7 +161,7 @@ describe("attempt result projection", () => {
   });
 
   it("reports effective controls, fallback attribution, and usage to llm_output", () => {
-    const runLlmOutput = vi.fn(async () => undefined);
+    const runLlmOutput = vi.fn<HookRunner["runLlmOutput"]>(async () => undefined);
     completeResult({
       hookRunner: {
         hasHooks: (hookName) => hookName === "llm_output",
@@ -206,7 +207,7 @@ describe("attempt result projection", () => {
   });
 
   it("omits plugin-defined fallback reasons from the closed telemetry contract", () => {
-    const runLlmOutput = vi.fn(async () => undefined);
+    const runLlmOutput = vi.fn<HookRunner["runLlmOutput"]>(async () => undefined);
     completeResult({
       hookRunner: {
         hasHooks: (hookName) => hookName === "llm_output",

@@ -283,6 +283,7 @@ exports[`config tier coverage > keeps the curated common leaf set reviewable 1`]
   "session.identityLinks.*.*",
   "session.mainKey",
   "session.maintenance.mode",
+  "session.maintenance.preserveHumanSessions",
   "session.reset.mode",
   "session.resetByChannel.*.mode",
   "session.resetByType.direct.mode",
