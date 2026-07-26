@@ -1,4 +1,5 @@
 // Slack access verification binds one explicit credential to one exact conversation.
+import { performance } from "node:perf_hooks";
 import type {
   AuthTestResponse,
   ConversationsHistoryResponse,
@@ -83,6 +84,7 @@ const SlackAccessFailureSchema = z.discriminatedUnion("stage", [
         "identity_incomplete",
         "identity_kind_mismatch",
         "identity_mismatch",
+        "malformed_response",
         "unsupported_installation",
       ]),
     })
@@ -326,6 +328,9 @@ function validateAuthIdentity(
   if (auth.ok !== true) {
     return { ok: false, failure: { stage: "auth", code: "provider_rejected" } };
   }
+  if (auth.is_enterprise_install !== undefined && typeof auth.is_enterprise_install !== "boolean") {
+    return { ok: false, failure: { stage: "auth", code: "malformed_response" } };
+  }
   if (auth.is_enterprise_install === true) {
     return { ok: false, failure: { stage: "auth", code: "unsupported_installation" } };
   }
@@ -485,7 +490,9 @@ export async function verifySlackAccess(params: {
     return { ok: false, error: "invalid_request" };
   }
   const totalTimeoutMs = parsed.data.totalTimeoutMs ?? SLACK_ACCESS_PROOF_DEFAULT_TOTAL_TIMEOUT_MS;
-  const deadlineAtMs = Date.now() + totalTimeoutMs;
+  // performance.now() is monotonic. A wall-clock correction must never enlarge
+  // the signed whole-operation deadline.
+  const deadlineStartedAtMs = performance.now();
   const credential = resolveExactSlackCredential(params.cfg, parsed.data);
   if (!credential.ok) {
     return {
@@ -519,7 +526,8 @@ export async function verifySlackAccess(params: {
   } catch {
     return { ok: true, result: failure("credential", "credential_unavailable") };
   }
-  const remainingTimeoutMs = deadlineAtMs - Date.now();
+  const elapsedMs = Math.max(0, performance.now() - deadlineStartedAtMs);
+  const remainingTimeoutMs = totalTimeoutMs - elapsedMs;
   if (remainingTimeoutMs <= 0) {
     abortController.abort();
     return { ok: true, result: failure("deadline", "deadline_exceeded") };

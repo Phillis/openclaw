@@ -606,6 +606,39 @@ describe("verifySlackAccess", () => {
     expect(client.conversations.history).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["string", "true"],
+    ["number", 1],
+    ["null", null],
+  ])(
+    "rejects a malformed Enterprise-install flag before channel access: %s",
+    async (_name, isEnterpriseInstall) => {
+      const client = createClient({
+        auth: {
+          ok: true,
+          user_id: USER_ID,
+          bot_id: BOT_ID,
+          team_id: TEAM_ID,
+          is_enterprise_install: isEnterpriseInstall,
+        },
+      });
+      const { verification } = await verify({ client });
+
+      expect(verification).toMatchObject({
+        ok: true,
+        result: {
+          ok: false,
+          failure: {
+            stage: "auth",
+            code: "malformed_response",
+          },
+        },
+      });
+      expect(client.conversations.info).not.toHaveBeenCalled();
+      expect(client.conversations.history).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects unresolved SecretRefs without disclosing their identifiers", async () => {
     const cfg = namedBotConfig({
       botToken: {
@@ -790,6 +823,103 @@ describe("verifySlackAccess", () => {
     expect(observedSignal?.aborted).toBe(true);
     expect(client.conversations.info).not.toHaveBeenCalled();
     expect(client.conversations.history).not.toHaveBeenCalled();
+  });
+
+  it("does not enlarge the total deadline when the wall clock moves backward", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValue(900);
+    const client = {
+      auth: {
+        test: vi.fn(
+          async () =>
+            await new Promise<never>(() => {
+              // The monotonic verifier deadline must settle this operation.
+            }),
+        ),
+      },
+      conversations: {
+        info: vi.fn(),
+        history: vi.fn(),
+      },
+    } as unknown as AccessClient;
+
+    const pending = verify({
+      client,
+      request: botRequest({ totalTimeoutMs: 5 }),
+    });
+    await vi.advanceTimersByTimeAsync(5);
+
+    await expect(pending).resolves.toMatchObject({
+      verification: {
+        ok: true,
+        result: {
+          ok: false,
+          failure: {
+            stage: "deadline",
+            code: "deadline_exceeded",
+          },
+        },
+      },
+    });
+  });
+
+  it("applies one deadline across cumulative sequential Slack operations", async () => {
+    vi.useFakeTimers();
+    const delayed = async <T>(value: T): Promise<T> =>
+      await new Promise<T>((resolve) => {
+        setTimeout(() => resolve(value), 10);
+      });
+    const client = {
+      auth: {
+        test: vi.fn(
+          async () =>
+            await delayed({
+              ok: true,
+              user_id: USER_ID,
+              bot_id: BOT_ID,
+              team_id: TEAM_ID,
+            }),
+        ),
+      },
+      conversations: {
+        info: vi.fn(
+          async () =>
+            await delayed({
+              ok: true,
+              channel: { id: CHANNEL_ID },
+            }),
+        ),
+        history: vi.fn(
+          async () =>
+            await delayed({
+              ok: true,
+              messages: [],
+            }),
+        ),
+      },
+    } as unknown as AccessClient;
+
+    const pending = verify({
+      client,
+      request: botRequest({ totalTimeoutMs: 25 }),
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await expect(pending).resolves.toMatchObject({
+      verification: {
+        ok: true,
+        result: {
+          ok: false,
+          failure: {
+            stage: "deadline",
+            code: "deadline_exceeded",
+          },
+        },
+      },
+    });
+    expect(client.auth.test).toHaveBeenCalledOnce();
+    expect(client.conversations.info).toHaveBeenCalledOnce();
+    expect(client.conversations.history).toHaveBeenCalledOnce();
   });
 });
 
