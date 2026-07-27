@@ -171,6 +171,22 @@ describe("gateway register option collisions", () => {
       },
     },
     {
+      name: "inherits parent --port for gateway call",
+      argv: ["gateway", "--port", "19084", "call", "health", "--json"],
+      assert: () => {
+        expect(callGatewayCli).toHaveBeenCalledTimes(1);
+        const [method, opts, params] = firstGatewayCall();
+        expect(method).toBe("health");
+        expect(opts).toMatchObject({
+          localPortOverride: 19084,
+          config: {
+            gateway: { mode: "local", port: 19084 },
+          },
+        });
+        expect(params).toEqual({});
+      },
+    },
+    {
       name: "forwards --token to gateway probe when parent and child option names collide",
       argv: ["gateway", "probe", "--token", "tok_probe", "--json"],
       assert: () => {
@@ -255,6 +271,30 @@ describe("gateway register option collisions", () => {
   ])("$name", async ({ argv, assert }) => {
     await sharedProgram.parseAsync(argv, { from: "user" });
     assert();
+  });
+
+  it("rejects combined parent --port and call --url before opening a gateway call", async () => {
+    await sharedProgram.parseAsync(
+      [
+        "gateway",
+        "--port",
+        "19084",
+        "call",
+        "health",
+        "--url",
+        "wss://gateway.example/ws",
+        "--token",
+        "explicit-token",
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    expect(callGatewayCli).not.toHaveBeenCalled();
+    expect(defaultRuntime.error).toHaveBeenCalledWith(
+      "Gateway call failed: Error: Use either --url or --port, not both.",
+    );
+    expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
   });
 
   it("uses the effective local port config for gateway health auth diagnostics", async () => {

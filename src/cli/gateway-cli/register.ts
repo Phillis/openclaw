@@ -599,7 +599,7 @@ export function registerGatewayCli(program: Command) {
       .action(async (method, opts, command) => {
         await runGatewayCommand(
           async () => {
-            const resolvedRpcOpts = resolveGatewayRpcOptions(opts, command);
+            const resolvedRpcOpts = await resolveGatewayRpcOptionsWithLocalPort(opts, command);
             const rpcOpts: GatewayRpcOpts =
               opts.operatorReadOnly === true
                 ? {

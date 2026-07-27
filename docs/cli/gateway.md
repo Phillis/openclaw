@@ -444,6 +444,7 @@ Low-level RPC helper.
 ```bash
 openclaw gateway call status
 openclaw gateway call logs.tail --params '{"limit": 200}'
+openclaw gateway --port 18789 call status
 ```
 
 <ParamField path="--params <json>" type="string" default="{}">
@@ -471,6 +472,17 @@ openclaw gateway call logs.tail --params '{"limit": 200}'
 <Note>
 `--params` must be valid JSON, and each method validates its own param shape (extra/misnamed fields are rejected).
 </Note>
+
+For an exact local target, put the shared `--port <port>` option before
+`call`. This pins the call to `ws://127.0.0.1:<port>` (or `wss://` when local
+Gateway TLS is enabled), ignores `OPENCLAW_GATEWAY_URL`, and cannot be combined
+with `--url`.
+
+<Warning>
+An explicit `--url` requires an explicit `--token` or `--password` on the same
+command. OpenClaw does not reuse configured credentials or paired-device
+authentication for a caller-selected URL.
+</Warning>
 
 ## Manage the Gateway service
 
