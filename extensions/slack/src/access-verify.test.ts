@@ -1,4 +1,5 @@
 // Slack access-verification tests cover exact account, credential, identity, and channel binding.
+import { performance } from "node:perf_hooks";
 import type { WebClient } from "@slack/web-api";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { ErrorCodes } from "openclaw/plugin-sdk/gateway-runtime";
@@ -920,6 +921,35 @@ describe("verifySlackAccess", () => {
     expect(client.auth.test).toHaveBeenCalledOnce();
     expect(client.conversations.info).toHaveBeenCalledOnce();
     expect(client.conversations.history).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a successful proof completed after the deadline before the timer callback runs", async () => {
+    vi.useFakeTimers();
+    const performanceNow = vi
+      .spyOn(performance, "now")
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(1_000)
+      .mockReturnValue(1_006);
+
+    try {
+      const { verification, client } = await verify({
+        request: botRequest({ totalTimeoutMs: 5 }),
+      });
+
+      expect(verification).toEqual({
+        ok: true,
+        result: {
+          contractVersion: SLACK_ACCESS_PROOF_CONTRACT_VERSION,
+          ok: false,
+          failure: { stage: "deadline", code: "deadline_exceeded" },
+        },
+      });
+      expect(client.auth.test).toHaveBeenCalledOnce();
+      expect(client.conversations.info).toHaveBeenCalledOnce();
+      expect(client.conversations.history).toHaveBeenCalledOnce();
+    } finally {
+      performanceNow.mockRestore();
+    }
   });
 });
 

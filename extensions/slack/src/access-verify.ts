@@ -533,17 +533,32 @@ export async function verifySlackAccess(params: {
     return { ok: true, result: failure("deadline", "deadline_exceeded") };
   }
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  const operation = runSlackAccessVerification({
-    client,
-    request: parsed.data,
-    credentialSource: credential.source,
-  });
   const deadline = new Promise<SlackAccessVerifyResult>((resolve) => {
     timeout = setTimeout(() => {
       abortController.abort();
       resolve(failure("deadline", "deadline_exceeded"));
     }, remainingTimeoutMs);
   });
+  // Arm the timer before invoking provider code. A client method can perform
+  // synchronous work before returning its promise, delaying the event loop
+  // past the timer's due time. The monotonic completion check prevents that
+  // overdue operation from winning Promise.race with an already-fulfilled
+  // success before the timer callback gets a chance to run.
+  const operation = Promise.resolve()
+    .then(() =>
+      runSlackAccessVerification({
+        client,
+        request: parsed.data,
+        credentialSource: credential.source,
+      }),
+    )
+    .then((result) => {
+      if (performance.now() - deadlineStartedAtMs >= totalTimeoutMs) {
+        abortController.abort();
+        return failure("deadline", "deadline_exceeded");
+      }
+      return result;
+    });
   try {
     return {
       ok: true,
