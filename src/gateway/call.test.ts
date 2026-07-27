@@ -706,6 +706,17 @@ describe("callGateway url resolution", () => {
     ]);
   });
 
+  it("honors an explicit read-only scope for an unclassified CLI method", async () => {
+    setLocalLoopbackGatewayConfig();
+
+    await callGatewayCli({
+      method: "plugin.custom.unclassified",
+      scopes: ["operator.read"],
+    });
+
+    expect(lastClientOptions?.scopes).toEqual(["operator.read"]);
+  });
+
   it("falls back to broad operator scopes for unresolved plugin session actions", async () => {
     setLocalLoopbackGatewayConfig();
     setActivePluginRegistry(createEmptyPluginRegistry());

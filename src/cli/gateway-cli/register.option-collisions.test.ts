@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerGatewayCli } from "./register.js";
 
 const mocks = vi.hoisted(() => ({
-  callGatewayCli: vi.fn(async (_method: string, _opts: unknown, _params?: unknown) => ({
-    ok: true,
-  })),
+  callGatewayCli: vi.fn(
+    async (_method: string, _opts: unknown, _params?: unknown, _extra?: unknown) => ({
+      ok: true,
+    }),
+  ),
   emitReachableGatewayAuthDiagnostic: vi.fn(async (_params: unknown) => false),
   formatHealthChannelLines: vi.fn(() => []),
   gatewayStatusCommand: vi.fn(async (_opts: unknown, _runtime: unknown) => {}),
@@ -53,8 +55,15 @@ vi.mock("../../commands/gateway-auth-token.js", () => ({
 
 vi.mock("../gateway-rpc.js", async () => ({
   ...(await vi.importActual<typeof import("../gateway-rpc.js")>("../gateway-rpc.js")),
-  callGatewayFromCliWithTransport: (method: string, opts: unknown, params?: unknown) =>
-    mocks.callGatewayCli(method, opts, params),
+  callGatewayFromCliWithTransport: (
+    method: string,
+    opts: unknown,
+    params?: unknown,
+    extra?: unknown,
+  ) =>
+    (extra as { scopes?: unknown } | undefined)?.scopes
+      ? mocks.callGatewayCli(method, opts, params, extra)
+      : mocks.callGatewayCli(method, opts, params),
 }));
 
 vi.mock("./run-command.js", () => ({
@@ -214,6 +223,17 @@ describe("gateway register option collisions", () => {
       argv: ["gateway", "--port", "19085", "call", "health", "--json"],
       assert: () => {
         expectLocalGatewayCall("health", 19085);
+      },
+    },
+    {
+      name: "forwards the explicit read-only scope without inheriting broader parent options",
+      argv: ["gateway", "call", "slack.access.verify", "--operator-read-only", "--json"],
+      assert: () => {
+        expect(callGatewayCli).toHaveBeenCalledTimes(1);
+        const [method, , params, extra] = firstGatewayCall();
+        expect(method).toBe("slack.access.verify");
+        expect((extra as { scopes?: string[] } | undefined)?.scopes).toEqual(["operator.read"]);
+        expect(params).toEqual({});
       },
     },
     {
