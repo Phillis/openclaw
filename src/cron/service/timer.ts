@@ -105,7 +105,7 @@ import {
   updateQueuedCronRunReservationMarker,
 } from "./run-admission.js";
 import { emit, type CronServiceState, type CronSystemEventEnqueueResult } from "./state.js";
-import { ensureLoaded, persist, persistOrRestore, snapshotStoreForRollback } from "./store.js";
+import { ensureLoaded, persistOrRestore, snapshotStoreForRollback } from "./store.js";
 import {
   resolveMainSessionCronRunSessionKey,
   tryCreateCronTaskRun,
@@ -1428,12 +1428,13 @@ async function onAdmittedTimer(state: CronServiceState) {
         // Use maintenance-only recompute to avoid advancing past-due nextRunAtMs
         // values without execution. This prevents jobs from being silently skipped
         // when the timer wakes up but findDueJobs returns empty (see #13992).
+        const recomputeRollbackSnapshot = snapshotStoreForRollback(state);
         const changed = recomputeNextRunsForMaintenance(state, {
           recomputeExpired: true,
           nowMs: dueCheckNow,
         });
         if (changed) {
-          await persist(state);
+          await persistOrRestore(state, recomputeRollbackSnapshot);
         }
         return [];
       }
@@ -1610,7 +1611,68 @@ async function onAdmittedTimer(state: CronServiceState) {
           // those jobs (advancing nextRunAtMs without execution), causing
           // daily cron schedules to jump 48 h instead of 24 h (#17852).
           recomputeNextRunsForMaintenance(state);
-          await persistOrRestore(state, rollbackSnapshot);
+          const finalizedRuntimeByJobId = new Map<
+            string,
+            { state: CronJob["state"]; updatedAtMs: number }
+          >();
+          for (const result of finalizedResults) {
+            const removedJob = removedJobs.find((entry) => entry.id === result.jobId);
+            const finalizedJob =
+              state.store?.jobs.find((entry) => entry.id === result.jobId) ?? removedJob;
+            if (finalizedJob) {
+              const finalizedState = structuredClone(finalizedJob.state);
+              if (removedJob) {
+                // The guarded definition remains enabled, so retire the consumed
+                // one-shot's runtime slot explicitly instead of leaving a
+                // past-due timestamp that would re-fire every minimum-gap tick.
+                finalizedState.nextRunAtMs = undefined;
+              }
+              finalizedRuntimeByJobId.set(result.jobId, {
+                state: finalizedState,
+                updatedAtMs: finalizedJob.updatedAtMs,
+              });
+            }
+          }
+          try {
+            await persistOrRestore(state, rollbackSnapshot);
+          } catch (error) {
+            if (
+              !(error instanceof Error) ||
+              (error as Error & { code?: unknown }).code !== "CRON_MUTATION_GUARD_ACTIVE"
+            ) {
+              throw error;
+            }
+            // The evidence guard rejected only an automatic definition change
+            // (for example one-shot removal). Preserve the rejection, but first
+            // commit the completed run's runtime state so queued/running markers
+            // cannot stall or immediately replay the job.
+            const cleanupRollbackSnapshot = snapshotStoreForRollback(state);
+            for (const job of state.store?.jobs ?? []) {
+              const runtime = finalizedRuntimeByJobId.get(job.id);
+              if (!runtime) {
+                continue;
+              }
+              job.state = structuredClone(runtime.state);
+              job.updatedAtMs = runtime.updatedAtMs;
+            }
+            let cleanupOutcome: { ok: true } | { ok: false; error: unknown };
+            try {
+              await persistOrRestore(state, cleanupRollbackSnapshot, {
+                stateOnly: true,
+              });
+              cleanupOutcome = { ok: true };
+            } catch (cleanupError) {
+              cleanupOutcome = { ok: false, error: cleanupError };
+            }
+            if (!cleanupOutcome.ok) {
+              const cleanupFailure = new Error("cron: mutation guard rejection cleanup failed", {
+                cause: error,
+              }) as Error & { cleanupError?: unknown };
+              cleanupFailure.cleanupError = cleanupOutcome.error;
+              throw cleanupFailure;
+            }
+            throw error;
+          }
           finishPersistedQuietCronTaskRuns(state, finalizedResults);
           for (const removedJob of removedJobs) {
             emit(state, { jobId: removedJob.id, action: "removed", job: removedJob });
@@ -2140,6 +2202,7 @@ async function planStartupCatchup(
     }
 
     const now = state.deps.nowMs();
+    const recomputeRollbackSnapshot = snapshotStoreForRollback(state);
     const deferredBackoffMissedSlot = deferPendingBackoffMissedCronSlots(state, now, {
       skipJobIds: opts?.skipJobIds,
     });
@@ -2150,7 +2213,7 @@ async function planStartupCatchup(
     });
     if (missed.length === 0) {
       if (deferredBackoffMissedSlot) {
-        await persist(state);
+        await persistOrRestore(state, recomputeRollbackSnapshot);
       }
       return { candidates: [], deferredJobs: [] };
     }

@@ -11,6 +11,10 @@ import {
   type QuarantinedCronConfigJob,
 } from "../store.js";
 import type { CronJob, CronStoreFile } from "../types.js";
+import {
+  assertCronDefinitionMutationAllowed,
+  assertCronDefinitionSnapshotMutationAllowed,
+} from "./definition-mutation-guard.js";
 import { recomputeNextRuns } from "./jobs.js";
 import { emit, type CronServiceState } from "./state.js";
 
@@ -171,6 +175,12 @@ export async function ensureLoaded(
   const jobs: CronJob[] = [];
   const durableNextRunAtMsByJobId = new Map<string, number | undefined>();
   const quarantinedConfigJobs: QuarantinedCronConfigJob[] = [...loaded.invalidConfigRows];
+  const invalidPersistedJobWarnings: Array<{
+    index: number;
+    raw: Record<string, unknown>;
+    reason: string;
+  }> = [];
+  const invalidSessionTargetWarnings: Array<string | undefined> = [];
   for (const [index, raw] of loadedJobs.entries()) {
     const rawConfigJob = loaded.configJobs[index] ?? structuredClone(raw);
     const sourceIndex = loaded.configJobIndexes[index] ?? index;
@@ -186,10 +196,7 @@ export async function ensureLoaded(
         throw error;
       }
       normalized = null;
-      state.deps.log.warn(
-        { storePath: state.deps.storePath, jobId: typeof raw.id === "string" ? raw.id : undefined },
-        "cron: job has invalid persisted sessionTarget; run openclaw doctor --fix to repair",
-      );
+      invalidSessionTargetWarnings.push(typeof raw.id === "string" ? raw.id : undefined);
     }
     const hydratedRaw = normalized ?? raw;
     const invalidReason = getInvalidPersistedCronJobReason(hydratedRaw);
@@ -213,7 +220,11 @@ export async function ensureLoaded(
         quarantineEntry.scheduleIdentity = runtimeEntry.scheduleIdentity;
       }
       quarantinedConfigJobs.push(quarantineEntry);
-      warnInvalidPersistedCronJob({ state, raw, index: sourceIndex, reason: invalidReason });
+      invalidPersistedJobWarnings.push({
+        index: sourceIndex,
+        raw,
+        reason: invalidReason,
+      });
       continue;
     }
     // Validated above, so the raw record is now a trusted CronJob.
@@ -223,6 +234,22 @@ export async function ensureLoaded(
     // mutates the runtime view. A later save can then publish that transition.
     durableNextRunAtMsByJobId.set(hydrated.id, hydrated.state.nextRunAtMs);
     invalidateStaleNextRunOnScheduleChange({ previousJobsById, hydrated });
+  }
+  if (quarantinedConfigJobs.length > 0) {
+    // Quarantine sanitization changes durable cron topology. During an evidence
+    // campaign, reject it before publishing an in-memory view, writing a
+    // quarantine artifact, or swallowing the guard error in the persistence
+    // warning path below.
+    assertCronDefinitionMutationAllowed();
+  }
+  for (const warning of invalidPersistedJobWarnings) {
+    warnInvalidPersistedCronJob({ state, ...warning });
+  }
+  for (const jobId of invalidSessionTargetWarnings) {
+    state.deps.log.warn(
+      { storePath: state.deps.storePath, jobId },
+      "cron: job has invalid persisted sessionTarget; run openclaw doctor --fix to repair",
+    );
   }
   state.store = {
     version: 1,
@@ -317,16 +344,18 @@ export async function persistOrRestore(
   snapshot: CronRollbackSnapshot,
   opts: {
     postPersistAutoDisableNotifications?: Array<() => void>;
+    stateOnly?: boolean;
     suppressScheduledJobId?: string;
   } = {},
 ) {
   try {
-    const persisted = await persist(
-      state,
-      opts.suppressScheduledJobId === undefined
-        ? undefined
-        : { suppressScheduledJobId: opts.suppressScheduledJobId },
-    );
+    assertCronDefinitionSnapshotMutationAllowed(snapshot.store, state.store);
+    const persisted = await persist(state, {
+      ...(opts.stateOnly === true ? { stateOnly: true } : {}),
+      ...(opts.suppressScheduledJobId === undefined
+        ? {}
+        : { suppressScheduledJobId: opts.suppressScheduledJobId }),
+    });
     if (!persisted) {
       throw new Error("cron: durable store write did not complete");
     }

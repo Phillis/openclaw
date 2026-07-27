@@ -32,6 +32,7 @@ import type {
   CronPayload,
   CronRunErrorClassification,
 } from "../types.js";
+import { assertCronDefinitionMutationAllowed } from "./definition-mutation-guard.js";
 import { normalizeCronRunErrorText } from "./execution-errors.js";
 import { failureNotificationDeliveryFromJobState } from "./failure-alerts.js";
 import {
@@ -158,11 +159,12 @@ async function ensureLoadedForRead(state: CronServiceState) {
   if (!state.store) {
     return;
   }
+  const rollbackSnapshot = snapshotStoreForRollback(state);
   // Use the maintenance-only version so that read-only operations never
   // advance a past-due nextRunAtMs without executing the job (#16156).
   const changed = recomputeNextRunsForMaintenance(state);
   if (changed) {
-    await persist(state);
+    await persistOrRestore(state, rollbackSnapshot);
   }
 }
 
@@ -183,6 +185,7 @@ export async function start(state: CronServiceState) {
     if (state.stopped) {
       return;
     }
+    const startupRollbackSnapshot = snapshotStoreForRollback(state);
     const jobs = state.store?.jobs ?? [];
     for (const job of jobs) {
       job.state ??= {};
@@ -234,7 +237,11 @@ export async function start(state: CronServiceState) {
       state.store.jobs = jobs.filter((job) => !completedJobIdsToDelete.has(job.id));
     }
     if (repairedAnyStartupRun || jobs.length > 0) {
-      await persist(state, repairedAnyStartupRun ? undefined : { stateOnly: true });
+      if (repairedAnyStartupRun) {
+        await persistOrRestore(state, startupRollbackSnapshot);
+      } else {
+        await persist(state, { stateOnly: true });
+      }
     }
   });
 
@@ -254,9 +261,10 @@ export async function start(state: CronServiceState) {
     if (state.stopped) {
       return;
     }
+    const recomputeRollbackSnapshot = snapshotStoreForRollback(state);
     const changed = recomputeNextRunsForMaintenance(state, { recomputeExpired: true });
     if (changed) {
-      await persist(state);
+      await persistOrRestore(state, recomputeRollbackSnapshot);
     }
     for (const interrupted of interruptedRuns) {
       const job = state.store?.jobs.find((entry) => entry.id === interrupted.jobId);
@@ -728,6 +736,7 @@ function declarativeFields(job: CronJob, includeEnabled: boolean) {
 export async function add(state: CronServiceState, input: CronJobCreate, opts?: CronAddOptions) {
   return await locked(state, async () => {
     warnIfDisabled(state, "add");
+    assertCronDefinitionMutationAllowed();
     // Heartbeat monitors are gateway-converged system jobs; without this
     // boundary any internal caller could upsert the declaration key and
     // hijack the monitor despite the transport schemas excluding the kind.
@@ -845,6 +854,7 @@ async function updateLoadedJob(params: {
 }) {
   const { state, id, patch, precondition } = params;
   warnIfDisabled(state, "update");
+  assertCronDefinitionMutationAllowed();
   // Mirrors the add-time boundary: no caller may patch a job into (or edit)
   // the system-owned heartbeat payload; the gateway converges via add only.
   if (patch.payload?.kind === "heartbeat") {
@@ -914,6 +924,7 @@ export async function remove(
 ) {
   return await locked(state, async () => {
     warnIfDisabled(state, "remove");
+    assertCronDefinitionMutationAllowed();
     await ensureLoaded(state, { skipRecompute: true });
     const before = state.store?.jobs.length ?? 0;
     if (!state.store) {
@@ -957,6 +968,7 @@ export async function removeAgentJobsTransactional<T>(
 ): Promise<T> {
   return await locked(state, async () => {
     warnIfDisabled(state, "remove agent jobs");
+    assertCronDefinitionMutationAllowed();
     await ensureLoaded(state, { skipRecompute: true });
     const id = normalizeOptionalAgentId(agentId);
     if (!id || !state.store) {
