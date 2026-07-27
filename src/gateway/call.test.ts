@@ -565,6 +565,111 @@ describe("callGateway url resolution", () => {
     expect(lastClientOptions?.deviceIdentity).toBeNull();
   });
 
+  it("does not attach paired identity to a caller-selected CLI URL when the explicit credential differs from ambient auth mode", async () => {
+    await callGateway({
+      config: {
+        gateway: {
+          mode: "local",
+          bind: "loopback",
+          auth: {
+            mode: "password",
+            password: "ambient-password",
+          },
+        },
+      },
+      method: "health",
+      url: "ws://127.0.0.1:18800",
+      token: "explicit-token",
+      clientName: GATEWAY_CLIENT_NAMES.CLI,
+      mode: GATEWAY_CLIENT_MODES.CLI,
+    });
+
+    expect(lastClientOptions?.url).toBe("ws://127.0.0.1:18800");
+    expect(lastClientOptions?.token).toBe("explicit-token");
+    expect(lastClientOptions?.password).toBeUndefined();
+    expect(lastClientOptions?.deviceIdentity).toBeNull();
+    expect(loadDeviceAuthTokenMock).not.toHaveBeenCalled();
+  });
+
+  it("also omits paired identity for explicit password against ambient token mode", async () => {
+    await callGateway({
+      config: {
+        gateway: {
+          mode: "local",
+          bind: "loopback",
+          auth: {
+            mode: "token",
+            token: "ambient-token",
+          },
+        },
+      },
+      method: "health",
+      url: "ws://127.0.0.1:18800",
+      password: "explicit-password",
+      clientName: GATEWAY_CLIENT_NAMES.CLI,
+      mode: GATEWAY_CLIENT_MODES.CLI,
+    });
+
+    expect(lastClientOptions?.url).toBe("ws://127.0.0.1:18800");
+    expect(lastClientOptions?.token).toBeUndefined();
+    expect(lastClientOptions?.password).toBe("explicit-password");
+    expect(lastClientOptions?.deviceIdentity).toBeNull();
+    expect(loadDeviceAuthTokenMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves a deliberately supplied identity for a programmatic URL override", async () => {
+    await callGateway({
+      config: {
+        gateway: {
+          mode: "local",
+          bind: "loopback",
+          auth: {
+            mode: "password",
+            password: "ambient-password",
+          },
+        },
+      },
+      method: "health",
+      url: "ws://127.0.0.1:18800",
+      token: "explicit-token",
+      deviceIdentity: deviceIdentityState.value,
+    });
+
+    expect(lastClientOptions?.url).toBe("ws://127.0.0.1:18800");
+    expect(lastClientOptions?.clientName).toBe(GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT);
+    expect(lastClientOptions?.mode).toBe(GATEWAY_CLIENT_MODES.BACKEND);
+    expect(lastClientOptions?.token).toBe("explicit-token");
+    expect(lastClientOptions?.password).toBeUndefined();
+    expect(lastClientOptions?.deviceIdentity).toEqual(deviceIdentityState.value);
+    expect(loadDeviceAuthTokenMock).not.toHaveBeenCalled();
+  });
+
+  it("omits cached identity when a caller-selected URL reaches the backend call shape", async () => {
+    await callGateway({
+      config: {
+        gateway: {
+          mode: "local",
+          bind: "loopback",
+          auth: {
+            mode: "password",
+            password: "ambient-password",
+          },
+        },
+      },
+      method: "health",
+      url: "ws://127.0.0.1:18800",
+      token: "explicit-token",
+    });
+
+    expect(lastClientOptions?.url).toBe("ws://127.0.0.1:18800");
+    expect(lastClientOptions?.clientName).toBe(GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT);
+    expect(lastClientOptions?.mode).toBe(GATEWAY_CLIENT_MODES.BACKEND);
+    expect(lastClientOptions?.token).toBe("explicit-token");
+    expect(lastClientOptions?.password).toBeUndefined();
+    expect(lastClientOptions?.deviceIdentity).toBeNull();
+    expect(loadDeviceAuthTokenMock).not.toHaveBeenCalled();
+  });
+
   it("keeps CLI device identity when an ambient token is inactive under auth mode none", async () => {
     getRuntimeConfig.mockReturnValue({
       gateway: { mode: "local", bind: "loopback", auth: { mode: "none" } },
@@ -662,6 +767,21 @@ describe("callGateway url resolution", () => {
 
     expect(lastClientOptions?.url).toBe("ws://127.0.0.1:19082");
     expect(lastClientOptions?.token).toBe("explicit-token");
+  });
+
+  it("preserves an explicitly supplied device identity on the fixed local-port path", async () => {
+    setLocalLoopbackGatewayConfig();
+
+    await callGateway({
+      method: "health",
+      token: "explicit-token",
+      localPortOverride: 19082,
+      deviceIdentity: deviceIdentityState.value,
+    });
+
+    expect(lastClientOptions?.url).toBe("ws://127.0.0.1:19082");
+    expect(lastClientOptions?.token).toBe("explicit-token");
+    expect(lastClientOptions?.deviceIdentity).toEqual(deviceIdentityState.value);
   });
 
   it("uses env URL override credentials without resolving local password SecretRefs", async () => {

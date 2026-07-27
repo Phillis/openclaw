@@ -487,6 +487,7 @@ function isLoopbackGatewayUrl(rawUrl: string): boolean {
 function shouldOmitDeviceIdentityForGatewayCall(params: {
   opts: CallGatewayBaseOptions;
   url: string;
+  urlOverrideSource?: "cli" | "env";
   authMode: ReturnType<typeof resolveGatewayAuth>["mode"];
   token?: string;
   password?: string;
@@ -510,7 +511,12 @@ function shouldOmitDeviceIdentityForGatewayCall(params: {
     clientName === GATEWAY_CLIENT_NAMES.CLI &&
     hasSharedSecretAuth &&
     isLoopback;
-  return isLocalBackendSharedAuth || isLocalCliSharedAuth;
+  // A caller-selected CLI URL is an explicit credential boundary.
+  // Auto-attaching the local paired identity would let a token/auth-mode
+  // mismatch at a trusted endpoint retry with the cached paired-device token.
+  const isCallerSelectedUrlSharedAuth =
+    params.urlOverrideSource === "cli" && Boolean(params.token || params.password);
+  return isLocalBackendSharedAuth || isLocalCliSharedAuth || isCallerSelectedUrlSharedAuth;
 }
 
 function resolveDeviceIdentityForGatewayCall(): DeviceIdentity | null {
@@ -1173,6 +1179,7 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
   const omitDeviceIdentity = shouldOmitDeviceIdentityForGatewayCall({
     opts,
     url,
+    urlOverrideSource: context.urlOverrideSource,
     authMode,
     token,
     password,

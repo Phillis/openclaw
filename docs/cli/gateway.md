@@ -479,9 +479,10 @@ Gateway TLS is enabled), ignores `OPENCLAW_GATEWAY_URL`, and cannot be combined
 with `--url`.
 
 <Warning>
-An explicit `--url` requires an explicit `--token` or `--password` on the same
-command. OpenClaw does not reuse configured credentials or paired-device
-authentication for a caller-selected URL.
+For `openclaw gateway call`, an explicit `--url` requires an explicit `--token`
+or `--password` on the same command. That call omits the local device identity
+and does not reuse configured credentials or retry with cached paired-device
+authentication for the caller-selected URL.
 </Warning>
 
 ## Manage the Gateway service
