@@ -838,7 +838,7 @@ Authenticated operators with `operator.read` can verify that one explicit Slack 
 belongs to the expected workspace identity and can read one exact conversation:
 
 ```bash
-openclaw gateway call slack.access.verify --timeout 30000 --params '{
+openclaw gateway call slack.access.verify --operator-read-only --timeout 30000 --params '{
   "contractVersion": "openclaw-slack-access-proof/v1",
   "accountId": "ops",
   "credentialKind": "bot",
@@ -848,8 +848,12 @@ openclaw gateway call slack.access.verify --timeout 30000 --params '{
   "channelId": "C0123456789",
   "expectedApiUrl": "https://slack.com/api/",
   "totalTimeoutMs": 25000
-}'
+}' --json
 ```
+
+The `--operator-read-only` flag constrains this active Gateway session to exactly
+`operator.read`. It does not turn the shared secret, paired-device token, or any other
+reusable credential into a read-only credential.
 
 The verifier uses one zero-retry Slack client for `auth.test`, `conversations.info`,
 and `conversations.history` with `limit: 1`. The optional `totalTimeoutMs` is a

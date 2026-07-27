@@ -214,6 +214,24 @@ describe("gateway-cli coverage", () => {
     expect(firstMockArg(callGateway)).not.toHaveProperty("scopes");
   });
 
+  it("keeps the published Slack verifier command on the explicit read-only session path", () => {
+    const slackDocs = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../../docs/channels/slack.md"),
+      "utf8",
+    );
+    const section = slackDocs.match(
+      /## Read-only account and channel access proof([\s\S]*?)(?=\n## |\s*$)/u,
+    )?.[1];
+    expect(section).toBeDefined();
+    const invocation = section?.match(/```bash\n([\s\S]*?)\n```/u)?.[1];
+    expect(invocation).toMatch(
+      /^openclaw gateway call slack\.access\.verify --operator-read-only\b/u,
+    );
+    expect(invocation).toContain(" --json");
+    expect(section).toContain("constrains this active Gateway session");
+    expect(section).toContain("does not turn the shared secret");
+  });
+
   it.each([
     ["a value-bearing flag", "--operator-read-only=operator.write"],
     ["a trailing scope argument", "--operator-read-only operator.write"],
