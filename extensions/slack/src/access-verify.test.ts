@@ -925,11 +925,13 @@ describe("verifySlackAccess", () => {
 
   it("rejects a successful proof completed after the deadline before the timer callback runs", async () => {
     vi.useFakeTimers();
-    const performanceNow = vi
-      .spyOn(performance, "now")
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(1_000)
-      .mockReturnValue(1_006);
+    let monotonicRead = 0;
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => {
+      monotonicRead += 1;
+      // Start, timer setup, auth, and channel-info complete in budget.
+      // The history provider await is the first overdue point.
+      return monotonicRead <= 7 ? 1_000 : 1_006;
+    });
 
     try {
       const { verification, client } = await verify({
@@ -947,6 +949,93 @@ describe("verifySlackAccess", () => {
       expect(client.auth.test).toHaveBeenCalledOnce();
       expect(client.conversations.info).toHaveBeenCalledOnce();
       expect(client.conversations.history).toHaveBeenCalledOnce();
+    } finally {
+      performanceNow.mockRestore();
+    }
+  });
+
+  it("rejects a successful provider result that waits past the deadline before final admission", async () => {
+    vi.useFakeTimers();
+    let monotonicRead = 0;
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => {
+      monotonicRead += 1;
+      // All provider awaits and the operation's completion check finish in
+      // budget. The final Promise.race continuation observes the delay.
+      return monotonicRead <= 9 ? 1_000 : 1_022;
+    });
+
+    try {
+      const { verification, client } = await verify({
+        request: botRequest({ totalTimeoutMs: 5 }),
+      });
+
+      expect(verification).toEqual({
+        ok: true,
+        result: {
+          contractVersion: SLACK_ACCESS_PROOF_CONTRACT_VERSION,
+          ok: false,
+          failure: { stage: "deadline", code: "deadline_exceeded" },
+        },
+      });
+      expect(client.auth.test).toHaveBeenCalledOnce();
+      expect(client.conversations.info).toHaveBeenCalledOnce();
+      expect(client.conversations.history).toHaveBeenCalledOnce();
+    } finally {
+      performanceNow.mockRestore();
+    }
+  });
+
+  it("does not start channel probes after auth consumes the whole deadline", async () => {
+    vi.useFakeTimers();
+    let monotonicRead = 0;
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => {
+      monotonicRead += 1;
+      return monotonicRead <= 3 ? 1_000 : 1_006;
+    });
+
+    try {
+      const { verification, client } = await verify({
+        request: botRequest({ totalTimeoutMs: 5 }),
+      });
+
+      expect(verification).toMatchObject({
+        ok: true,
+        result: {
+          ok: false,
+          failure: { stage: "deadline", code: "deadline_exceeded" },
+        },
+      });
+      expect(client.auth.test).toHaveBeenCalledOnce();
+      expect(client.conversations.info).not.toHaveBeenCalled();
+      expect(client.conversations.history).not.toHaveBeenCalled();
+    } finally {
+      performanceNow.mockRestore();
+    }
+  });
+
+  it("does not start history after channel info consumes the whole deadline", async () => {
+    vi.useFakeTimers();
+    let monotonicRead = 0;
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => {
+      monotonicRead += 1;
+      return monotonicRead <= 5 ? 1_000 : 1_006;
+    });
+
+    try {
+      const { verification, client } = await verify({
+        request: botRequest({ totalTimeoutMs: 5 }),
+      });
+
+      expect(verification).toMatchObject({
+        ok: true,
+        result: {
+          ok: false,
+          failure: { stage: "deadline", code: "deadline_exceeded" },
+        },
+      });
+      expect(client.auth.test).toHaveBeenCalledOnce();
+      expect(client.conversations.info).toHaveBeenCalledOnce();
+      expect(client.conversations.history).not.toHaveBeenCalled();
     } finally {
       performanceNow.mockRestore();
     }

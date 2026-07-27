@@ -319,31 +319,42 @@ function requiredSlackId(value: unknown, pattern: RegExp): string | undefined {
   return pattern.test(trimmed) ? trimmed : undefined;
 }
 
+function runtimeRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
 function validateAuthIdentity(
   auth: AuthTestResponse,
   credentialKind: SlackCredentialKind,
 ):
   | { ok: true; userId: string; botId: string | null; teamId: string }
   | { ok: false; failure: SlackAccessFailure } {
-  if (auth.ok !== true) {
+  const response = runtimeRecord(auth);
+  if (!response || response.ok !== true) {
     return { ok: false, failure: { stage: "auth", code: "provider_rejected" } };
   }
-  if (auth.is_enterprise_install !== undefined && typeof auth.is_enterprise_install !== "boolean") {
+  if (
+    response.is_enterprise_install !== undefined &&
+    typeof response.is_enterprise_install !== "boolean"
+  ) {
     return { ok: false, failure: { stage: "auth", code: "malformed_response" } };
   }
-  if (auth.is_enterprise_install === true) {
+  if (response.is_enterprise_install === true) {
     return { ok: false, failure: { stage: "auth", code: "unsupported_installation" } };
   }
-  const userId = requiredSlackId(auth.user_id, SLACK_USER_ID_RE);
-  const teamId = requiredSlackId(auth.team_id, SLACK_TEAM_ID_RE);
+  const userId = requiredSlackId(response.user_id, SLACK_USER_ID_RE);
+  const teamId = requiredSlackId(response.team_id, SLACK_TEAM_ID_RE);
   if (!userId || !teamId) {
     return { ok: false, failure: { stage: "auth", code: "identity_incomplete" } };
   }
-  const botId = requiredSlackId(auth.bot_id, SLACK_BOT_ID_RE);
+  const botId = requiredSlackId(response.bot_id, SLACK_BOT_ID_RE);
   if (credentialKind === "bot" && !botId) {
     return { ok: false, failure: { stage: "auth", code: "identity_kind_mismatch" } };
   }
-  if (credentialKind === "user" && auth.bot_id !== undefined && auth.bot_id !== null) {
+  if (credentialKind === "user" && response.bot_id !== undefined && response.bot_id !== null) {
     return { ok: false, failure: { stage: "auth", code: "identity_kind_mismatch" } };
   }
   return { ok: true, userId, botId: botId ?? null, teamId };
@@ -353,10 +364,14 @@ function validateChannelInfo(
   response: ConversationsInfoResponse,
   requestedChannelId: string,
 ): SlackAccessFailure | undefined {
-  if (response.ok !== true) {
+  const runtimeResponse = runtimeRecord(response);
+  if (!runtimeResponse || runtimeResponse.ok !== true) {
     return { stage: "info", code: "provider_rejected" };
   }
-  const channelId = requiredSlackId(response.channel?.id, SLACK_CHANNEL_ID_RE);
+  const channelId = requiredSlackId(
+    runtimeRecord(runtimeResponse.channel)?.id,
+    SLACK_CHANNEL_ID_RE,
+  );
   if (!channelId) {
     return { stage: "info", code: "malformed_response" };
   }
@@ -369,10 +384,14 @@ function validateChannelInfo(
 function validateChannelHistory(
   response: ConversationsHistoryResponse,
 ): SlackAccessFailure | undefined {
-  if (response.ok !== true) {
+  const runtimeResponse = runtimeRecord(response);
+  if (!runtimeResponse || runtimeResponse.ok !== true) {
     return { stage: "history", code: "provider_rejected" };
   }
-  if (!Array.isArray(response.messages) || response.messages.length > SLACK_ACCESS_PROOF_LIMIT) {
+  if (
+    !Array.isArray(runtimeResponse.messages) ||
+    runtimeResponse.messages.length > SLACK_ACCESS_PROOF_LIMIT
+  ) {
     return { stage: "history", code: "malformed_response" };
   }
   return undefined;
@@ -382,12 +401,21 @@ async function runSlackAccessVerification(params: {
   client: SlackAccessClient;
   request: SlackAccessVerifyParams;
   credentialSource: SlackCredentialSource;
+  deadlineExceeded: () => boolean;
 }): Promise<SlackAccessVerifyResult> {
+  if (params.deadlineExceeded()) {
+    return failure("deadline", "deadline_exceeded");
+  }
   let auth: AuthTestResponse;
   try {
     auth = await params.client.auth.test();
   } catch {
-    return failure("auth", "provider_rejected");
+    return params.deadlineExceeded()
+      ? failure("deadline", "deadline_exceeded")
+      : failure("auth", "provider_rejected");
+  }
+  if (params.deadlineExceeded()) {
+    return failure("deadline", "deadline_exceeded");
   }
   const identity = validateAuthIdentity(auth, params.request.credentialKind);
   if (!identity.ok) {
@@ -396,6 +424,9 @@ async function runSlackAccessVerification(params: {
       ok: false,
       failure: identity.failure,
     });
+  }
+  if (params.deadlineExceeded()) {
+    return failure("deadline", "deadline_exceeded");
   }
   if (
     identity.userId !== params.request.expectedUserId ||
@@ -411,7 +442,12 @@ async function runSlackAccessVerification(params: {
       channel: params.request.channelId,
     });
   } catch {
-    return failure("info", "provider_rejected");
+    return params.deadlineExceeded()
+      ? failure("deadline", "deadline_exceeded")
+      : failure("info", "provider_rejected");
+  }
+  if (params.deadlineExceeded()) {
+    return failure("deadline", "deadline_exceeded");
   }
   const infoFailure = validateChannelInfo(info, params.request.channelId);
   if (infoFailure) {
@@ -421,6 +457,9 @@ async function runSlackAccessVerification(params: {
       failure: infoFailure,
     });
   }
+  if (params.deadlineExceeded()) {
+    return failure("deadline", "deadline_exceeded");
+  }
 
   let history: ConversationsHistoryResponse;
   try {
@@ -429,7 +468,12 @@ async function runSlackAccessVerification(params: {
       limit: SLACK_ACCESS_PROOF_LIMIT,
     });
   } catch {
-    return failure("history", "provider_rejected");
+    return params.deadlineExceeded()
+      ? failure("deadline", "deadline_exceeded")
+      : failure("history", "provider_rejected");
+  }
+  if (params.deadlineExceeded()) {
+    return failure("deadline", "deadline_exceeded");
   }
   const historyFailure = validateChannelHistory(history);
   if (historyFailure) {
@@ -533,6 +577,7 @@ export async function verifySlackAccess(params: {
     return { ok: true, result: failure("deadline", "deadline_exceeded") };
   }
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadlineExceeded = () => performance.now() - deadlineStartedAtMs >= totalTimeoutMs;
   const deadline = new Promise<SlackAccessVerifyResult>((resolve) => {
     timeout = setTimeout(() => {
       abortController.abort();
@@ -550,19 +595,31 @@ export async function verifySlackAccess(params: {
         client,
         request: parsed.data,
         credentialSource: credential.source,
+        deadlineExceeded,
       }),
     )
     .then((result) => {
-      if (performance.now() - deadlineStartedAtMs >= totalTimeoutMs) {
+      if (deadlineExceeded()) {
         abortController.abort();
         return failure("deadline", "deadline_exceeded");
       }
       return result;
     });
   try {
+    const result = await Promise.race([operation, deadline]);
+    // Promise resolution queues a continuation. A previously queued microtask
+    // can monopolize the event loop after provider completion but before this
+    // final admission point, so recheck the original monotonic deadline here.
+    if (deadlineExceeded()) {
+      abortController.abort();
+      return {
+        ok: true,
+        result: failure("deadline", "deadline_exceeded"),
+      };
+    }
     return {
       ok: true,
-      result: await Promise.race([operation, deadline]),
+      result,
     };
   } finally {
     if (timeout !== undefined) {
