@@ -4,6 +4,7 @@ import type { Command } from "commander";
 import { formatDocsLink } from "../../../packages/terminal-core/src/links.js";
 import { colorize, isRich, theme } from "../../../packages/terminal-core/src/theme.js";
 import type { HealthSummary } from "../../commands/health.js";
+import { READ_SCOPE } from "../../gateway/operator-scopes.js";
 import { parseStrictPositiveInteger } from "../../infra/parse-finite-number.js";
 import type { CostUsageSummary } from "../../infra/session-cost-usage.js";
 import type {
@@ -590,10 +591,22 @@ export function registerGatewayCli(program: Command) {
       .description("Call a Gateway method")
       .argument("<method>", "Method name (health/status/system-presence/cron.*)")
       .option("--params <json>", "JSON object string for params", "{}")
+      .option(
+        "--operator-read-only",
+        "Request exactly the operator.read scope instead of the CLI default scope set",
+        false,
+      )
       .action(async (method, opts, command) => {
         await runGatewayCommand(
           async () => {
-            const rpcOpts = resolveGatewayRpcOptions(opts, command);
+            const resolvedRpcOpts = resolveGatewayRpcOptions(opts, command);
+            const rpcOpts: GatewayRpcOpts =
+              opts.operatorReadOnly === true
+                ? {
+                    ...resolvedRpcOpts,
+                    scopes: [READ_SCOPE],
+                  }
+                : resolvedRpcOpts;
             const params = parseGatewayCallParams(String(opts.params ?? "{}"));
             const result = await callGatewayCli(method, rpcOpts, params);
             if (rpcOpts.json) {

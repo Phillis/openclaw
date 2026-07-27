@@ -160,6 +160,17 @@ describe("gateway register option collisions", () => {
       },
     },
     {
+      name: "forwards the explicit read-only scope without inheriting broader parent options",
+      argv: ["gateway", "call", "slack.access.verify", "--operator-read-only", "--json"],
+      assert: () => {
+        expect(callGatewayCli).toHaveBeenCalledTimes(1);
+        const [method, opts, params] = firstGatewayCall();
+        expect(method).toBe("slack.access.verify");
+        expect((opts as { scopes?: string[] } | undefined)?.scopes).toEqual(["operator.read"]);
+        expect(params).toEqual({});
+      },
+    },
+    {
       name: "forwards --token to gateway probe when parent and child option names collide",
       argv: ["gateway", "probe", "--token", "tok_probe", "--json"],
       assert: () => {

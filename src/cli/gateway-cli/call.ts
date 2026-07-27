@@ -5,6 +5,7 @@ import {
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGateway } from "../../gateway/call.js";
+import type { OperatorScope } from "../../gateway/operator-scopes.js";
 import { parseTimeoutMsWithFallback } from "../parse-timeout.js";
 import { withProgress } from "../progress.js";
 
@@ -17,6 +18,7 @@ export type GatewayRpcOpts = {
   expectFinal?: boolean;
   json?: boolean;
   localPortOverride?: number;
+  scopes?: OperatorScope[];
 };
 
 const DEFAULT_GATEWAY_RPC_TIMEOUT_MS = 10_000;
@@ -45,6 +47,7 @@ export const callGatewayCli = async (method: string, opts: GatewayRpcOpts, param
         expectFinal: Boolean(opts.expectFinal),
         timeoutMs,
         localPortOverride: opts.localPortOverride,
+        ...(Array.isArray(opts.scopes) ? { scopes: opts.scopes } : {}),
         clientName: GATEWAY_CLIENT_NAMES.CLI,
         mode: GATEWAY_CLIENT_MODES.CLI,
       }),
