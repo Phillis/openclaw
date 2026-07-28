@@ -13,6 +13,7 @@ const coordinator = vi.hoisted(() => ({
 vi.mock("../../infra/gateway-suspend-coordinator.js", () => ({
   prepareGatewaySuspend: coordinator.prepare,
   getGatewaySuspendStatus: coordinator.status,
+  resolveGatewaySuspendHandoffPath: () => "/state/gateway-suspend-handoff.json",
   resumeGatewaySuspend: coordinator.resume,
 }));
 
@@ -45,9 +46,13 @@ beforeEach(() => {
 });
 
 describe("gateway suspend handlers", () => {
+  const gatewayInstanceId = "gateway-instance-1";
+
   it("validates the closed prepare params shape", async () => {
     const { respond } = await invoke("gateway.suspend.prepare", {
       requestId: "request-1",
+      gatewayPid: process.pid,
+      launchdRunCount: 1,
       extra: true,
     });
 
@@ -67,11 +72,15 @@ describe("gateway suspend handlers", () => {
     });
     const { respond, pauseScheduling, resumeScheduling } = await invoke("gateway.suspend.prepare", {
       requestId: "request-1",
+      suspensionId: "suspension-1",
+      gatewayPid: process.pid,
+      launchdRunCount: 1,
     });
 
     expect(coordinator.prepare).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: "request-1",
+        suspensionId: "suspension-1",
         pauseScheduling: expect.any(Function),
         resumeScheduling: expect.any(Function),
       }),
@@ -89,7 +98,11 @@ describe("gateway suspend handlers", () => {
 
   it("maps a competing prepared lease to retryable unavailable", async () => {
     coordinator.prepare.mockReturnValueOnce({ status: "conflict", expiresAtMs: Date.now() + 5000 });
-    const { respond } = await invoke("gateway.suspend.prepare", { requestId: "request-2" });
+    const { respond } = await invoke("gateway.suspend.prepare", {
+      requestId: "request-2",
+      gatewayPid: process.pid,
+      launchdRunCount: 1,
+    });
 
     expect(respond).toHaveBeenCalledWith(
       false,
@@ -111,8 +124,15 @@ describe("gateway suspend handlers", () => {
     coordinator.prepare.mockReturnValueOnce(recovering);
     coordinator.status.mockReturnValueOnce(recovering);
 
-    const prepared = await invoke("gateway.suspend.prepare", { requestId: "request-recovery" });
-    const status = await invoke("gateway.suspend.status", { suspensionId: "stale-id" });
+    const prepared = await invoke("gateway.suspend.prepare", {
+      requestId: "request-recovery",
+      gatewayPid: process.pid,
+      launchdRunCount: 1,
+    });
+    const status = await invoke("gateway.suspend.status", {
+      suspensionId: "stale-id",
+      gatewayInstanceId,
+    });
 
     for (const respond of [prepared.respond, status.respond]) {
       expect(respond).toHaveBeenCalledWith(
@@ -133,6 +153,8 @@ describe("gateway suspend handlers", () => {
     coordinator.resume.mockReturnValueOnce({ ok: false, reason: "suspension-mismatch" });
     const mismatch = await invoke("gateway.suspend.resume", {
       suspensionId: "suspension-wrong",
+      gatewayInstanceId,
+      resumeBeforeMs: Date.now() + 30_000,
     });
     expect(mismatch.respond).toHaveBeenCalledWith(false, undefined, {
       code: "INVALID_REQUEST",
@@ -143,12 +165,18 @@ describe("gateway suspend handlers", () => {
       ok: true,
       status: "running",
       resumed: false,
+      gatewayInstanceId,
     });
-    const resumed = await invoke("gateway.suspend.resume", { suspensionId: "suspension-1" });
+    const resumed = await invoke("gateway.suspend.resume", {
+      suspensionId: "suspension-1",
+      gatewayInstanceId,
+      resumeBeforeMs: Date.now() + 30_000,
+    });
     expect(resumed.respond).toHaveBeenCalledWith(true, {
       ok: true,
       status: "running",
       resumed: false,
+      gatewayInstanceId,
     });
   });
 
@@ -161,6 +189,8 @@ describe("gateway suspend handlers", () => {
 
     const { respond } = await invoke("gateway.suspend.resume", {
       suspensionId: "suspension-1",
+      gatewayInstanceId,
+      resumeBeforeMs: Date.now() + 30_000,
     });
 
     expect(respond).toHaveBeenCalledWith(
@@ -174,5 +204,28 @@ describe("gateway suspend handlers", () => {
         details: { reason: "scheduler-resume-failed" },
       }),
     );
+  });
+
+  it("maps process replacement and expired resume authority to fail-closed errors", async () => {
+    coordinator.status.mockReturnValueOnce({ status: "process-mismatch" });
+    const status = await invoke("gateway.suspend.status", {
+      suspensionId: "suspension-1",
+      gatewayInstanceId,
+    });
+    expect(status.respond).toHaveBeenCalledWith(false, undefined, {
+      code: "INVALID_REQUEST",
+      message: "gateway process incarnation does not match",
+    });
+
+    coordinator.resume.mockReturnValueOnce({ ok: false, reason: "resume-authority-expired" });
+    const resume = await invoke("gateway.suspend.resume", {
+      suspensionId: "suspension-1",
+      gatewayInstanceId,
+      resumeBeforeMs: Date.now() + 30_000,
+    });
+    expect(resume.respond).toHaveBeenCalledWith(false, undefined, {
+      code: "INVALID_REQUEST",
+      message: "gateway resume authority expired",
+    });
   });
 });

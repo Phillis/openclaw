@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handoff-v2-host-rollback-evidence/v1",
+  "title": "Handoff v2 non-executable rollback evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "planId", "planSha256", "createdAt", "authority", "policy", "phase", "atJobSafety", "serviceRecovery", "predecessorPlistBackup", "predecessor", "reason"],
+  "properties": {
+    "schema": { "const": "handoff-v2-host-rollback-evidence/v1" },
+    "planId": { "type": "string", "minLength": 1 },
+    "planSha256": { "$ref": "#/$defs/sha256" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "grants", "reusable"],
+      "properties": { "kind": { "const": "none" }, "grants": { "type": "array", "maxItems": 0 }, "reusable": { "const": false } }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["automaticExecution", "automaticRestart", "requiredDisposition"],
+      "properties": {
+        "automaticExecution": { "const": false },
+        "automaticRestart": { "const": false },
+        "requiredDisposition": { "const": "HOLD_FOR_SEPARATE_MANUAL_AUTHORIZATION" }
+      }
+    },
+    "phase": {
+      "enum": [
+        "claim",
+        "predecessor-plist-preserved",
+        "suspension-prepared",
+        "disable-requested",
+        "disabled-proven",
+        "bootout-requested",
+        "bootout-invocation-started",
+        "predecessor-stopped-proven",
+        "successor-plist-installed",
+        "enable-requested",
+        "enabled-proven",
+        "bootstrap-requested",
+        "bootstrap-returned",
+        "successor-suspension-prepared",
+        "postflight-initial-proven",
+        "stability-window-proven",
+        "successor-suspension-resume-requested",
+        "successor-suspension-resumed"
+      ]
+    },
+    "atJobSafety": {
+      "oneOf": [
+        { "$ref": "#/$defs/atJobSafety" },
+        { "type": "null" }
+      ]
+    },
+    "serviceRecovery": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["manualRollbackRequired", "serviceState", "launchdEnabled", "predecessorPidDead", "portFree", "replacementProcessAbsent", "replacementProcessProbe", "handoff", "operations"],
+          "properties": {
+            "manualRollbackRequired": { "const": true },
+            "serviceState": { "const": "unloaded" },
+            "launchdEnabled": { "const": true },
+            "predecessorPidDead": { "const": true },
+            "portFree": { "const": true },
+            "replacementProcessAbsent": { "const": true },
+            "replacementProcessProbe": { "const": "ps-axo-planned-gateway-commands-absent" },
+            "handoff": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "sha256", "expiresAtMs", "retained"],
+              "properties": {
+                "path": { "type": "string", "pattern": "^/" },
+                "sha256": { "$ref": "#/$defs/sha256" },
+                "expiresAtMs": { "type": "integer", "minimum": 1 },
+                "retained": { "const": true }
+              }
+            },
+            "operations": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["bootstrapCount", "automaticRollbackCount", "automaticSecondRestartCount"],
+              "properties": {
+                "bootstrapCount": { "const": 0 },
+                "automaticRollbackCount": { "const": 0 },
+                "automaticSecondRestartCount": { "const": 0 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "predecessorPlistBackup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "createdBeforeLifecycle", "markerBearingAtJobsMayRun"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "createdBeforeLifecycle": { "const": true },
+        "markerBearingAtJobsMayRun": { "type": "boolean" }
+      }
+    },
+    "predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "cliPath", "cliSha256", "runtimePath", "runtimeSha256", "servicePlistPath", "servicePlistSha256", "configPath", "configSha256"],
+      "properties": {
+        "commit": { "$ref": "#/$defs/gitObject" },
+        "tree": { "$ref": "#/$defs/gitObject" },
+        "cliPath": { "type": "string", "pattern": "^/" },
+        "cliSha256": { "$ref": "#/$defs/sha256" },
+        "runtimePath": { "type": "string", "pattern": "^/" },
+        "runtimeSha256": { "$ref": "#/$defs/sha256" },
+        "servicePlistPath": { "type": "string", "pattern": "^/" },
+        "servicePlistSha256": { "$ref": "#/$defs/sha256" },
+        "configPath": { "type": "string", "pattern": "^/" },
+        "configSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "reason": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "serviceRecovery": { "type": "object" } }, "required": ["serviceRecovery"] },
+      "then": { "properties": { "phase": { "const": "bootout-invocation-started" } } }
+    },
+    {
+      "if": { "properties": { "atJobSafety": { "type": "null" } }, "required": ["atJobSafety"] },
+      "then": {
+        "properties": {
+          "predecessorPlistBackup": {
+            "properties": { "markerBearingAtJobsMayRun": { "const": true } }
+          }
+        }
+      },
+      "else": {
+        "if": {
+          "properties": {
+            "atJobSafety": {
+              "properties": { "unsafeEnabledAtJobIds": { "maxItems": 0 } },
+              "required": ["unsafeEnabledAtJobIds"]
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "predecessorPlistBackup": {
+              "properties": { "markerBearingAtJobsMayRun": { "const": false } }
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "predecessorPlistBackup": {
+              "properties": { "markerBearingAtJobsMayRun": { "const": true } }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "atJobSafety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checked", "marker", "enabledAtJobCount", "unsafeEnabledAtJobIds", "disposition"],
+      "properties": {
+        "checked": { "const": true },
+        "marker": { "const": "state.startupInterruptedRunAtMs:absent" },
+        "enabledAtJobCount": { "type": "integer", "minimum": 0 },
+        "unsafeEnabledAtJobIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "disposition": {
+          "enum": [
+            "safe_or_refused_before_lifecycle",
+            "unsafe_marker_requires_manual_migration"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "unsafeEnabledAtJobIds": { "maxItems": 0 } },
+            "required": ["unsafeEnabledAtJobIds"]
+          },
+          "then": {
+            "properties": {
+              "disposition": { "const": "safe_or_refused_before_lifecycle" }
+            }
+          },
+          "else": {
+            "properties": {
+              "disposition": { "const": "unsafe_marker_requires_manual_migration" }
+            }
+          }
+        }
+      ]
+    },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+  }
+}

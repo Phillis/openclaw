@@ -1,4 +1,5 @@
 import { isNixMode } from "../config/paths.js";
+import { adoptGatewaySuspendHandoffAtStartup } from "../infra/gateway-suspend-coordinator.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
@@ -108,6 +109,9 @@ export async function startGatewayServer(
   port = 18789,
   opts: GatewayServerOptions = {},
 ): Promise<GatewayServer> {
+  adoptGatewaySuspendHandoffAtStartup({
+    warn: (message) => log.warn(message),
+  });
   let releasePostReadyWork: () => void = () => {};
   const postReadyWorkBarrier = new Promise<void>((resolve) => {
     releasePostReadyWork = resolve;
