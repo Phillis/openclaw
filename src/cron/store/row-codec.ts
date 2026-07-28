@@ -182,6 +182,36 @@ function bindCronJobRow(storeKey: string, job: CronJob, sortOrder: number): Cron
   };
 }
 
+/**
+ * Projects every definition-bearing column written by a full cron row
+ * replacement. Mutable runtime columns and the store partition key are
+ * intentionally excluded; schedule_identity and sort_order are definitions.
+ */
+export function projectCronJobDefinitionRow(row: CronJobRow): Record<string, unknown> {
+  const {
+    store_key: _storeKey,
+    updated_at: _updatedAt,
+    next_run_at_ms: _nextRunAtMs,
+    running_at_ms: _runningAtMs,
+    last_run_at_ms: _lastRunAtMs,
+    last_run_status: _lastRunStatus,
+    last_error: _lastError,
+    last_duration_ms: _lastDurationMs,
+    consecutive_errors: _consecutiveErrors,
+    consecutive_skipped: _consecutiveSkipped,
+    schedule_error_count: _scheduleErrorCount,
+    last_delivery_status: _lastDeliveryStatus,
+    last_delivery_error: _lastDeliveryError,
+    last_delivered: _lastDelivered,
+    last_failure_alert_at_ms: _lastFailureAlertAtMs,
+    job_json: _jobJson,
+    state_json: _stateJson,
+    runtime_updated_at_ms: _runtimeUpdatedAtMs,
+    ...definition
+  } = row;
+  return definition;
+}
+
 function normalizeCronJobForSqlite(job: CronStoreFile["jobs"][number]): CronJob | null {
   const raw = structuredClone(job) as unknown as Record<string, unknown>;
   const hadDeleteAfterRun = Object.hasOwn(raw, "deleteAfterRun");
@@ -209,6 +239,32 @@ function normalizeCronJobForSqlite(job: CronStoreFile["jobs"][number]): CronJob 
     updatedAtMs,
     state: isRecord(normalized.state) ? (normalized.state as CronJobState) : {},
   } as CronJob;
+}
+
+/** Projects one proposal through the exact row a full SQLite replacement writes. */
+export function projectCronJobReplacementThroughStorageCodec(
+  job: CronStoreFile["jobs"][number],
+  sortOrder = 0,
+): {
+  configJob: Record<string, unknown>;
+  definitionRow: Record<string, unknown>;
+  job: CronJob;
+} | null {
+  const normalized = normalizeCronJobForSqlite(job);
+  if (!normalized) {
+    return null;
+  }
+  const row = bindCronJobRow("config-revision", normalized, sortOrder) as CronJobRow;
+  const projected = rowToCronJob(row);
+  const configJob = JSON.parse(row.job_json) as unknown;
+  if (!projected || !isRecord(configJob) || Array.isArray(configJob)) {
+    return null;
+  }
+  return {
+    configJob,
+    definitionRow: projectCronJobDefinitionRow(row),
+    job: projected,
+  };
 }
 
 function countUnpersistableCronJobs(store: CronStoreFile): number {
@@ -318,16 +374,11 @@ function rowToCronJob(row: CronJobRow): CronJob | null {
 
 /** Projects a live job through the same normalization/codecs used by SQLite persistence. */
 export function projectCronJobThroughStorageCodec(job: CronJob): CronJob {
-  const normalized = normalizeCronJobForSqlite(job);
-  if (!normalized) {
-    throw new Error(`cannot project invalid cron job ${job.id}`);
-  }
-  const row = bindCronJobRow("config-revision", normalized, 0) as CronJobRow;
-  const projected = rowToCronJob(row);
+  const projected = projectCronJobReplacementThroughStorageCodec(job);
   if (!projected) {
     throw new Error(`cannot project cron job ${job.id} through storage codecs`);
   }
-  return projected;
+  return projected.job;
 }
 
 /** Loads cron rows in config order with deterministic fallbacks for old rows. */
@@ -379,7 +430,6 @@ export function updateCronRuntimeRows(
           ...bindStateColumns(job.state ?? {}),
           state_json: JSON.stringify(job.state ?? {}),
           runtime_updated_at_ms: job.updatedAtMs,
-          schedule_identity: tryCronScheduleIdentity(job as unknown as Record<string, unknown>),
         })
         .where("store_key", "=", storeKey)
         .where("job_id", "=", job.id),

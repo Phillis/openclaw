@@ -7,6 +7,7 @@ describe("toPublicCronJob", () => {
     const job = makeCronJob({
       state: {
         nextRunAtMs: 2_000,
+        startupInterruptedRunAtMs: 1_000,
         pacedNextRunAtMs: 2_000,
         forcePreservedNextRunAtMs: 2_000,
       },
@@ -14,9 +15,11 @@ describe("toPublicCronJob", () => {
 
     const publicJob = toPublicCronJob(job);
 
+    expect(publicJob.state.startupInterruptedRunAtMs).toBeUndefined();
     expect(publicJob.state.pacedNextRunAtMs).toBeUndefined();
     expect(publicJob.state.forcePreservedNextRunAtMs).toBeUndefined();
     expect(job.state.pacedNextRunAtMs).toBe(2_000);
+    expect(job.state.startupInterruptedRunAtMs).toBe(1_000);
     expect(job.state.forcePreservedNextRunAtMs).toBe(2_000);
   });
 

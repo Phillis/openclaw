@@ -84,6 +84,7 @@ import {
   errorBackoffMs,
   hasActiveCronRun,
   hasScheduledNextRunAtMs,
+  hasStartupInterruptedRunOutcome,
   isJobEnabled,
   nextWakeAtMs,
   recomputeNextRunsForMaintenance,
@@ -105,7 +106,12 @@ import {
   updateQueuedCronRunReservationMarker,
 } from "./run-admission.js";
 import { emit, type CronServiceState, type CronSystemEventEnqueueResult } from "./state.js";
-import { ensureLoaded, persist, persistOrRestore, snapshotStoreForRollback } from "./store.js";
+import {
+  ensureLoaded,
+  persistOrRestore,
+  persistRuntimeAfterDefinitionGuardRejection,
+  snapshotStoreForRollback,
+} from "./store.js";
 import {
   resolveMainSessionCronRunSessionKey,
   tryCreateCronTaskRun,
@@ -795,6 +801,7 @@ export function applyJobResult(
   job.state.runningAtMs = undefined;
   job.state.pacedNextRunAtMs = undefined;
   job.state.forcePreservedNextRunAtMs = undefined;
+  job.state.startupInterruptedRunAtMs = undefined;
   job.state.lastRunAtMs = result.startedAt;
   job.state.lastRunStatus = result.status;
   job.state.lastStatus = result.status;
@@ -1428,12 +1435,13 @@ async function onAdmittedTimer(state: CronServiceState) {
         // Use maintenance-only recompute to avoid advancing past-due nextRunAtMs
         // values without execution. This prevents jobs from being silently skipped
         // when the timer wakes up but findDueJobs returns empty (see #13992).
+        const recomputeRollbackSnapshot = snapshotStoreForRollback(state);
         const changed = recomputeNextRunsForMaintenance(state, {
           recomputeExpired: true,
           nowMs: dueCheckNow,
         });
         if (changed) {
-          await persist(state);
+          await persistOrRestore(state, recomputeRollbackSnapshot);
         }
         return [];
       }
@@ -1610,7 +1618,43 @@ async function onAdmittedTimer(state: CronServiceState) {
           // those jobs (advancing nextRunAtMs without execution), causing
           // daily cron schedules to jump 48 h instead of 24 h (#17852).
           recomputeNextRunsForMaintenance(state);
-          await persistOrRestore(state, rollbackSnapshot);
+          const finalizedRuntimeByJobId = new Map<
+            string,
+            { state: CronJob["state"]; updatedAtMs: number }
+          >();
+          for (const result of finalizedResults) {
+            const removedJob = removedJobs.find((entry) => entry.id === result.jobId);
+            const finalizedJob =
+              state.store?.jobs.find((entry) => entry.id === result.jobId) ?? removedJob;
+            if (finalizedJob) {
+              const finalizedState = structuredClone(finalizedJob.state);
+              if (removedJob) {
+                // The guarded definition remains enabled, so retire the consumed
+                // one-shot's runtime slot explicitly instead of leaving a
+                // past-due timestamp that would re-fire every minimum-gap tick.
+                finalizedState.nextRunAtMs = undefined;
+              }
+              finalizedRuntimeByJobId.set(result.jobId, {
+                state: finalizedState,
+                updatedAtMs: finalizedJob.updatedAtMs,
+              });
+            }
+          }
+          try {
+            await persistOrRestore(state, rollbackSnapshot);
+          } catch (error) {
+            // The evidence guard rejected only an automatic definition change
+            // (for example one-shot removal). Preserve the rejection, but first
+            // commit the completed run's runtime state so queued/running markers
+            // cannot stall or immediately replay the job.
+            await persistRuntimeAfterDefinitionGuardRejection(
+              state,
+              error,
+              finalizedRuntimeByJobId,
+            );
+            finishPersistedQuietCronTaskRuns(state, finalizedResults);
+            throw error;
+          }
           finishPersistedQuietCronTaskRuns(state, finalizedResults);
           for (const removedJob of removedJobs) {
             emit(state, { jobId: removedJob.id, action: "removed", job: removedJob });
@@ -1905,9 +1949,15 @@ function isRunnableJob(params: {
     return false;
   }
   const lastRunStatus = resolveJobLastRunStatus(job);
-  if (params.skipAtIfAlreadyRan && job.schedule.kind === "at" && lastRunStatus) {
-    // One-shot with terminal status: skip unless it has an explicit retry
-    // scheduled after the failed/skipped run (#24355, #91775).
+  const suppressTerminalOneShot =
+    params.skipAtIfAlreadyRan === true ||
+    lastRunStatus === "ok" ||
+    lastRunStatus === "skipped" ||
+    hasStartupInterruptedRunOutcome(job);
+  if (suppressTerminalOneShot && job.schedule.kind === "at" && lastRunStatus) {
+    // Startup suppresses every terminal one-shot; normal timers suppress
+    // completed/skipped and startup-interrupted outcomes. An explicit retry
+    // scheduled after the prior run remains runnable (#24355, #91775).
     const lastRun = job.state.lastRunAtMs;
     const nextRun = job.state.nextRunAtMs;
     if (isScheduledTerminalOneShotRetry(job, lastRunStatus, lastRun, nextRun)) {
@@ -2140,6 +2190,7 @@ async function planStartupCatchup(
     }
 
     const now = state.deps.nowMs();
+    const recomputeRollbackSnapshot = snapshotStoreForRollback(state);
     const deferredBackoffMissedSlot = deferPendingBackoffMissedCronSlots(state, now, {
       skipJobIds: opts?.skipJobIds,
     });
@@ -2150,7 +2201,7 @@ async function planStartupCatchup(
     });
     if (missed.length === 0) {
       if (deferredBackoffMissedSlot) {
-        await persist(state);
+        await persistOrRestore(state, recomputeRollbackSnapshot);
       }
       return { candidates: [], deferredJobs: [] };
     }
@@ -2458,7 +2509,30 @@ async function applyStartupCatchupOutcomes(
       // instead of being silently advanced. Future repair is disabled here so
       // startup overflow deferrals survive until their staggered catch-up tick.
       recomputeNextRunsForMaintenance(state, { repairFutureCronNextRunAtMs: false });
-      await persistOrRestore(state, rollbackSnapshot);
+      const finalizedRuntimeByJobId = new Map(
+        state.store.jobs.map((job) => [
+          job.id,
+          {
+            state: structuredClone(job.state),
+            updatedAtMs: job.updatedAtMs,
+          },
+        ]),
+      );
+      for (const removedJob of removedJobs) {
+        const finalizedState = structuredClone(removedJob.state);
+        finalizedState.nextRunAtMs = undefined;
+        finalizedRuntimeByJobId.set(removedJob.id, {
+          state: finalizedState,
+          updatedAtMs: removedJob.updatedAtMs,
+        });
+      }
+      try {
+        await persistOrRestore(state, rollbackSnapshot);
+      } catch (error) {
+        await persistRuntimeAfterDefinitionGuardRejection(state, error, finalizedRuntimeByJobId);
+        finishPersistedQuietCronTaskRuns(state, finalizedOutcomes);
+        throw error;
+      }
       for (const pending of pendingReleases) {
         releaseQueuedCronRun(state, pending.jobId, pending.reservationIdentity);
       }

@@ -88,6 +88,16 @@ export function resolveJobLastRunStatus(job: Pick<CronJob, "state">) {
   return job.state.lastRunStatus ?? job.state.lastStatus;
 }
 
+/** Returns whether durable typed state identifies the latest run as startup-interrupted. */
+export function hasStartupInterruptedRunOutcome(job: Pick<CronJob, "state">): boolean {
+  const interruptedAtMs = job.state.startupInterruptedRunAtMs;
+  return (
+    resolveJobLastRunStatus(job) === "error" &&
+    isFiniteTimestamp(interruptedAtMs) &&
+    interruptedAtMs === job.state.lastRunAtMs
+  );
+}
+
 /** Resolves the retry backoff delay for a one-based consecutive error count. */
 export function errorBackoffMs(
   consecutiveErrors: number,
@@ -608,9 +618,14 @@ export function computeJobNextRunAtMs(job: CronJob, nowMs: number): number | und
   }
   if (job.schedule.kind === "at") {
     const atMs = parseAbsoluteTimeMs(job.schedule.at);
-    // One-shot jobs stay due until they successfully finish, but if the
-    // schedule was updated to a time after the last run, re-arm the job.
-    if (resolveJobLastRunStatus(job) === "ok" && job.state.lastRunAtMs) {
+    // A completed or startup-interrupted one-shot must not be recreated from
+    // its original timestamp after recovery cleared nextRunAtMs. Ordinary
+    // execution errors keep the legacy retry contract; a later edited `at`
+    // timestamp intentionally re-arms either terminal outcome.
+    if (
+      (resolveJobLastRunStatus(job) === "ok" || hasStartupInterruptedRunOutcome(job)) &&
+      job.state.lastRunAtMs
+    ) {
       if (atMs !== null && Number.isFinite(atMs) && atMs > job.state.lastRunAtMs) {
         return atMs;
       }

@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { expandHomePrefix } from "../infra/home-dir.js";
@@ -14,12 +15,20 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveConfigDir } from "../utils.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
+import {
+  assertCronDefinitionMutationAllowed,
+  assertCronDefinitionSnapshotMutationAllowed,
+  cronJobDefinitionsEqual,
+} from "./service/definition-mutation-guard.js";
 import { readCronStoreStatePath } from "./store/config-state.js";
 import { cronStoreKey } from "./store/key.js";
 import {
   assertCronStoreCanPersist,
   loadedCronStoreFromRows,
   loadCronRows,
+  projectCronJobDefinitionRow,
+  projectCronJobReplacementThroughStorageCodec,
+  projectCronJobThroughStorageCodec,
   replaceCronRows,
   updateCronRuntimeRows,
 } from "./store/row-codec.js";
@@ -147,6 +156,132 @@ type SaveCronStoreOptions = {
   stateOnly?: boolean;
 };
 
+class CronDefinitionCasMismatchError extends Error {
+  code = "CRON_DEFINITION_CAS_MISMATCH" as const;
+
+  constructor(jobId: string) {
+    super(`cron definition changed before runtime state could persist: ${jobId}`);
+    this.name = "CronDefinitionCasMismatchError";
+  }
+}
+
+function storedCronJobs(
+  db: DatabaseSync,
+  storeKey: string,
+): {
+  complete: boolean;
+  definitionRows: readonly Record<string, unknown>[];
+  rawConfigJobs: readonly Record<string, unknown>[];
+  store: CronStoreFile;
+  unparseableJobIds: ReadonlySet<string>;
+} {
+  const rows = loadCronRows(db, storeKey);
+  if (rows.length === 0) {
+    return {
+      complete: true,
+      definitionRows: [],
+      rawConfigJobs: [],
+      store: { version: 1, jobs: [] },
+      unparseableJobIds: new Set(),
+    };
+  }
+  const store = loadedCronStoreFromRows(rows).store;
+  const parsedJobIds = new Set(store.jobs.map((job) => job.id));
+  const unparseableJobIds = new Set(
+    rows.map((row) => row.job_id).filter((jobId) => !parsedJobIds.has(jobId)),
+  );
+  const rawConfigJobs: Record<string, unknown>[] = [];
+  let rawConfigComplete = true;
+  for (const row of rows) {
+    try {
+      const parsed = JSON.parse(row.job_json) as unknown;
+      if (!isRecord(parsed) || Array.isArray(parsed)) {
+        rawConfigComplete = false;
+        continue;
+      }
+      rawConfigJobs.push(parsed);
+    } catch {
+      rawConfigComplete = false;
+    }
+  }
+  return {
+    complete: unparseableJobIds.size === 0 && rawConfigComplete,
+    definitionRows: rows.map(projectCronJobDefinitionRow),
+    rawConfigJobs,
+    store,
+    unparseableJobIds,
+  };
+}
+
+function assertFullStoreDefinitionMutationAllowed(
+  db: DatabaseSync,
+  storeKey: string,
+  proposed: CronStoreFile,
+): void {
+  const durable = storedCronJobs(db, storeKey);
+  if (!durable.complete) {
+    // An unparseable durable row cannot be represented by the proposed store.
+    // During an active freeze, treating it as absent would silently delete it.
+    assertCronDefinitionMutationAllowed();
+  }
+  const proposedReplacements = proposed.jobs.map((job, index) =>
+    projectCronJobReplacementThroughStorageCodec(job, index),
+  );
+  const completeProposedReplacements = proposedReplacements.filter(
+    (replacement): replacement is NonNullable<(typeof proposedReplacements)[number]> =>
+      replacement !== null,
+  );
+  if (completeProposedReplacements.length !== proposedReplacements.length) {
+    assertCronDefinitionMutationAllowed();
+  }
+  // Both comparisons use the same exact serialized replacement projection.
+  // This closes normalization gaps between raw job_json and split columns,
+  // while JSON serialization removes explicit undefined values exactly as the
+  // writer does.
+  assertCronDefinitionSnapshotMutationAllowed(
+    { version: 1, jobs: durable.rawConfigJobs } as unknown as CronStoreFile,
+    {
+      version: 1,
+      jobs: completeProposedReplacements.map((replacement) => replacement.configJob),
+    } as unknown as CronStoreFile,
+  );
+  assertCronDefinitionSnapshotMutationAllowed(durable.store, {
+    version: 1,
+    jobs: completeProposedReplacements.map((replacement) => replacement.job),
+  });
+  if (
+    !isDeepStrictEqual(
+      durable.definitionRows,
+      completeProposedReplacements.map((replacement) => replacement.definitionRow),
+    )
+  ) {
+    assertCronDefinitionMutationAllowed();
+  }
+}
+
+function assertRuntimeDefinitionCas(
+  db: DatabaseSync,
+  storeKey: string,
+  proposed: CronStoreFile,
+): void {
+  const durable = storedCronJobs(db, storeKey);
+  const durableById = new Map(durable.store.jobs.map((job) => [job.id, job]));
+  for (const job of proposed.jobs) {
+    if (durable.unparseableJobIds.has(job.id)) {
+      throw new CronDefinitionCasMismatchError(job.id);
+    }
+    const current = durableById.get(job.id);
+    // State-only writes cannot create rows. A missing target is a no-op, while
+    // a present target must still be the exact definition the caller observed.
+    if (!current) {
+      continue;
+    }
+    if (!cronJobDefinitionsEqual(current, projectCronJobThroughStorageCodec(job))) {
+      throw new CronDefinitionCasMismatchError(job.id);
+    }
+  }
+}
+
 async function atomicWrite(filePath: string, content: string, dirMode = 0o700): Promise<void> {
   await replaceFileAtomic({
     filePath,
@@ -168,15 +303,22 @@ export async function saveCronJobsStore(
   const resolvedStorePath = path.resolve(storePath);
   const storeKey = cronStoreKey(resolvedStorePath);
   if (opts?.stateOnly) {
-    // Hot-path timer updates only mutate runtime columns; full config JSON stays
-    // untouched so user-authored cron definitions do not churn.
+    // Runtime writers must prove that every target row still has the definition
+    // they observed. Concurrent additions are harmless, but a changed or
+    // malformed target aborts the transaction instead of attaching stale state
+    // to a new definition.
     runOpenClawStateWriteTransaction(({ db }) => {
+      assertRuntimeDefinitionCas(db, storeKey, store);
       updateCronRuntimeRows(db, storeKey, store);
     });
     return;
   }
   assertCronStoreCanPersist(store);
   runOpenClawStateWriteTransaction(({ db }) => {
+    // Full-store callers include doctor and channel writeback paths outside the
+    // cron service. Recheck durable truth inside the write transaction so none
+    // can bypass an active definition freeze or race a preceding writer.
+    assertFullStoreDefinitionMutationAllowed(db, storeKey, store);
     replaceCronRows(db, storeKey, store);
   });
 }
@@ -191,6 +333,9 @@ export async function saveCronJobsStoreWithMetadata(
   const storeKey = cronStoreKey(resolvedStorePath);
   assertCronStoreCanPersist(store);
   return runOpenClawStateWriteTransaction(({ db }) => {
+    // Guard before acquiring migration metadata: a rejected definition rewrite
+    // must not consume the one-time migration receipt.
+    assertFullStoreDefinitionMutationAllowed(db, storeKey, store);
     if (!acquireMetadata(db)) {
       return false;
     }

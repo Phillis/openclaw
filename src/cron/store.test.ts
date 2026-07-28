@@ -534,7 +534,7 @@ describe("cron store", () => {
     expect(activated?.runningAtMs).toBe(job.createdAtMs + 2);
   });
 
-  it("updates runtime state without replacing concurrent cron config", async () => {
+  it("rejects stale runtime state without replacing concurrent cron config", async () => {
     const store = await makeStorePath();
     const stale = makeStore("job-state-only", true);
     const current: CronStoreFile = {
@@ -544,6 +544,10 @@ describe("cron store", () => {
           ...expectDefined(stale.jobs[0], "stale.jobs[0] test invariant"),
           name: "Job current",
           updatedAtMs: expectDefined(stale.jobs[0], "stale.jobs[0] test invariant").updatedAtMs + 1,
+          state: {
+            nextRunAtMs:
+              expectDefined(stale.jobs[0], "stale.jobs[0] test invariant").createdAtMs + 30_000,
+          },
         },
         expectDefined(
           makeStore("job-added-concurrently", true).jobs[0],
@@ -559,13 +563,15 @@ describe("cron store", () => {
 
     await saveCronStore(store.storePath, makeStore("job-state-only", true));
     await saveCronStore(store.storePath, current);
-    await saveCronStore(store.storePath, stale, { stateOnly: true });
+    await expect(saveCronStore(store.storePath, stale, { stateOnly: true })).rejects.toMatchObject({
+      code: "CRON_DEFINITION_CAS_MISMATCH",
+    });
 
     const loaded = await loadCronStore(store.storePath);
     expect(loaded.jobs.map((job) => job.id)).toEqual(["job-state-only", "job-added-concurrently"]);
     expect(loaded.jobs[0]?.name).toBe("Job current");
     expect(loaded.jobs[0]?.state.nextRunAtMs).toBe(
-      expectDefined(stale.jobs[0], "stale.jobs[0] test invariant").createdAtMs + 60_000,
+      expectDefined(stale.jobs[0], "stale.jobs[0] test invariant").createdAtMs + 30_000,
     );
   });
 

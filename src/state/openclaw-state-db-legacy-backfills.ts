@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { assertCronDefinitionMutationAllowed } from "../cron/service/definition-mutation-guard.js";
 import { buildApprovalResolutionRef } from "../infra/approval-resolution-ref.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import * as operatorApprovalMigration from "./openclaw-state-db-operator-approval-migration.js";
@@ -267,6 +268,13 @@ export function migrateLegacyCronDeliveryThreadIds(db: DatabaseSync): void {
         SET delivery_thread_id = ?, delivery_thread_id_type = ?
       WHERE store_key = ? AND job_id = ? AND delivery_thread_id_type IS NULL`,
   );
+  let definitionMutationAdmitted = false;
+  const admitDefinitionMutation = () => {
+    if (!definitionMutationAdmitted) {
+      assertCronDefinitionMutationAllowed();
+      definitionMutationAdmitted = true;
+    }
+  };
   for (const row of rows) {
     const job = parseJsonRecord(row.job_json);
     const delivery = job ? recordField(job, "delivery") : null;
@@ -275,6 +283,7 @@ export function migrateLegacyCronDeliveryThreadIds(db: DatabaseSync): void {
       // The first normalized cron migration could not project numeric thread IDs.
       // Recover only that known lost shape while this type column is first added.
       if (typeof typed === "number" && Number.isFinite(typed)) {
+        admitDefinitionMutation();
         update.run(String(typed), "number", row.store_key, row.job_id);
       }
       continue;
@@ -285,6 +294,7 @@ export function migrateLegacyCronDeliveryThreadIds(db: DatabaseSync): void {
       String(typed) === row.delivery_thread_id
         ? "number"
         : "string";
+    admitDefinitionMutation();
     update.run(row.delivery_thread_id, type, row.store_key, row.job_id);
   }
 }
@@ -366,6 +376,13 @@ export function backfillCronJobsFromJobJson(db: DatabaseSync): void {
       WHERE store_key = ?
         AND job_id = ?`,
   );
+  let definitionMutationAdmitted = false;
+  const admitDefinitionMutation = () => {
+    if (!definitionMutationAdmitted) {
+      assertCronDefinitionMutationAllowed();
+      definitionMutationAdmitted = true;
+    }
+  };
   for (const row of rows) {
     const job = parseJsonRecord(row.job_json);
     if (!job) {
@@ -400,6 +417,7 @@ export function backfillCronJobsFromJobJson(db: DatabaseSync): void {
       !Array.isArray(failureAlertValue)
         ? (failureAlertValue as Record<string, unknown>)
         : null;
+    admitDefinitionMutation();
     update.run(
       textField(job, "name") ?? row.job_id,
       job.enabled === false ? 0 : 1,

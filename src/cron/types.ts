@@ -359,6 +359,11 @@ type CronScriptPayloadPatch = {
 /** Mutable runtime state persisted beside the immutable cron job spec. */
 export type CronJobState = {
   nextRunAtMs?: number;
+  /**
+   * Durable provenance for a one-shot run that startup repair marked
+   * interrupted. Must equal lastRunAtMs to suppress replay.
+   */
+  startupInterruptedRunAtMs?: number;
   /** Exact startup catch-up slot protected from future-slot repair across restarts. */
   startupCatchupAtMs?: number;
   /** Exact paced completion slot protected from future-slot repair until consumed. */
@@ -474,7 +479,9 @@ export type CronStoreFile = {
   jobs: CronJob[];
 };
 
-type CronJobStateInput = Partial<Omit<CronJobState, "streamSourceIdentity">>;
+type CronJobStateInput = Partial<
+  Omit<CronJobState, "startupInterruptedRunAtMs" | "streamSourceIdentity">
+>;
 
 /** Create input accepted by cron APIs before id/timestamps/state are assigned. */
 export type CronJobCreate = Omit<CronJob, "id" | "createdAtMs" | "updatedAtMs" | "state"> & {

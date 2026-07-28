@@ -11,11 +11,16 @@ import {
   type QuarantinedCronConfigJob,
 } from "../store.js";
 import type { CronJob, CronStoreFile } from "../types.js";
+import {
+  assertCronDefinitionMutationAllowed,
+  assertCronDefinitionSnapshotMutationAllowed,
+} from "./definition-mutation-guard.js";
 import { recomputeNextRuns } from "./jobs.js";
 import { emit, type CronServiceState } from "./state.js";
 
 type PersistOptions = {
   stateOnly?: boolean;
+  stateOnlyJobIds?: readonly string[];
   suppressScheduledJobId?: string;
 };
 
@@ -23,6 +28,14 @@ export type CronRollbackSnapshot = {
   store: CronStoreFile | null;
   durableNextRunAtMsByJobId: Map<string, number | undefined>;
 };
+
+export type CronRuntimePersistenceSnapshot = ReadonlyMap<
+  string,
+  {
+    state: CronJob["state"];
+    updatedAtMs: number;
+  }
+>;
 
 function durableNextRunsFromJobs(jobs: readonly CronJob[]) {
   return new Map(jobs.map((job) => [job.id, job.state.nextRunAtMs] as const));
@@ -85,6 +98,7 @@ function invalidateStaleNextRunOnScheduleChange(params: {
   params.hydrated.state ??= {};
   params.hydrated.state.nextRunAtMs = undefined;
   params.hydrated.state.startupCatchupAtMs = undefined;
+  params.hydrated.state.startupInterruptedRunAtMs = undefined;
   params.hydrated.state.pacedNextRunAtMs = undefined;
   params.hydrated.state.forcePreservedNextRunAtMs = undefined;
 }
@@ -171,6 +185,12 @@ export async function ensureLoaded(
   const jobs: CronJob[] = [];
   const durableNextRunAtMsByJobId = new Map<string, number | undefined>();
   const quarantinedConfigJobs: QuarantinedCronConfigJob[] = [...loaded.invalidConfigRows];
+  const invalidPersistedJobWarnings: Array<{
+    index: number;
+    raw: Record<string, unknown>;
+    reason: string;
+  }> = [];
+  const invalidSessionTargetWarnings: Array<string | undefined> = [];
   for (const [index, raw] of loadedJobs.entries()) {
     const rawConfigJob = loaded.configJobs[index] ?? structuredClone(raw);
     const sourceIndex = loaded.configJobIndexes[index] ?? index;
@@ -186,10 +206,7 @@ export async function ensureLoaded(
         throw error;
       }
       normalized = null;
-      state.deps.log.warn(
-        { storePath: state.deps.storePath, jobId: typeof raw.id === "string" ? raw.id : undefined },
-        "cron: job has invalid persisted sessionTarget; run openclaw doctor --fix to repair",
-      );
+      invalidSessionTargetWarnings.push(typeof raw.id === "string" ? raw.id : undefined);
     }
     const hydratedRaw = normalized ?? raw;
     const invalidReason = getInvalidPersistedCronJobReason(hydratedRaw);
@@ -213,7 +230,11 @@ export async function ensureLoaded(
         quarantineEntry.scheduleIdentity = runtimeEntry.scheduleIdentity;
       }
       quarantinedConfigJobs.push(quarantineEntry);
-      warnInvalidPersistedCronJob({ state, raw, index: sourceIndex, reason: invalidReason });
+      invalidPersistedJobWarnings.push({
+        index: sourceIndex,
+        raw,
+        reason: invalidReason,
+      });
       continue;
     }
     // Validated above, so the raw record is now a trusted CronJob.
@@ -223,6 +244,22 @@ export async function ensureLoaded(
     // mutates the runtime view. A later save can then publish that transition.
     durableNextRunAtMsByJobId.set(hydrated.id, hydrated.state.nextRunAtMs);
     invalidateStaleNextRunOnScheduleChange({ previousJobsById, hydrated });
+  }
+  if (quarantinedConfigJobs.length > 0) {
+    // Quarantine sanitization changes durable cron topology. During an evidence
+    // campaign, reject it before publishing an in-memory view, writing a
+    // quarantine artifact, or swallowing the guard error in the persistence
+    // warning path below.
+    assertCronDefinitionMutationAllowed();
+  }
+  for (const warning of invalidPersistedJobWarnings) {
+    warnInvalidPersistedCronJob({ state, ...warning });
+  }
+  for (const jobId of invalidSessionTargetWarnings) {
+    state.deps.log.warn(
+      { storePath: state.deps.storePath, jobId },
+      "cron: job has invalid persisted sessionTarget; run openclaw doctor --fix to repair",
+    );
   }
   state.store = {
     version: 1,
@@ -292,10 +329,21 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
     flushedPendingQuarantine = true;
   }
   const stateOnly = !flushedPendingQuarantine && opts?.stateOnly === true;
-  await saveCronJobsStore(state.deps.storePath, store, stateOnly ? { stateOnly: true } : undefined);
+  const persistedStore =
+    stateOnly && opts?.stateOnlyJobIds
+      ? {
+          version: store.version,
+          jobs: store.jobs.filter((job) => opts.stateOnlyJobIds?.includes(job.id)),
+        }
+      : store;
+  await saveCronJobsStore(
+    state.deps.storePath,
+    persistedStore,
+    stateOnly ? { stateOnly: true } : undefined,
+  );
   publishDurableNextRunChanges({
     state,
-    storeJobs: store.jobs,
+    storeJobs: persistedStore.jobs,
     stateOnly,
     suppressScheduledJobId: opts?.suppressScheduledJobId,
   });
@@ -317,16 +365,20 @@ export async function persistOrRestore(
   snapshot: CronRollbackSnapshot,
   opts: {
     postPersistAutoDisableNotifications?: Array<() => void>;
+    stateOnly?: boolean;
+    stateOnlyJobIds?: readonly string[];
     suppressScheduledJobId?: string;
   } = {},
 ) {
   try {
-    const persisted = await persist(
-      state,
-      opts.suppressScheduledJobId === undefined
-        ? undefined
-        : { suppressScheduledJobId: opts.suppressScheduledJobId },
-    );
+    assertCronDefinitionSnapshotMutationAllowed(snapshot.store, state.store);
+    const persisted = await persist(state, {
+      ...(opts.stateOnly === true ? { stateOnly: true } : {}),
+      ...(opts.stateOnlyJobIds === undefined ? {} : { stateOnlyJobIds: opts.stateOnlyJobIds }),
+      ...(opts.suppressScheduledJobId === undefined
+        ? {}
+        : { suppressScheduledJobId: opts.suppressScheduledJobId }),
+    });
     if (!persisted) {
       throw new Error("cron: durable store write did not complete");
     }
@@ -337,5 +389,37 @@ export async function persistOrRestore(
   }
   for (const notify of opts.postPersistAutoDisableNotifications ?? []) {
     notify();
+  }
+}
+
+/** Preserve completed-run state when an active guard rejects only a definition change. */
+export async function persistRuntimeAfterDefinitionGuardRejection(
+  state: CronServiceState,
+  error: unknown,
+  runtimeByJobId: CronRuntimePersistenceSnapshot,
+): Promise<void> {
+  if (
+    !(error instanceof Error) ||
+    (error as Error & { code?: unknown }).code !== "CRON_MUTATION_GUARD_ACTIVE"
+  ) {
+    throw error;
+  }
+  const cleanupRollbackSnapshot = snapshotStoreForRollback(state);
+  for (const job of state.store?.jobs ?? []) {
+    const runtime = runtimeByJobId.get(job.id);
+    if (!runtime) {
+      continue;
+    }
+    job.state = structuredClone(runtime.state);
+    job.updatedAtMs = runtime.updatedAtMs;
+  }
+  try {
+    await persistOrRestore(state, cleanupRollbackSnapshot, { stateOnly: true });
+  } catch (cleanupError) {
+    const cleanupFailure = new Error("cron: mutation guard rejection cleanup failed", {
+      cause: error,
+    }) as Error & { cleanupError?: unknown };
+    cleanupFailure.cleanupError = cleanupError;
+    throw cleanupFailure;
   }
 }

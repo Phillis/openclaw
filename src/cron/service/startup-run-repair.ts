@@ -1,5 +1,6 @@
 /** Repairs interrupted and finalized cron runs while the service starts. */
 import { resolveCronDeliveryPlan, resolveFailureDestination } from "../delivery-plan.js";
+import { CRON_STARTUP_INTERRUPTED_ERROR } from "../execution-error-constants.js";
 import type { CronRunLogEntry } from "../run-log-types.js";
 import type { CronJob, CronRunStatus } from "../types.js";
 import type { CronServiceState } from "./state.js";
@@ -10,7 +11,7 @@ import {
   type CronTriggerEvalOutcome,
 } from "./timer.js";
 
-export const STARTUP_INTERRUPTED_ERROR = "cron: job interrupted by gateway restart";
+export const STARTUP_INTERRUPTED_ERROR = CRON_STARTUP_INTERRUPTED_ERROR;
 
 export type InterruptedStartupRun = {
   jobId: string;
@@ -59,6 +60,7 @@ export function markInterruptedStartupRun(params: {
 
   job.state.runningAtMs = undefined;
   job.state.lastRunAtMs = runningAtMs;
+  job.state.startupInterruptedRunAtMs = runningAtMs;
   job.state.lastRunStatus = "error";
   job.state.lastStatus = "error";
   job.state.lastError = STARTUP_INTERRUPTED_ERROR;

@@ -1818,6 +1818,27 @@ describe("cron service timer regressions", () => {
     }
   });
 
+  it("does not treat matching error text as startup-interruption provenance", () => {
+    const runAtMs = Date.parse("2026-02-15T13:00:00.000Z");
+    const ordinaryFailure = createIsolatedRegressionJob({
+      id: "ordinary-error-with-startup-text",
+      name: "ordinary failure",
+      scheduledAt: runAtMs,
+      schedule: { kind: "at", at: new Date(runAtMs).toISOString() },
+      payload: { kind: "agentTurn", message: "retry me" },
+    });
+    ordinaryFailure.state = {
+      lastRunAtMs: runAtMs,
+      lastRunStatus: "error",
+      lastError: "cron: job interrupted by gateway restart",
+    };
+
+    expect(computeJobNextRunAtMs(ordinaryFailure, runAtMs + 1_000)).toBe(runAtMs);
+
+    ordinaryFailure.state.startupInterruptedRunAtMs = runAtMs;
+    expect(computeJobNextRunAtMs(ordinaryFailure, runAtMs + 1_000)).toBeUndefined();
+  });
+
   it("records per-job start time and duration for batched due jobs", async () => {
     const store = timerRegressionFixtures.makeStorePath();
     const dueAt = Date.parse("2026-02-06T10:05:01.000Z");
