@@ -57,6 +57,7 @@ import {
   isDiagnosticsTimelineEnabled,
 } from "../infra/diagnostics-timeline.js";
 import { isTruthyEnvValue, isVitestRuntimeEnv, logAcceptedEnvOption } from "../infra/env.js";
+import { adoptGatewaySuspendHandoffAtStartup } from "../infra/gateway-suspend-coordinator.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { readGatewayRestartHandoffSync } from "../infra/restart-handoff.js";
 import {
@@ -602,6 +603,9 @@ export async function startGatewayServer(
   opts: GatewayServerOptions = {},
 ): Promise<GatewayServer> {
   normalizeStateDirEnv(process.env);
+  adoptGatewaySuspendHandoffAtStartup({
+    warn: (message) => log.warn(message),
+  });
   const [
     {
       OPENCLAW_DATABASE_SCHEMA_DOCS_URL,

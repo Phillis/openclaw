@@ -5,6 +5,7 @@ import { closedObject } from "./closed-object.js";
 
 const SuspensionTokenSchema = Type.String({ minLength: 1, maxLength: 128, pattern: "\\S" });
 const CountSchema = Type.Integer({ minimum: 0 });
+const PositiveCountSchema = Type.Integer({ minimum: 1 });
 
 export const GatewaySuspendTaskBlockerSchema = closedObject({
   taskId: Type.String(),
@@ -41,7 +42,13 @@ export const GatewaySuspendBlockerSchema = closedObject({
   task: Type.Optional(GatewaySuspendTaskBlockerSchema),
 });
 
-export const GatewaySuspendPrepareParamsSchema = closedObject({ requestId: SuspensionTokenSchema });
+export const GatewaySuspendPrepareParamsSchema = closedObject({
+  requestId: SuspensionTokenSchema,
+  suspensionId: Type.Optional(SuspensionTokenSchema),
+  gatewayInstanceId: Type.Optional(SuspensionTokenSchema),
+  gatewayPid: PositiveCountSchema,
+  launchdRunCount: PositiveCountSchema,
+});
 
 export const GatewaySuspendPrepareBusyResultSchema = closedObject({
   status: Type.Literal("busy"),
@@ -54,6 +61,9 @@ export const GatewaySuspendPrepareBusyResultSchema = closedObject({
 export const GatewaySuspendPrepareReadyResultSchema = closedObject({
   status: Type.Literal("ready"),
   suspensionId: SuspensionTokenSchema,
+  gatewayInstanceId: SuspensionTokenSchema,
+  gatewayPid: PositiveCountSchema,
+  launchdRunCount: PositiveCountSchema,
   expiresAtMs: CountSchema,
   activeCount: CountSchema,
   blockers: Type.Array(GatewaySuspendBlockerSchema),
@@ -66,14 +76,17 @@ export const GatewaySuspendPrepareResultSchema = Type.Union([
 
 export const GatewaySuspendStatusParamsSchema = closedObject({
   suspensionId: SuspensionTokenSchema,
+  gatewayInstanceId: SuspensionTokenSchema,
 });
 
 export const GatewaySuspendStatusRunningResultSchema = closedObject({
   status: Type.Literal("running"),
+  gatewayInstanceId: SuspensionTokenSchema,
 });
 
 export const GatewaySuspendStatusReadyResultSchema = closedObject({
   status: Type.Literal("ready"),
+  gatewayInstanceId: SuspensionTokenSchema,
   expiresAtMs: CountSchema,
 });
 
@@ -82,12 +95,17 @@ export const GatewaySuspendStatusResultSchema = Type.Union([
   GatewaySuspendStatusReadyResultSchema,
 ]);
 
-export const GatewaySuspendResumeParamsSchema = GatewaySuspendStatusParamsSchema;
+export const GatewaySuspendResumeParamsSchema = closedObject({
+  suspensionId: SuspensionTokenSchema,
+  gatewayInstanceId: SuspensionTokenSchema,
+  resumeBeforeMs: CountSchema,
+});
 
 export const GatewaySuspendResumeResultSchema = closedObject({
   ok: Type.Literal(true),
   status: Type.Literal("running"),
   resumed: Type.Boolean(),
+  gatewayInstanceId: SuspensionTokenSchema,
 });
 
 // Wire types derive directly from local schema consts so public d.ts graphs never

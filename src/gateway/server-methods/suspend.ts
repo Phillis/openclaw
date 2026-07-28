@@ -9,6 +9,7 @@ import {
 import {
   getGatewaySuspendStatus,
   prepareGatewaySuspend,
+  resolveGatewaySuspendHandoffPath,
   resumeGatewaySuspend,
 } from "../../infra/gateway-suspend-coordinator.js";
 import { createGatewayServerActiveWorkInspectors } from "../server-active-work.js";
@@ -35,10 +36,16 @@ export const suspendHandlers: GatewayRequestHandlers = {
     const requestId = params.requestId.trim();
     const result = prepareGatewaySuspend({
       requestId,
+      suspensionId: params.suspensionId?.trim(),
+      gatewayInstanceId: params.gatewayInstanceId?.trim(),
+      gatewayPid: params.gatewayPid,
+      launchdRunCount: params.launchdRunCount,
+      currentGatewayPid: process.pid,
       pauseScheduling: () => context.cron.pauseScheduling(),
       resumeScheduling: () => context.cron.resumeScheduling(),
       inspect: createGatewayServerActiveWorkInspectors(context),
       warn: (message) => context.logGateway.warn(message),
+      durableHandoffPath: resolveGatewaySuspendHandoffPath(),
     });
     if (result.status === "conflict") {
       respond(
@@ -49,6 +56,14 @@ export const suspendHandlers: GatewayRequestHandlers = {
           retryAfterMs: Math.max(0, result.expiresAtMs - Date.now()),
           details: { reason: "gateway-suspension-conflict", expiresAtMs: result.expiresAtMs },
         }),
+      );
+      return;
+    }
+    if (result.status === "process-mismatch") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "gateway process incarnation does not match"),
       );
       return;
     }
@@ -63,8 +78,10 @@ export const suspendHandlers: GatewayRequestHandlers = {
       respond(false, undefined, invalidParams("gateway.suspend.status"));
       return;
     }
-    const suspensionId = params.suspensionId.trim();
-    const result = getGatewaySuspendStatus(suspensionId);
+    const result = getGatewaySuspendStatus({
+      suspensionId: params.suspensionId.trim(),
+      gatewayInstanceId: params.gatewayInstanceId.trim(),
+    });
     if (result.status === "conflict") {
       respond(
         false,
@@ -81,6 +98,14 @@ export const suspendHandlers: GatewayRequestHandlers = {
       respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
       return;
     }
+    if (result.status === "process-mismatch") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "gateway process incarnation does not match"),
+      );
+      return;
+    }
     respond(true, result);
   },
   "gateway.suspend.resume": async ({ respond, params }) => {
@@ -88,11 +113,30 @@ export const suspendHandlers: GatewayRequestHandlers = {
       respond(false, undefined, invalidParams("gateway.suspend.resume"));
       return;
     }
-    const suspensionId = params.suspensionId.trim();
-    const result = resumeGatewaySuspend(suspensionId);
+    const result = resumeGatewaySuspend({
+      suspensionId: params.suspensionId.trim(),
+      gatewayInstanceId: params.gatewayInstanceId.trim(),
+      resumeBeforeMs: params.resumeBeforeMs,
+    });
     if (!result.ok) {
       if (result.reason === "scheduler-resume-failed") {
         respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
+        return;
+      }
+      if (result.reason === "process-mismatch") {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "gateway process incarnation does not match"),
+        );
+        return;
+      }
+      if (result.reason === "resume-authority-expired") {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "gateway resume authority expired"),
+        );
         return;
       }
       respond(
