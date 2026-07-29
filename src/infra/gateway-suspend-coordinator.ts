@@ -286,7 +286,7 @@ function renewHeldSuspension(
     launchdRunCount: number;
   } = held,
 ): void {
-  const expiresAtMs = nowMs + GATEWAY_SUSPEND_TTL_MS;
+  const expiresAtMs = Math.max(nowMs + GATEWAY_SUSPEND_TTL_MS, held.expiresAtMs + 1);
   const replacement = createGatewaySuspendHandoff({
     suspendMode: held.suspendMode,
     requestId: held.requestId,

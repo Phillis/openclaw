@@ -829,8 +829,18 @@ function isValidDurableHandoffCasReplacement(previousBytes: Buffer, currentBytes
       return false;
     }
     if (previous.resumeState === "held" && current.resumeState === "held") {
+      const sameProcessIncarnation =
+        previous.gatewayInstanceId === current.gatewayInstanceId &&
+        previous.gatewayPid === current.gatewayPid &&
+        previous.launchdRunCount === current.launchdRunCount;
+      const adoptedSuccessorIncarnation =
+        previous.gatewayInstanceId !== current.gatewayInstanceId &&
+        (previous.gatewayPid !== current.gatewayPid ||
+          previous.launchdRunCount !== current.launchdRunCount);
       return (
-        current.expiresAtMs > previous.expiresAtMs &&
+        (sameProcessIncarnation
+          ? current.expiresAtMs > previous.expiresAtMs
+          : adoptedSuccessorIncarnation && current.expiresAtMs >= previous.expiresAtMs) &&
         current.resumeBeforeMs === null &&
         gatewaySuspendModeForHandoff(previous) === gatewaySuspendModeForHandoff(current)
       );

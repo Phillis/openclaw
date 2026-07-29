@@ -25,6 +25,7 @@ export const HOST_ACTIVATION_RECEIPT_SCHEMA = "handoff-v2-host-activation-receip
 const SLACK_ACCESS_PROOF_SCHEMA = "openclaw-slack-access-proof/v1";
 const GATEWAY_SUSPENSION_BINDING_SCHEMA = "handoff-v2-gateway-suspension-binding/v1";
 const GATEWAY_SUSPEND_MODE = "handoff-durable-hold/v1";
+const GATEWAY_SUSPEND_MODE_LEGACY = "legacy-auto-expire/v1";
 const GATEWAY_SUSPEND_HANDOFF_SCHEMA = "openclaw-gateway-suspend-handoff/v3";
 
 const SHA256_RE = /^[a-f0-9]{64}$/u;
@@ -190,8 +191,7 @@ const SUCCESS_PHASE_SEQUENCE = [
   "successor-suspension-prepared",
   "postflight-initial-proven",
   "stability-window-proven",
-  "successor-suspension-resume-requested",
-  "successor-suspension-resumed",
+  "successor-suspension-held-proven",
 ];
 const RECOVERY_PHASES = new Set([
   "pre-bootout-service-loaded-proven",
@@ -201,6 +201,7 @@ const RECOVERY_PHASES = new Set([
   "pre-bootout-label-enabled-unloaded-proven",
   "pre-bootout-suspension-resume-requested",
   "pre-bootout-suspension-resumed",
+  "pre-bootout-durable-suspension-retained",
   "interrupted-attempt-recovered",
 ]);
 const PRE_BOOTOUT_RECOVERY_SEQUENCES = [
@@ -264,6 +265,24 @@ const PRE_BOOTOUT_RECOVERY_SEQUENCES = [
     "pre-bootout-service-unloaded-proven",
     "pre-bootout-reenable-requested",
     "pre-bootout-label-enabled-unloaded-proven",
+  ],
+  ["pre-bootout-durable-suspension-retained"],
+  ["pre-bootout-reenable-requested", "pre-bootout-durable-suspension-retained"],
+  [
+    "pre-bootout-reenable-requested",
+    "pre-bootout-reenabled-same-predecessor-proven",
+    "pre-bootout-durable-suspension-retained",
+  ],
+  [
+    "pre-bootout-service-loaded-proven",
+    "pre-bootout-reenabled-same-predecessor-proven",
+    "pre-bootout-durable-suspension-retained",
+  ],
+  [
+    "pre-bootout-service-loaded-proven",
+    "pre-bootout-reenable-requested",
+    "pre-bootout-reenabled-same-predecessor-proven",
+    "pre-bootout-durable-suspension-retained",
   ],
 ];
 
@@ -973,21 +992,6 @@ function gatewaySuspendHandoffPath(plan) {
   return `${plan.host.stateDir}/gateway-suspend-handoff.json`;
 }
 
-function gatewaySuspendHandoffBytes(suspension) {
-  return canonicalJsonBytes({
-    schema: suspension.handoffSchema,
-    requestId: suspension.requestId,
-    suspensionId: suspension.suspensionId,
-    gatewayInstanceId: suspension.gatewayInstanceId,
-    gatewayPid: suspension.gatewayPid,
-    launchdRunCount: suspension.launchdRunCount,
-    expiresAtMs: suspension.expiresAtMs,
-    suspendMode: suspension.suspendMode,
-    resumeState: "held",
-    resumeBeforeMs: null,
-  });
-}
-
 function validateGatewaySuspendHandoff(bytes, suspension) {
   let handoff;
   try {
@@ -1028,108 +1032,19 @@ function validateGatewaySuspendHandoff(bytes, suspension) {
   return handoff;
 }
 
-export function persistGatewaySuspendHandoff(
-  plan,
-  suspension,
-  runtime,
-  allowGatewayInstanceTransition = false,
-) {
+export function proveGatewaySuspendHandoff(plan, suspension, runtime) {
   const path = gatewaySuspendHandoffPath(plan);
   runtime.assertSecureDirectoryChain(
     dirname(path),
     plan.host.stateDir,
     "Gateway suspension handoff parent chain",
   );
-  const bytes = gatewaySuspendHandoffBytes(suspension);
-  const existing = runtime.readOptionalFile(path, "Gateway suspension handoff");
-  if (existing === null) {
-    try {
-      runtime.writeExclusive(path, bytes);
-      return;
-    } catch (error) {
-      const exposed = readOptionalFileForPersistence(
-        runtime,
-        path,
-        "Gateway suspension handoff",
-        PhasePersistenceError,
-      );
-      if (exposed === null || !exposed.equals(bytes)) {
-        throw new PhasePersistenceError("Gateway suspension handoff", error);
-      }
-      proveExactFileDurable(
-        runtime,
-        path,
-        bytes,
-        "Gateway suspension handoff",
-        PhasePersistenceError,
-      );
-      return;
-    }
+  const bytes = runtime.readOptionalFile(path, "Gateway suspension handoff");
+  if (bytes === null) {
+    throw new Error("Gateway did not persist its suspension handoff");
   }
-  let existingHandoff;
-  try {
-    existingHandoff = JSON.parse(existing.toString("utf8"));
-    exactKeys(
-      existingHandoff,
-      [
-        "schema",
-        "requestId",
-        "suspensionId",
-        "gatewayInstanceId",
-        "gatewayPid",
-        "launchdRunCount",
-        "expiresAtMs",
-        "suspendMode",
-        "resumeState",
-        "resumeBeforeMs",
-      ],
-      "existing Gateway suspension handoff",
-    );
-  } catch {
-    throw new Error("existing Gateway suspension handoff contains malformed JSON");
-  }
-  if (
-    existingHandoff?.schema !== suspension.handoffSchema ||
-    existingHandoff?.suspendMode !== suspension.suspendMode ||
-    existingHandoff?.resumeState !== "held" ||
-    existingHandoff?.resumeBeforeMs !== null ||
-    existingHandoff?.requestId !== suspension.requestId ||
-    existingHandoff?.suspensionId !== suspension.suspensionId ||
-    (!allowGatewayInstanceTransition &&
-      (existingHandoff?.gatewayInstanceId !== suspension.gatewayInstanceId ||
-        existingHandoff?.gatewayPid !== suspension.gatewayPid ||
-        existingHandoff?.launchdRunCount !== suspension.launchdRunCount))
-  ) {
-    throw new Error("another suspension owns the Gateway suspension handoff");
-  }
-  try {
-    runtime.replaceFileDurably(bytes, path);
-  } catch (error) {
-    const exposed = readOptionalFileForPersistence(
-      runtime,
-      path,
-      "Gateway suspension handoff",
-      PhasePersistenceError,
-    );
-    if (exposed === null || !exposed.equals(bytes)) {
-      throw new PhasePersistenceError("Gateway suspension handoff", error);
-    }
-    proveExactFileDurable(
-      runtime,
-      path,
-      bytes,
-      "Gateway suspension handoff",
-      PhasePersistenceError,
-    );
-    return;
-  }
-  validateGatewaySuspendHandoff(
-    runtime.readOptionalFile(path, "Gateway suspension handoff") ??
-      (() => {
-        throw new Error("Gateway suspension handoff disappeared after persistence");
-      })(),
-    suspension,
-  );
+  validateGatewaySuspendHandoff(bytes, suspension);
+  proveExactFileDurable(runtime, path, bytes, "Gateway suspension handoff", PhasePersistenceError);
 }
 
 function assertGatewaySuspendHandoffWindow(plan, suspension, runtime, description) {
@@ -1162,6 +1077,7 @@ function assertGatewaySuspendHandoffWindow(plan, suspension, runtime, descriptio
   ) {
     throw new Error(`${description} lacks a complete durable suspension handoff window`);
   }
+  return durable;
 }
 
 function verifyTasksQuiescent(plan, generation, runtime) {
@@ -1251,12 +1167,7 @@ function prepareGatewaySuspension(
     suspendMode: result.suspendMode,
     handoffSchema: plan.gatewaySuspension.handoffSchema,
   };
-  persistGatewaySuspendHandoff(
-    plan,
-    suspension,
-    runtime,
-    generation === "successor" && expectedSuspensionId !== undefined,
-  );
+  proveGatewaySuspendHandoff(plan, suspension, runtime);
   assertGatewaySuspendHandoffWindow(plan, suspension, runtime, "Gateway suspension preparation");
   return suspension;
 }
@@ -1302,11 +1213,14 @@ function renewGatewaySuspension(plan, suspension, runtime, generation = "predece
     throw new Error("Gateway suspension admission fence could not be renewed for the mutation");
   }
   suspension.expiresAtMs = result.expiresAtMs;
-  persistGatewaySuspendHandoff(plan, suspension, runtime);
+  proveGatewaySuspendHandoff(plan, suspension, runtime);
   assertGatewaySuspendHandoffWindow(plan, suspension, runtime, "Gateway suspension renewal");
 }
 
-function resumeGatewaySuspension(plan, suspension, runtime, generation = "predecessor") {
+function resumeLegacyGatewaySuspension(plan, suspension, runtime, generation = "predecessor") {
+  if (suspension.suspendMode !== GATEWAY_SUSPEND_MODE_LEGACY) {
+    throw new Error("durable Gateway suspension requires a separately authorized release");
+  }
   const nowMs = Date.parse(runtime.now());
   const resumeBeforeMs =
     Math.min(Date.parse(plan.expiresAt), Date.parse(plan.guard.expiresAt), suspension.expiresAtMs) -
@@ -1349,17 +1263,16 @@ function resumeGatewaySuspension(plan, suspension, runtime, generation = "predec
     throw new Error("Gateway suspension admission fence did not resume cleanly");
   }
   const handoffPath = gatewaySuspendHandoffPath(plan);
-  runtime.removeFileDurably(handoffPath);
   if (runtime.readOptionalFile(handoffPath, "Gateway suspension handoff") !== null) {
-    throw new Error("Gateway suspension handoff remained after resume");
+    throw new Error("Gateway-owned legacy suspension handoff remained after resume");
   }
 }
 
-function getGatewaySuspensionStatus(plan, suspension, runtime) {
+function getGatewaySuspensionStatus(plan, suspension, runtime, generation = "predecessor") {
   return parseJsonOutput(
     invokeCli(
       plan,
-      "predecessor",
+      generation,
       [
         "gateway",
         "call",
@@ -1376,6 +1289,26 @@ function getGatewaySuspensionStatus(plan, suspension, runtime) {
     ),
     "Gateway suspension recovery status",
   );
+}
+
+function proveGatewaySuspensionHeld(
+  plan,
+  suspension,
+  runtime,
+  description,
+  generation = "predecessor",
+) {
+  const bytes = assertGatewaySuspendHandoffWindow(plan, suspension, runtime, description);
+  const status = getGatewaySuspensionStatus(plan, suspension, runtime, generation);
+  if (
+    status?.status !== "ready" ||
+    status.gatewayInstanceId !== suspension.gatewayInstanceId ||
+    status.suspendMode !== suspension.suspendMode ||
+    status.expiresAtMs !== suspension.expiresAtMs
+  ) {
+    throw new Error(`${description} does not have an active ready suspension`);
+  }
+  return bytes;
 }
 
 function readGatewaySuspendHandoffForRecovery(plan, runtime, expectedSuspension) {
@@ -1476,26 +1409,30 @@ function recoverPreBootoutGatewaySuspension(
         throw new Error("Gateway suspension recovery status does not match its handoff");
       }
       beforeResume(handoff);
-      resumeGatewaySuspension(plan, handoff, runtime);
-      return;
+      if (handoff.suspendMode === GATEWAY_SUSPEND_MODE) {
+        assertGatewaySuspendHandoffWindow(
+          plan,
+          handoff,
+          runtime,
+          "durable pre-bootout suspension recovery",
+        );
+        return { disposition: "retained", handoff };
+      }
+      resumeLegacyGatewaySuspension(plan, handoff, runtime);
+      return { disposition: "legacy-resumed", handoff };
     }
     if (status?.status !== "running") {
       throw new Error("Gateway suspension recovery status is not safe");
     }
-    runtime.removeFileDurably(handoffPath);
     if (runtime.readOptionalFile(handoffPath, "Gateway suspension handoff recovery") !== null) {
-      throw new PhasePersistenceError(
-        "Gateway suspension handoff recovery",
-        new Error("stale handoff remained after durable removal"),
-      );
+      throw new Error("running Gateway suspension status conflicts with a retained handoff");
     }
+    return { disposition: "already-running", handoff: null };
   }
   if (expectedSuspension !== undefined) {
     throw new Error("durable suspension-prepared recovery lacks its exact handoff");
   }
-  const reacquired = prepareGatewaySuspension(plan, runtime, plan.predecessor);
-  beforeResume(reacquired);
-  resumeGatewaySuspension(plan, reacquired, runtime);
+  return { disposition: "no-handoff", handoff: null };
 }
 
 function verifySlack(plan, generation, runtime) {
@@ -3545,33 +3482,25 @@ export function executeHostActivation(params) {
                 });
                 recoveredPhaseNames.push("pre-bootout-service-loaded-proven");
               }
-              let recoveryHandoff = readGatewaySuspendHandoffForRecovery(
+              const recoveryHandoff = readGatewaySuspendHandoffForRecovery(
                 plan,
                 runtime,
                 expectedRecoverySuspension,
               );
-              if (recoveryHandoff === null) {
-                if (expectedRecoverySuspension !== undefined) {
-                  throw new Error("durable suspension-prepared recovery handoff is missing");
-                }
-                verifySupervisorLease(plan, runtime);
-                verifyActiveGuard(plan, runtime);
-                assertActivationWindow(
-                  plan,
-                  runtime,
-                  "dead-owner suspension reacquisition",
-                  plan.operations.startupWaitMs,
-                );
-                recoveryHandoff = prepareGatewaySuspension(plan, runtime, plan.predecessor);
+              if (recoveryHandoff === null && expectedRecoverySuspension !== undefined) {
+                throw new Error("durable suspension-prepared recovery handoff is missing");
               }
               verifyMutationAuthority(
                 plan,
                 runtime,
                 "dead-owner predecessor recovery",
-                recoveryHandoff,
+                recoveryHandoff ?? undefined,
               );
               const wasEnabled = inspectLaunchdEnabledState(plan, runtime);
               if (!wasEnabled) {
+                if (recoveryHandoff === null) {
+                  throw new Error("disabled predecessor recovery lacks its durable suspension");
+                }
                 if (!recoveredPhaseNames.includes("pre-bootout-reenable-requested")) {
                   writePhase("pre-bootout-reenable-requested", {
                     reason: `dead-owner recovery at ${interruptedLifecyclePhase}`,
@@ -3604,26 +3533,50 @@ export function executeHostActivation(params) {
                 });
                 recoveredPhaseNames.push("pre-bootout-reenabled-same-predecessor-proven");
               }
-              if (!recoveredPhaseNames.includes("pre-bootout-suspension-resumed")) {
-                if (!recoveredPhaseNames.includes("pre-bootout-suspension-resume-requested")) {
-                  writePhase("pre-bootout-suspension-resume-requested");
-                  recoveredPhaseNames.push("pre-bootout-suspension-resume-requested");
-                }
-                recoverPreBootoutGatewaySuspension(
+              if (
+                recoveryHandoff !== null &&
+                !recoveredPhaseNames.includes("pre-bootout-suspension-resumed") &&
+                !recoveredPhaseNames.includes("pre-bootout-durable-suspension-retained")
+              ) {
+                const suspensionRecovery = recoverPreBootoutGatewaySuspension(
                   plan,
                   runtime,
                   recoveryHandoff,
                   expectedRecoverySuspension,
-                  (recoverySuspension) =>
+                  (recoverySuspension) => {
+                    if (
+                      recoverySuspension.suspendMode === GATEWAY_SUSPEND_MODE_LEGACY &&
+                      !recoveredPhaseNames.includes("pre-bootout-suspension-resume-requested")
+                    ) {
+                      writePhase("pre-bootout-suspension-resume-requested");
+                      recoveredPhaseNames.push("pre-bootout-suspension-resume-requested");
+                    }
                     verifyMutationAuthority(
                       plan,
                       runtime,
-                      "dead-owner predecessor suspension resume recovery",
+                      "dead-owner predecessor suspension recovery",
                       recoverySuspension,
-                    ),
+                    );
+                  },
                 );
-                writePhase("pre-bootout-suspension-resumed");
-                recoveredPhaseNames.push("pre-bootout-suspension-resumed");
+                if (suspensionRecovery.disposition === "retained") {
+                  const retainedBytes = proveGatewaySuspensionHeld(
+                    plan,
+                    suspensionRecovery.handoff,
+                    runtime,
+                    "dead-owner durable suspension retention",
+                  );
+                  writePhase("pre-bootout-durable-suspension-retained", {
+                    suspensionId: suspensionRecovery.handoff.suspensionId,
+                    gatewayInstanceId: suspensionRecovery.handoff.gatewayInstanceId,
+                    expiresAtMs: suspensionRecovery.handoff.expiresAtMs,
+                    handoffSha256: sha256(retainedBytes),
+                  });
+                  recoveredPhaseNames.push("pre-bootout-durable-suspension-retained");
+                } else if (suspensionRecovery.disposition === "legacy-resumed") {
+                  writePhase("pre-bootout-suspension-resumed");
+                  recoveredPhaseNames.push("pre-bootout-suspension-resumed");
+                }
               }
               performedRecovery = true;
             } else {
@@ -4161,21 +4114,25 @@ export function executeHostActivation(params) {
       successorPid: stablePostflight.successor.pid,
       successorRunCount: stablePostflight.successor.runCount,
     });
-    writePhase("successor-suspension-resume-requested", {
-      suspensionId: successorSuspension.suspensionId,
-      gatewayInstanceId: successorSuspension.gatewayInstanceId,
-      suspendMode: successorSuspension.suspendMode,
-      handoffSchema: successorSuspension.handoffSchema,
-    });
-    verifyMutationAuthority(
+    verifyMutationAuthority(plan, runtime, "successor held-fence proof boundary");
+    const heldHandoffBytes = proveGatewaySuspensionHeld(
       plan,
-      runtime,
-      "successor suspension resume boundary",
       successorSuspension,
+      runtime,
+      "successful host activation",
       "successor",
     );
-    resumeGatewaySuspension(plan, successorSuspension, runtime, "successor");
-    writePhase("successor-suspension-resumed");
+    writePhase("successor-suspension-held-proven", {
+      requestId: successorSuspension.requestId,
+      suspensionId: successorSuspension.suspensionId,
+      gatewayInstanceId: successorSuspension.gatewayInstanceId,
+      gatewayPid: successorSuspension.gatewayPid,
+      launchdRunCount: successorSuspension.launchdRunCount,
+      expiresAtMs: successorSuspension.expiresAtMs,
+      suspendMode: successorSuspension.suspendMode,
+      handoffSchema: successorSuspension.handoffSchema,
+      handoffSha256: sha256(heldHandoffBytes),
+    });
     return finish("ACTIVATED_VERIFIED", {
       successor: {
         pid: stablePostflight.successor.pid,
@@ -4255,19 +4212,34 @@ export function executeHostActivation(params) {
       }
     }
     if (!bootoutAttempted && suspension !== null && preBootoutEnableRecoverySafe) {
-      writePhase("pre-bootout-suspension-resume-requested", {
-        suspensionId: suspension.suspensionId,
-      });
       try {
-        verifyMutationAuthority(
-          plan,
-          runtime,
-          "pre-bootout suspension resume recovery",
-          suspension,
-        );
-        resumeGatewaySuspension(plan, suspension, runtime);
-        writePhase("pre-bootout-suspension-resumed");
-        suspension = null;
+        if (suspension.suspendMode === GATEWAY_SUSPEND_MODE) {
+          const retainedBytes = proveGatewaySuspensionHeld(
+            plan,
+            suspension,
+            runtime,
+            "pre-bootout durable suspension retention",
+          );
+          writePhase("pre-bootout-durable-suspension-retained", {
+            suspensionId: suspension.suspensionId,
+            gatewayInstanceId: suspension.gatewayInstanceId,
+            expiresAtMs: suspension.expiresAtMs,
+            handoffSha256: sha256(retainedBytes),
+          });
+        } else {
+          writePhase("pre-bootout-suspension-resume-requested", {
+            suspensionId: suspension.suspensionId,
+          });
+          verifyMutationAuthority(
+            plan,
+            runtime,
+            "pre-bootout legacy suspension resume recovery",
+            suspension,
+          );
+          resumeLegacyGatewaySuspension(plan, suspension, runtime);
+          writePhase("pre-bootout-suspension-resumed");
+          suspension = null;
+        }
       } catch (recoveryError) {
         if (
           recoveryError instanceof TerminalPersistenceError ||

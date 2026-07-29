@@ -24,7 +24,7 @@ import {
   HOST_ACTIVATION_RECEIPT_SCHEMA,
   parseLaunchdEnabledState,
   parseLaunchdServiceState,
-  persistGatewaySuspendHandoff,
+  proveGatewaySuspendHandoff,
   validateHostActivationPlan,
   validateHostActivationReceipt,
   validateHostRollbackEvidence,
@@ -40,6 +40,10 @@ import {
   resumeGatewaySuspend,
 } from "../../src/infra/gateway-suspend-coordinator.js";
 import {
+  beginDurableHandoffRelease,
+  readDurableHandoff,
+} from "../../src/infra/gateway-suspend-handoff.js";
+import {
   isGatewayWorkAdmissionClosed,
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
@@ -47,6 +51,7 @@ import {
 
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const sha = (character: string) => character.repeat(64);
+const GATEWAY_SUSPEND_MODE_LEGACY = "legacy-auto-expire/v1";
 
 type MutableReceiptPhase = Record<string, unknown> & {
   phase: string;
@@ -791,6 +796,50 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
         };
       }
       if (args.includes("gateway.suspend.prepare")) {
+        const request = JSON.parse(args[args.indexOf("--params") + 1]!);
+        const suspension = {
+          status: "ready",
+          suspensionId:
+            generation === "successor"
+              ? (options.successorSuspensionId ?? "fixture-suspension")
+              : "fixture-suspension",
+          gatewayInstanceId:
+            generation === "successor" ? successorGatewayInstanceId : predecessorGatewayInstanceId,
+          gatewayPid: generation === "successor" ? successorPid : plan.predecessor.pid,
+          launchdRunCount:
+            generation === "successor" ? successorRunCount : plan.predecessor.runCount,
+          expiresAtMs: nowMs + 120_000,
+          suspendMode: requestSuspendMode(args),
+          activeCount: 0,
+          blockers: [],
+        };
+        if (!options.suspensionBusy) {
+          const handoffPath = `${plan.host.stateDir}/gateway-suspend-handoff.json`;
+          const existingHandoffBytes =
+            writes.get(handoffPath) ?? options.existingFiles?.get(handoffPath);
+          const existingHandoff =
+            existingHandoffBytes === undefined
+              ? null
+              : JSON.parse(existingHandoffBytes.toString("utf8"));
+          if (existingHandoff === null || existingHandoff.resumeState === "held") {
+            removedFiles.delete(handoffPath);
+            writes.set(
+              handoffPath,
+              canonicalJsonBytes({
+                schema: plan.gatewaySuspension.handoffSchema,
+                requestId: request.requestId,
+                suspensionId: suspension.suspensionId,
+                gatewayInstanceId: suspension.gatewayInstanceId,
+                gatewayPid: suspension.gatewayPid,
+                launchdRunCount: suspension.launchdRunCount,
+                expiresAtMs: suspension.expiresAtMs,
+                suspendMode: suspension.suspendMode,
+                resumeState: "held",
+                resumeBeforeMs: null,
+              }),
+            );
+          }
+        }
         return {
           status: 0,
           stdout: JSON.stringify(
@@ -801,30 +850,20 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
                   activeCount: 1,
                   blockers: ["cron"],
                 }
-              : {
-                  status: "ready",
-                  suspensionId:
-                    generation === "successor"
-                      ? (options.successorSuspensionId ?? "fixture-suspension")
-                      : "fixture-suspension",
-                  gatewayInstanceId:
-                    generation === "successor"
-                      ? successorGatewayInstanceId
-                      : predecessorGatewayInstanceId,
-                  gatewayPid: generation === "successor" ? successorPid : plan.predecessor.pid,
-                  launchdRunCount:
-                    generation === "successor" ? successorRunCount : plan.predecessor.runCount,
-                  expiresAtMs: nowMs + 120_000,
-                  suspendMode: requestSuspendMode(args),
-                  activeCount: 0,
-                  blockers: [],
-                },
+              : suspension,
           ),
           stderr: "",
         };
       }
       if (args.includes("gateway.suspend.status")) {
-        const expiresAtMs = nowMs + 120_000;
+        const handoffPath = `${plan.host.stateDir}/gateway-suspend-handoff.json`;
+        const persistedHandoffBytes =
+          writes.get(handoffPath) ?? options.existingFiles?.get(handoffPath);
+        const persistedHandoff =
+          persistedHandoffBytes === undefined
+            ? null
+            : JSON.parse(persistedHandoffBytes.toString("utf8"));
+        const expiresAtMs = persistedHandoff?.expiresAtMs ?? nowMs + 120_000;
         nowMs += options.advanceAfterSuspensionStatusMs ?? 0;
         return {
           status: 0,
@@ -833,17 +872,19 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
               ? {
                   status: "running",
                   gatewayInstanceId:
-                    generation === "successor"
+                    persistedHandoff?.gatewayInstanceId ??
+                    (generation === "successor"
                       ? successorGatewayInstanceId
-                      : predecessorGatewayInstanceId,
+                      : predecessorGatewayInstanceId),
                   suspendMode: requestSuspendMode(args),
                 }
               : {
                   status: "ready",
                   gatewayInstanceId:
-                    generation === "successor"
+                    persistedHandoff?.gatewayInstanceId ??
+                    (generation === "successor"
                       ? successorGatewayInstanceId
-                      : predecessorGatewayInstanceId,
+                      : predecessorGatewayInstanceId),
                   expiresAtMs,
                   suspendMode: requestSuspendMode(args),
                 },
@@ -859,7 +900,8 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
         if (
           request.gatewayInstanceId !== gatewayInstanceId ||
           !Number.isSafeInteger(request.resumeBeforeMs) ||
-          nowMs >= request.resumeBeforeMs
+          nowMs >= request.resumeBeforeMs ||
+          request.suspendMode !== GATEWAY_SUSPEND_MODE_LEGACY
         ) {
           return {
             status: 0,
@@ -868,11 +910,16 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
               reason:
                 request.gatewayInstanceId !== gatewayInstanceId
                   ? "process-mismatch"
-                  : "resume-authority-expired",
+                  : request.suspendMode !== GATEWAY_SUSPEND_MODE_LEGACY
+                    ? "release-authority-required"
+                    : "resume-authority-expired",
             }),
             stderr: "",
           };
         }
+        const handoffPath = `${plan.host.stateDir}/gateway-suspend-handoff.json`;
+        writes.delete(handoffPath);
+        removedFiles.add(handoffPath);
         return {
           status: 0,
           stdout: JSON.stringify({
@@ -1187,7 +1234,7 @@ describe("one-use host activation lifecycle", () => {
       ).toMatchObject({
         outcome: "HOLD",
         holdReason: expect.stringContaining(
-          "another suspension owns the Gateway suspension handoff",
+          "Gateway suspension handoff does not bind the active suspension",
         ),
       });
       expect(fixture.commands.some(({ args }) => args[0] === "disable")).toBe(false);
@@ -1565,8 +1612,7 @@ describe("one-use host activation lifecycle", () => {
         "pre-bootout-service-loaded-proven",
         "pre-bootout-reenable-requested",
         "pre-bootout-reenabled-same-predecessor-proven",
-        "pre-bootout-suspension-resume-requested",
-        "pre-bootout-suspension-resumed",
+        "pre-bootout-durable-suspension-retained",
       ]);
       expect(
         second.commands.filter(
@@ -1698,8 +1744,7 @@ describe("one-use host activation lifecycle", () => {
       "pre-bootout-service-loaded-proven",
       "pre-bootout-reenable-requested",
       "pre-bootout-reenabled-same-predecessor-proven",
-      "pre-bootout-suspension-resume-requested",
-      "pre-bootout-suspension-resumed",
+      "pre-bootout-durable-suspension-retained",
     ]);
     expect(second.commands.some(({ args }) => args[0] === "bootstrap")).toBe(false);
   });
@@ -1795,7 +1840,7 @@ describe("one-use host activation lifecycle", () => {
     expect(second.commands.some(({ args }) => args.includes("gateway.suspend.resume"))).toBe(false);
   });
 
-  it("durably removes a stale running handoff before reacquiring suspension recovery", () => {
+  it("fails closed when running status conflicts with a retained durable handoff", () => {
     const plan = fixturePlan();
     const first = createRuntime(plan, { failWritePhase: "disabled-proven" });
     const planBytes = canonicalJsonBytes(plan);
@@ -1828,11 +1873,10 @@ describe("one-use host activation lifecycle", () => {
     });
 
     expect(receipt.outcome).toBe("HOLD");
-    expect(second.runtime.removeFileDurably).toHaveBeenCalledWith(handoffPath);
-    expect(
-      second.commands.filter(({ args }) => args.includes("gateway.suspend.prepare")),
-    ).toHaveLength(2);
-    expect(second.runtime.readOptionalFile(handoffPath, "stale handoff")).toBeNull();
+    expect(receipt.holdReason).toContain("running Gateway suspension status conflicts");
+    expect(second.runtime.removeFileDurably).not.toHaveBeenCalledWith(handoffPath);
+    expect(second.commands.some(({ args }) => args.includes("gateway.suspend.resume"))).toBe(false);
+    expect(second.runtime.readOptionalFile(handoffPath, "retained handoff")).not.toBeNull();
   });
 
   it("allows exactly one atomic dead-owner recovery owner to mutate", () => {
@@ -1917,10 +1961,10 @@ describe("one-use host activation lifecycle", () => {
       forbidden: "enable",
     },
     {
-      name: "loaded suspension resume",
+      name: "loaded durable suspension retention",
       failWritePhase: "suspension-prepared",
       initialLoaded: true,
-      phase: "pre-bootout-suspension-resume-requested",
+      phase: "pre-bootout-reenabled-same-predecessor-proven",
       forbidden: "gateway.suspend.resume",
     },
     {
@@ -2442,7 +2486,8 @@ describe("one-use host activation lifecycle", () => {
       first.fixture.writes,
       plan.evidence.ledgerDirectory,
     ).filter(
-      ({ entry }) => entry.phase !== "pre-bootout-suspension-resumed" && entry.phase !== "hold",
+      ({ entry }) =>
+        entry.phase !== "pre-bootout-durable-suspension-retained" && entry.phase !== "hold",
     );
     const existingFiles = new Map(
       [...first.fixture.writes.entries()].filter(
@@ -2467,8 +2512,7 @@ describe("one-use host activation lifecycle", () => {
     expect(recoveryPhaseNames(receipt)).toEqual([
       "pre-bootout-reenable-requested",
       "pre-bootout-reenabled-same-predecessor-proven",
-      "pre-bootout-suspension-resume-requested",
-      "pre-bootout-suspension-resumed",
+      "pre-bootout-durable-suspension-retained",
     ]);
   });
 
@@ -2512,13 +2556,14 @@ describe("one-use host activation lifecycle", () => {
       expect(recoveryPhaseNames(receipt)).toEqual([
         "pre-bootout-service-loaded-proven",
         "pre-bootout-reenabled-same-predecessor-proven",
-        "pre-bootout-suspension-resume-requested",
-        "pre-bootout-suspension-resumed",
+        ...(removeHandoff ? [] : ["pre-bootout-durable-suspension-retained"]),
       ]);
       expect(second.commands.some(({ args }) => args.includes("gateway.suspend.resume"))).toBe(
-        true,
+        false,
       );
-      expect(second.runtime.readOptionalFile(handoffPath, "test handoff")).toBeNull();
+      expect(second.runtime.readOptionalFile(handoffPath, "test handoff") === null).toBe(
+        removeHandoff,
+      );
       const validateReceipt = compileContractSchema(
         "handoff-v2-host-activation-receipt.v1.schema.json",
       );
@@ -2573,8 +2618,7 @@ describe("one-use host activation lifecycle", () => {
       ...(expectedRecoveryPhases.includes("pre-bootout-reenabled-same-predecessor-proven")
         ? []
         : ["pre-bootout-reenabled-same-predecessor-proven"]),
-      "pre-bootout-suspension-resume-requested",
-      "pre-bootout-suspension-resumed",
+      "pre-bootout-durable-suspension-retained",
     ]);
   });
 
@@ -2749,24 +2793,30 @@ describe("one-use host activation lifecycle", () => {
     expect(first.runtime.ensureFileDurable).toHaveBeenCalledWith(plan.evidence.receiptPath);
     expect(
       ledgerEntriesFromWrites(first.writes, plan.evidence.ledgerDirectory).at(-1)?.entry.phase,
-    ).toBe("successor-suspension-resumed");
+    ).toBe("successor-suspension-held-proven");
   });
 
-  it("does not report success when the matching suspension was not resumed", () => {
+  it("does not invoke durable resume even when the mocked resume would fail", () => {
     const plan = fixturePlan();
     const { fixture, receipt } = executeFixture(plan, { resumeReturnsFalse: true });
-    expect(receipt).toMatchObject({
-      outcome: "HOLD",
-      holdReason: "Gateway suspension admission fence did not resume cleanly",
-    });
+    expect(receipt).toMatchObject({ outcome: "ACTIVATED_VERIFIED" });
     expect(
       ledgerEntriesFromWrites(fixture.writes, plan.evidence.ledgerDirectory).some(
-        ({ entry }) => entry.phase === "successor-suspension-resumed",
+        ({ entry }) => entry.phase === "successor-suspension-held-proven",
       ),
-    ).toBe(false);
+    ).toBe(true);
+    expect(fixture.commands.some(({ args }) => args.includes("gateway.suspend.resume"))).toBe(
+      false,
+    );
     expect(fixture.runtime.removeFileDurably).not.toHaveBeenCalledWith(
       `${plan.host.stateDir}/gateway-suspend-handoff.json`,
     );
+    expect(
+      fixture.runtime.readOptionalFile(
+        `${plan.host.stateDir}/gateway-suspend-handoff.json`,
+        "retained successor handoff",
+      ),
+    ).not.toBeNull();
   });
 
   it("refuses to recover an exact-plan claim while its executor is alive", () => {
@@ -3143,7 +3193,7 @@ describe("one-use host activation lifecycle", () => {
     const prepareCalls = fixture.commands.filter(({ args }) =>
       args.includes("gateway.suspend.prepare"),
     );
-    expect(prepareCalls).toHaveLength(4);
+    expect(prepareCalls).toHaveLength(3);
     for (const [index, call] of prepareCalls.entries()) {
       const params = JSON.parse(call.args[call.args.indexOf("--params") + 1]!);
       expect(params).toMatchObject({ requestId: `handoff-v2:${plan.planId}` });
@@ -3177,12 +3227,12 @@ describe("one-use host activation lifecycle", () => {
     );
   });
 
-  it("rechecks ordinary resume authority after its durable request phase", () => {
+  it("rechecks ordinary recovery authority after its durable request phase", () => {
     const { fixture, receipt } = executeFixture(fixturePlan(), {
       failCommand: (command, args) =>
         command === "/bin/launchctl" && args[0] === "disable" ? "ambiguous" : undefined,
       advanceAfterWritePhase: {
-        phase: "pre-bootout-suspension-resume-requested",
+        phase: "pre-bootout-reenable-requested",
         milliseconds: 6_000_000,
       },
     });
@@ -3208,7 +3258,7 @@ describe("one-use host activation lifecycle", () => {
       const result = base(command, args, options);
       if (args.includes("gateway.suspend.prepare")) {
         prepareCalls += 1;
-        if (prepareCalls === 4) {
+        if (prepareCalls === 3) {
           const body = JSON.parse(result.stdout);
           body.gatewayInstanceId = "replacement-gateway-instance";
           return { ...result, stdout: JSON.stringify(body) };
@@ -3237,7 +3287,7 @@ describe("one-use host activation lifecycle", () => {
 
   it.each([
     ["re-enabled proof", "05-pre-bootout-reenabled-same-predecessor-proven.json"],
-    ["suspension-resumed proof", "07-pre-bootout-suspension-resumed.json"],
+    ["durable suspension-retained proof", "06-pre-bootout-durable-suspension-retained.json"],
   ])("propagates ordinary %s ambiguity without appending HOLD", (_label, phaseFile) => {
     const plan = fixturePlan();
     const phasePath = `${plan.evidence.ledgerDirectory}/${phaseFile}`;
@@ -3262,7 +3312,7 @@ describe("one-use host activation lifecycle", () => {
     );
   });
 
-  it("creates the durable handoff itself for a legacy predecessor before bootout", () => {
+  it("proves the Gateway-authored durable handoff before bootout without rewriting it", () => {
     const plan = fixturePlan();
     const fixture = createRuntime(plan);
     const base = vi.mocked(fixture.runtime.run).getMockImplementation()!;
@@ -3293,7 +3343,10 @@ describe("one-use host activation lifecycle", () => {
       resumeState: "held",
       resumeBeforeMs: null,
     });
-    expect(fixture.runtime.writeExclusive).toHaveBeenCalledWith(handoffPath, expect.any(Buffer));
+    expect(fixture.runtime.writeExclusive).not.toHaveBeenCalledWith(
+      handoffPath,
+      expect.any(Buffer),
+    );
   });
 
   it("rejects a successor that does not adopt the predecessor suspension identity", () => {
@@ -3375,7 +3428,7 @@ describe("one-use host activation lifecycle", () => {
     ).toBe(false);
   });
 
-  it("reacquires the real scheduler admission fence after a gateway lifecycle reset", () => {
+  it("retains the real scheduler admission fence after a gateway lifecycle reset", () => {
     resetGatewaySuspendCoordinatorForLifecycleRestart();
     resetGatewayWorkAdmission();
     const plan = fixturePlan();
@@ -3390,6 +3443,21 @@ describe("one-use host activation lifecycle", () => {
     let successorFenceObserved = false;
     const predecessorGatewayInstanceId = "real-predecessor-gateway-instance";
     const successorGatewayInstanceId = "real-successor-gateway-instance";
+    const planHandoffPath = `${plan.host.stateDir}/gateway-suspend-handoff.json`;
+    const readOptionalFile = vi.mocked(fixture.runtime.readOptionalFile).getMockImplementation()!;
+    vi.mocked(fixture.runtime.readOptionalFile).mockImplementation((filePath, description) => {
+      if (filePath === planHandoffPath) {
+        try {
+          return readFileSync(durableHandoffPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return null;
+          }
+          throw error;
+        }
+      }
+      return readOptionalFile(filePath, description);
+    });
     const inspect = {
       getQueueSize: () => 0,
       getPendingReplies: () => 0,
@@ -3463,6 +3531,21 @@ describe("one-use host activation lifecycle", () => {
           stderr: "",
         };
       }
+      if (args.includes("gateway.suspend.status")) {
+        fixture.commands.push({ command, args, options });
+        const request = JSON.parse(args[args.indexOf("--params") + 1]!);
+        return {
+          status: 0,
+          stdout: JSON.stringify(
+            getGatewaySuspendStatus(
+              request,
+              successorBootstrapped ? successorGatewayInstanceId : predecessorGatewayInstanceId,
+              durableHandoffPath,
+            ),
+          ),
+          stderr: "",
+        };
+      }
       if (successorBootstrapped && args.includes("health")) {
         successorFenceObserved ||= isGatewayWorkAdmissionClosed();
       }
@@ -3477,32 +3560,36 @@ describe("one-use host activation lifecycle", () => {
       });
       expect(receipt.outcome).toBe("ACTIVATED_VERIFIED");
       expect(pauseScheduling).toHaveBeenCalledTimes(2);
-      expect(resumeScheduling).toHaveBeenCalledTimes(2);
+      expect(resumeScheduling).toHaveBeenCalledTimes(1);
       expect(successorFenceObserved).toBe(true);
-      expect(isGatewayWorkAdmissionClosed()).toBe(false);
+      expect(isGatewayWorkAdmissionClosed()).toBe(true);
       expect(
         getGatewaySuspendStatus(
           {
-            suspensionId: "real-coordinator-suspension-2",
+            suspensionId: "real-coordinator-suspension-1",
             gatewayInstanceId: successorGatewayInstanceId,
+            suspendMode: "handoff-durable-hold/v1",
           },
           successorGatewayInstanceId,
+          durableHandoffPath,
         ),
-      ).toEqual({
-        status: "running",
+      ).toMatchObject({
+        status: "ready",
         gatewayInstanceId: successorGatewayInstanceId,
-        suspendMode: "legacy-auto-expire/v1",
+        suspendMode: "handoff-durable-hold/v1",
       });
+      expect(fixture.commands.some(({ args }) => args.includes("gateway.suspend.resume"))).toBe(
+        false,
+      );
     } finally {
       resetGatewaySuspendCoordinatorForLifecycleRestart();
       resetGatewayWorkAdmission();
       rmSync(handoffDirectory, { recursive: true, force: true });
     }
     expect(resumeScheduling).toHaveBeenCalledTimes(2);
-    expect(isGatewayWorkAdmissionClosed()).toBe(false);
   });
 
-  it("renews and resumes after the controller canonically rewrites a real durable handoff", () => {
+  it("proves the controller-authored handoff unchanged before an external paired release", () => {
     resetGatewaySuspendCoordinatorForLifecycleRestart();
     resetGatewayWorkAdmission();
     const directory = mkdtempSync(path.join(tmpdir(), "openclaw-host-handoff-rewrite-"));
@@ -3551,11 +3638,10 @@ describe("one-use host activation lifecycle", () => {
         handoffSchema: "openclaw-gateway-suspend-handoff/v3" as const,
       };
 
-      persistGatewaySuspendHandoff(plan, suspension, runtime);
+      proveGatewaySuspendHandoff(plan, suspension, runtime);
 
-      const rewrittenBytes = readFileSync(durableHandoffPath);
-      expect(rewrittenBytes).not.toEqual(compactBytes);
-      expect(rewrittenBytes).toEqual(canonicalJsonBytes(JSON.parse(compactBytes.toString("utf8"))));
+      const provenBytes = readFileSync(durableHandoffPath);
+      expect(provenBytes).toEqual(compactBytes);
       expect(
         prepareGatewaySuspend({
           requestId: suspension.requestId,
@@ -3576,6 +3662,8 @@ describe("one-use host activation lifecycle", () => {
         suspensionId: suspension.suspensionId,
         suspendMode: suspension.suspendMode,
       });
+      const releaseAuthoritySha256 = hash("external-rc15-release");
+      const releaseRequestId = `handoff-v2-release:${releaseAuthoritySha256.slice(0, 32)}`;
       expect(
         resumeGatewaySuspend(
           {
@@ -3583,16 +3671,24 @@ describe("one-use host activation lifecycle", () => {
             gatewayInstanceId,
             resumeBeforeMs: nowMs + 60_000,
             suspendMode: suspension.suspendMode,
+            releaseRequestId,
+            releaseAuthoritySha256,
           },
           gatewayInstanceId,
           () => nowMs + 2_000,
+          { durableHandoffPath },
         ),
-      ).toEqual({
+      ).toMatchObject({
         ok: true,
         status: "running",
         resumed: true,
         gatewayInstanceId,
         suspendMode: suspension.suspendMode,
+        releaseReceipt: {
+          status: "release_completed",
+          releaseRequestId,
+          releaseAuthoritySha256,
+        },
       });
       expect(runtime.readOptionalFile(durableHandoffPath, "test handoff")).toBeNull();
       expect(pauseScheduling).toHaveBeenCalledTimes(1);
@@ -3604,10 +3700,78 @@ describe("one-use host activation lifecycle", () => {
     }
   });
 
-  it("rechecks full successor authority after the durable final resume request", () => {
+  it("never rewrites a concurrently committed held-to-release-pending transition", () => {
+    resetGatewaySuspendCoordinatorForLifecycleRestart();
+    resetGatewayWorkAdmission();
+    const directory = mkdtempSync(path.join(tmpdir(), "openclaw-host-handoff-release-race-"));
+    const durableHandoffPath = path.join(directory, "gateway-suspend-handoff.json");
+    const plan = fixturePlan();
+    plan.host.stateDir = directory;
+    const runtime = createDefaultHostActivationRuntime();
+    const nowMs = Date.parse("2026-07-28T08:30:00.000Z");
+    try {
+      const prepared = prepareGatewaySuspend({
+        requestId: `handoff-v2:${plan.planId}`,
+        gatewayPid: plan.predecessor.pid,
+        launchdRunCount: plan.predecessor.runCount,
+        suspendMode: "handoff-durable-hold/v1",
+        currentGatewayInstanceId: "release-race-gateway-instance",
+        currentGatewayPid: plan.predecessor.pid,
+        pauseScheduling: vi.fn(),
+        resumeScheduling: vi.fn(),
+        nowMs: () => nowMs,
+        createSuspensionId: () => "release-race-suspension",
+        durableHandoffPath,
+      });
+      if (prepared.status !== "ready") {
+        throw new Error("test preparation did not establish the durable fence");
+      }
+      const active = readDurableHandoff(durableHandoffPath);
+      if (!active) {
+        throw new Error("test durable handoff is missing");
+      }
+      const releaseAuthoritySha256 = hash("concurrent-external-release");
+      beginDurableHandoffRelease({
+        path: durableHandoffPath,
+        expected: active.handoff,
+        releaseRequestId: `handoff-v2-release:${releaseAuthoritySha256.slice(0, 32)}`,
+        releaseAuthoritySha256,
+        resumeBeforeMs: nowMs + 60_000,
+        committedAtMs: nowMs + 1_000,
+      });
+      const pendingBytes = readFileSync(durableHandoffPath);
+      expect(() =>
+        proveGatewaySuspendHandoff(
+          plan,
+          {
+            requestId: `handoff-v2:${plan.planId}`,
+            suspensionId: prepared.suspensionId,
+            gatewayInstanceId: prepared.gatewayInstanceId,
+            gatewayPid: prepared.gatewayPid,
+            launchdRunCount: prepared.launchdRunCount,
+            expiresAtMs: prepared.expiresAtMs,
+            suspendMode: "handoff-durable-hold/v1",
+            handoffSchema: "openclaw-gateway-suspend-handoff/v3",
+          },
+          runtime,
+        ),
+      ).toThrow("Gateway suspension handoff keys must be exactly");
+      expect(readFileSync(durableHandoffPath)).toEqual(pendingBytes);
+      expect(readDurableHandoff(durableHandoffPath)?.handoff).toMatchObject({
+        resumeState: "release-pending",
+        releaseAuthoritySha256,
+      });
+    } finally {
+      resetGatewaySuspendCoordinatorForLifecycleRestart();
+      resetGatewayWorkAdmission();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rechecks full successor authority before recording the held fence", () => {
     const { fixture, receipt } = executeFixture(fixturePlan(), {
       advanceAfterWritePhase: {
-        phase: "successor-suspension-resume-requested",
+        phase: "stability-window-proven",
         milliseconds: 6_000_000,
       },
     });
@@ -3621,16 +3785,16 @@ describe("one-use host activation lifecycle", () => {
     );
   });
 
-  it("rejects successor replacement during the final resume renewal", () => {
+  it("rejects successor replacement during the final held-status proof", () => {
     const plan = fixturePlan();
     const fixture = createRuntime(plan);
     const base = vi.mocked(fixture.runtime.run).getMockImplementation()!;
     vi.mocked(fixture.runtime.run).mockImplementation((command, args, options) => {
       const result = base(command, args, options);
-      const finalResumeRequested = [...fixture.writes.keys()].some((filePath) =>
-        filePath.endsWith("-successor-suspension-resume-requested.json"),
+      const finalHeldProofStarted = [...fixture.writes.keys()].some((filePath) =>
+        filePath.endsWith("-stability-window-proven.json"),
       );
-      if (finalResumeRequested && args.includes("gateway.suspend.prepare")) {
+      if (finalHeldProofStarted && args.includes("gateway.suspend.status")) {
         const body = JSON.parse(result.stdout);
         body.gatewayInstanceId = "replacement-successor-gateway-instance";
         return { ...result, stdout: JSON.stringify(body) };
@@ -3648,7 +3812,7 @@ describe("one-use host activation lifecycle", () => {
     expect(receipt).toMatchObject({
       outcome: "HOLD",
       holdReason: expect.stringContaining(
-        "Gateway suspension admission fence could not be renewed for the mutation",
+        "successful host activation does not have an active ready suspension",
       ),
     });
     expect(fixture.commands.some(({ args }) => args.includes("gateway.suspend.resume"))).toBe(
@@ -3656,23 +3820,18 @@ describe("one-use host activation lifecycle", () => {
     );
   });
 
-  it("binds final resume to a server-enforced authority deadline", () => {
+  it("leaves final release to the external paired-release controller", () => {
     const { fixture, receipt } = executeFixture(fixturePlan(), {
       advanceBeforeGatewayResumeMs: 6_000_000,
     });
 
-    expect(receipt).toMatchObject({
-      outcome: "HOLD",
-      holdReason: "Gateway suspension admission fence did not resume cleanly",
-    });
+    expect(receipt).toMatchObject({ outcome: "ACTIVATED_VERIFIED" });
     const resume = fixture.commands.find(({ args }) => args.includes("gateway.suspend.resume"));
-    expect(resume).toBeDefined();
-    const params = JSON.parse(resume!.args[resume!.args.indexOf("--params") + 1]!);
-    expect(params).toMatchObject({
-      suspensionId: "fixture-suspension",
-      gatewayInstanceId: "fixture-successor-gateway-instance",
-      resumeBeforeMs: expect.any(Number),
-    });
+    expect(resume).toBeUndefined();
+    expect(
+      ledgerEntriesFromWrites(fixture.writes, fixturePlan().evidence.ledgerDirectory).at(-1)?.entry
+        .phase,
+    ).toBe("successor-suspension-held-proven");
   });
 
   it("does not expose successor proofs if the postflight phase cannot be persisted", () => {
@@ -4269,7 +4428,7 @@ describe("terminal contract enforcement", () => {
       ),
     );
     const recoveryIndex = receipt.ledger.recoveryPhases.findIndex(
-      (phase) => phase.phase === "pre-bootout-suspension-resume-requested",
+      (phase) => phase.phase === "pre-bootout-durable-suspension-retained",
     );
     const duplicate = structuredClone(
       requiredArrayEntry(receipt.ledger.recoveryPhases, recoveryIndex),

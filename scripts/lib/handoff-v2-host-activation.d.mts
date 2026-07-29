@@ -14,7 +14,7 @@ export function parseLaunchdServiceState(
 export function parseLaunchdEnabledState(output: string, expectedLabel: string): boolean;
 export function verifyPidDead(pid: number, runtime: HostActivationRuntime): void;
 export function hostActivationExitCode(receipt: unknown): 0 | 2;
-export function persistGatewaySuspendHandoff(
+export function proveGatewaySuspendHandoff(
   plan: { host: { stateDir: string } },
   suspension: {
     requestId: string;
@@ -27,7 +27,6 @@ export function persistGatewaySuspendHandoff(
     handoffSchema: "openclaw-gateway-suspend-handoff/v3";
   },
   runtime: HostActivationRuntime,
-  allowGatewayInstanceTransition?: boolean,
 ): void;
 
 export type HostActivationCommandResult = {
