@@ -985,6 +985,66 @@ function executeFixture(plan = fixturePlan(), options: RuntimeOptions = {}, exec
   return { plan, fixture, receipt };
 }
 
+function exactLifecycleClaimBytes(plan: ReturnType<typeof fixturePlan>): Buffer {
+  const planBytes = canonicalJsonBytes(plan);
+  return canonicalJsonBytes({
+    schema: "handoff-v2-host-activation-ledger-phase/v1",
+    planId: plan.planId,
+    planSha256: hash(planBytes),
+    sequence: 0,
+    phase: "claim",
+    at: "2026-07-28T08:29:00.000Z",
+    detail: {
+      launchdDomain: plan.host.launchdDomain,
+      launchdLabel: plan.host.launchdLabel,
+      executorPid: 9_000,
+      predecessorPid: plan.predecessor.pid,
+      predecessorRunCount: plan.predecessor.runCount,
+      supervisorLeaseSha256: plan.evidence.supervisorLeaseSha256,
+    },
+  });
+}
+
+function expectExistingClaimPreflightRefusal(
+  plan: ReturnType<typeof fixturePlan>,
+  options: RuntimeOptions,
+) {
+  const fixture = createRuntime(plan, options);
+  const planBytes = canonicalJsonBytes(plan);
+  expect(() =>
+    executeHostActivation({
+      planBytes,
+      expectedPlanSha256: hash(planBytes),
+      execute: false,
+      runtime: fixture.runtime,
+    }),
+  ).toThrow("read-only preflight cannot recover an existing lifecycle claim");
+  expect(fixture.commands).toHaveLength(0);
+  expect(fixture.writes.size).toBe(0);
+  expect(fixture.runtime.readOptionalFile).toHaveBeenCalledTimes(1);
+  expect(fixture.runtime.readOptionalFile).toHaveBeenCalledWith(
+    expect.any(String),
+    "service-global lifecycle claim",
+  );
+  for (const method of [
+    "run",
+    "assertClaimOwnerDead",
+    "listLedgerPhases",
+    "verifyFile",
+    "ensureFileDurable",
+    "acquireRecoveryOwnership",
+    "releaseRecoveryOwnership",
+    "writeExclusive",
+    "replaceFileDurably",
+    "removeFileDurably",
+    "installFile",
+    "preserveFile",
+    "sleep",
+  ]) {
+    expect(Reflect.get(fixture.runtime, method)).not.toHaveBeenCalled();
+  }
+}
+
 describe("host activation plan contract", () => {
   it("accepts the closed authority-free v1 fixture", () => {
     const plan = fixturePlan();
@@ -1199,6 +1259,83 @@ describe("one-use host activation lifecycle", () => {
     expect(fixture.runtime.writeExclusive).not.toHaveBeenCalled();
     expect(fixture.commands.some(({ args }) => args[0] === "disable")).toBe(false);
   });
+
+  it("keeps preflight read-only when the exact predecessor backup already exists", () => {
+    const plan = fixturePlan();
+    const predecessorBackup = Buffer.from("predecessor-plist");
+    plan.predecessor.servicePlistSha256 = hash(predecessorBackup);
+    const { fixture, receipt } = executeFixture(
+      plan,
+      { existingPlistBackup: predecessorBackup },
+      false,
+    );
+    expect(receipt).toMatchObject({ outcome: "PREFLIGHT_PASS" });
+    for (const method of [
+      "ensureFileDurable",
+      "writeExclusive",
+      "replaceFileDurably",
+      "removeFileDurably",
+      "installFile",
+      "preserveFile",
+    ]) {
+      expect(Reflect.get(fixture.runtime, method)).not.toHaveBeenCalled();
+    }
+    expect(fixture.writes.size).toBe(0);
+    expect(
+      fixture.commands.some(
+        ({ command, args }) =>
+          (command === "/bin/launchctl" &&
+            ["disable", "enable", "bootout", "bootstrap"].includes(args[0] ?? "")) ||
+          args.includes("gateway.suspend.prepare") ||
+          args.includes("gateway.suspend.resume"),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a mismatched predecessor backup during preflight without renewing durability", () => {
+    const plan = fixturePlan();
+    const fixture = createRuntime(plan, {
+      existingPlistBackup: Buffer.from("mismatched-predecessor-plist"),
+    });
+    const planBytes = canonicalJsonBytes(plan);
+    expect(() =>
+      executeHostActivation({
+        planBytes,
+        expectedPlanSha256: hash(planBytes),
+        execute: false,
+        runtime: fixture.runtime,
+      }),
+    ).toThrow("existing predecessor plist backup does not match the activation plan");
+    expect(fixture.runtime.ensureFileDurable).not.toHaveBeenCalled();
+    expect(fixture.writes.size).toBe(0);
+    expect(fixture.commands).toHaveLength(0);
+  });
+
+  it.each(["exact", "empty", "malformed", "foreign", "owner-alive", "ownership-held"] as const)(
+    "refuses the %s existing claim before inspecting or recovering lifecycle state",
+    (claimState) => {
+      const plan = fixturePlan();
+      const recoveryOwnership = { executorPid: 9_999 };
+      let existingGlobalClaim = exactLifecycleClaimBytes(plan);
+      if (claimState === "empty") {
+        existingGlobalClaim = Buffer.alloc(0);
+      } else if (claimState === "malformed") {
+        existingGlobalClaim = Buffer.from("{");
+      } else if (claimState === "foreign") {
+        const foreignClaim = JSON.parse(existingGlobalClaim.toString("utf8"));
+        foreignClaim.planId = "foreign-plan";
+        existingGlobalClaim = canonicalJsonBytes(foreignClaim);
+      }
+      expectExistingClaimPreflightRefusal(plan, {
+        existingGlobalClaim,
+        claimOwnerAlive: claimState === "owner-alive",
+        recoveryOwnership: claimState === "ownership-held" ? recoveryOwnership : undefined,
+      });
+      if (claimState === "ownership-held") {
+        expect(recoveryOwnership.executorPid).toBe(9_999);
+      }
+    },
+  );
 
   it.each(["resume-pending", "resume-expired"] as const)(
     "rejects a normal activation that encounters a %s marker",

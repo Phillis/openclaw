@@ -3230,7 +3230,12 @@ export function executeHostActivation(params) {
       globalClaimPath,
       "service-global lifecycle claim",
     );
-    if (existingGlobalClaim) {
+    if (existingGlobalClaim !== null) {
+      // Existing-claim recovery owns durable and lifecycle mutations, so dry runs
+      // must stop before claim durability verification or recovery ownership.
+      if (!params.execute) {
+        throw new Error("read-only preflight cannot recover an existing lifecycle claim");
+      }
       try {
         runtime.ensureFileDurable(globalClaimPath);
       } catch (error) {
@@ -3797,7 +3802,7 @@ export function executeHostActivation(params) {
       runtime.assertOutputAvailable(plan.evidence.predecessorPlistBackupPath, "plist backup");
     } else if (sha256(existingPlistBackup) !== plan.predecessor.servicePlistSha256) {
       throw new Error("existing predecessor plist backup does not match the activation plan");
-    } else {
+    } else if (params.execute) {
       runtime.ensureFileDurable(plan.evidence.predecessorPlistBackupPath);
     }
     runtime.assertOutputAvailable(plan.evidence.receiptPath, "activation receipt");
