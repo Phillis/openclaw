@@ -137,7 +137,8 @@ function fixturePlan() {
   const homePath = "/Users/test";
   const stateDir = `${homePath}/.openclaw`;
   const evidenceRoot = `${stateDir}/host-activation-evidence`;
-  const stagingRoot = "/opt/openclaw-rc13";
+  const successorCommit = "c3c7e9d999b4b167ec87adad39032f658df60ada";
+  const stagingRoot = `${stateDir}/host-runtimes/${successorCommit}`;
   return {
     schema: "handoff-v2-host-activation-plan/v1",
     planId: "rc13-host-activation-001",
@@ -174,14 +175,14 @@ function fixturePlan() {
       runtimeStampSha256: sha("6"),
       buildManifestPath: "/opt/openclaw-rc2/build-manifest.json",
       buildManifestSha256: sha("7"),
-      expectedProcessCommand: "/opt/openclaw-rc2/node /opt/openclaw-rc2/openclaw.mjs gateway",
+      expectedProcessCommand: "/opt/openclaw-rc2/node /opt/openclaw-rc2/dist/gateway.js gateway",
       servicePlistPath: `${homePath}/Library/LaunchAgents/ai.openclaw.gateway.plist`,
       servicePlistSha256: sha("8"),
       configPath: `${stateDir}/openclaw.json`,
       configSha256: sha("9"),
     },
     successor: {
-      commit: "c3c7e9d999b4b167ec87adad39032f658df60ada",
+      commit: successorCommit,
       tree: "c4f76e21e4d5753daad3c348297690968e92d520",
       cliPath: `${stagingRoot}/openclaw.mjs`,
       cliSha256: sha("a"),
@@ -197,7 +198,7 @@ function fixturePlan() {
       runtimeStampSha256: sha("f"),
       buildManifestPath: `${stagingRoot}/build-manifest.json`,
       buildManifestSha256: sha("0"),
-      expectedProcessCommand: `${stagingRoot}/node ${stagingRoot}/openclaw.mjs gateway`,
+      expectedProcessCommand: `${stagingRoot}/node ${stagingRoot}/dist/gateway.js gateway`,
       stagedServicePlistPath: `${stagingRoot}/ai.openclaw.gateway.plist`,
       stagedServicePlistSha256: sha("a"),
       installedServicePlistPath: `${homePath}/Library/LaunchAgents/ai.openclaw.gateway.plist`,
@@ -251,6 +252,41 @@ function fixturePlan() {
   };
 }
 
+function realisticMacHostPlan() {
+  const plan = fixturePlan();
+  const generation = plan.successor.commit;
+  const predecessorRoot = `${plan.host.stateDir}/host-runtimes/${plan.predecessor.commit}`;
+  const successorRoot = `${plan.host.stateDir}/host-runtimes/${generation}`;
+  const predecessorRuntime = "/opt/homebrew/opt/node@24/bin/node";
+  const successorRuntime = `${successorRoot}/toolchain/bin/node`;
+  const wrapper = `${plan.host.stateDir}/service-env/ai.openclaw.gateway-env-wrapper.sh`;
+  const environmentFile = `${plan.host.stateDir}/service-env/ai.openclaw.gateway.env`;
+
+  plan.host.stagingRoot = plan.host.stateDir;
+  plan.predecessor.cliPath = `${predecessorRoot}/openclaw.mjs`;
+  plan.predecessor.runtimePath = predecessorRuntime;
+  plan.predecessor.gatewayEntrypointPath = `${predecessorRoot}/dist/index.js`;
+  plan.predecessor.wrapperPath = wrapper;
+  plan.predecessor.environmentFilePath = environmentFile;
+  plan.predecessor.runtimeStampPath = `${predecessorRoot}/dist/.runtime-postbuildstamp`;
+  plan.predecessor.buildManifestPath = `${plan.host.evidenceRoot}/predecessor-build-manifest.json`;
+  plan.predecessor.expectedProcessCommand = `${predecessorRuntime} ${predecessorRoot}/dist/index.js gateway --port 18789`;
+
+  plan.successor.cliPath = `${successorRoot}/openclaw.mjs`;
+  plan.successor.runtimePath = successorRuntime;
+  plan.successor.gatewayEntrypointPath = `${successorRoot}/dist/index.js`;
+  plan.successor.wrapperPath = wrapper;
+  plan.successor.wrapperSha256 = plan.predecessor.wrapperSha256;
+  plan.successor.environmentFilePath = environmentFile;
+  plan.successor.environmentFileSha256 = plan.predecessor.environmentFileSha256;
+  plan.successor.runtimeStampPath = `${successorRoot}/dist/.runtime-postbuildstamp`;
+  plan.successor.buildManifestPath = `${successorRoot}/dist/openclaw-host-build-manifest.json`;
+  plan.successor.expectedProcessCommand = `${successorRuntime} ${successorRoot}/dist/index.js gateway --port 18789`;
+  plan.successor.stagedServicePlistPath = `${successorRoot}/ai.openclaw.gateway.plist`;
+
+  return plan;
+}
+
 function launchdState(pid: number, runs: number) {
   return `label = ai.openclaw.gateway\npid = ${pid}\nruns = ${runs}\n`;
 }
@@ -287,6 +323,7 @@ type RuntimeOptions = {
   unavailableOutput?: string;
   insecureDirectory?: string;
   insecureDirectoryChain?: string;
+  sameRuntimeFileAlias?: boolean;
   ambiguousPidAbsence?: boolean;
   ambiguousPortAbsence?: boolean;
   ambiguousServiceAbsence?: boolean;
@@ -304,6 +341,7 @@ type RuntimeOptions = {
   failEnsureFileDurablePath?: string;
   initialNowMs?: number;
   plistLabelOverride?: string;
+  successorPlistEntrypointOverride?: string;
   successorSuspensionId?: string;
   predecessorGatewayInstanceId?: string;
   successorGatewayInstanceId?: string;
@@ -418,6 +456,11 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
     assertSecureDirectoryChain: vi.fn((filePath) => {
       if (filePath === options.insecureDirectoryChain) {
         throw new Error("unsafe directory chain");
+      }
+    }),
+    assertDistinctFiles: vi.fn(() => {
+      if (options.sameRuntimeFileAlias) {
+        throw new Error("predecessor and successor Node runtimes must be distinct physical files");
       }
     }),
     assertOutputAvailable: vi.fn((filePath) => {
@@ -601,7 +644,9 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
               successor ? plan.successor.wrapperPath : plan.predecessor.wrapperPath,
               successor ? plan.successor.environmentFilePath : plan.predecessor.environmentFilePath,
               successor ? plan.successor.runtimePath : plan.predecessor.runtimePath,
-              successor ? plan.successor.cliPath : plan.predecessor.cliPath,
+              successor
+                ? (options.successorPlistEntrypointOverride ?? plan.successor.gatewayEntrypointPath)
+                : plan.predecessor.gatewayEntrypointPath,
               "gateway",
             ],
             KeepAlive: true,
@@ -883,6 +928,32 @@ describe("host activation plan contract", () => {
     ).toEqual(plan);
   });
 
+  it("accepts an external predecessor and a bundled successor Node runtime", () => {
+    const plan = realisticMacHostPlan();
+    expect(
+      validateHostActivationPlan(plan, { nowMs: Date.parse("2026-07-28T08:30:00.000Z") }),
+    ).toEqual(plan);
+  });
+
+  it("rejects an external successor Node runtime even when it exactly matches the predecessor", () => {
+    const plan = realisticMacHostPlan();
+    plan.successor.runtimePath = plan.predecessor.runtimePath;
+    plan.successor.runtimeSha256 = plan.predecessor.runtimeSha256;
+    expect(() =>
+      validateHostActivationPlan(plan, { nowMs: Date.parse("2026-07-28T08:30:00.000Z") }),
+    ).toThrow("must remain within");
+  });
+
+  it("rejects redefining staging as the Homebrew realpath root", () => {
+    const plan = realisticMacHostPlan();
+    plan.host.stagingRoot = "/opt/homebrew/Cellar/node@24/24.16.0";
+    plan.successor.runtimePath = "/opt/homebrew/Cellar/node@24/24.16.0/bin/node";
+    plan.successor.runtimeSha256 = plan.predecessor.runtimeSha256;
+    expect(() =>
+      validateHostActivationPlan(plan, { nowMs: Date.parse("2026-07-28T08:30:00.000Z") }),
+    ).toThrow("plan.host.stagingRoot must remain within");
+  });
+
   it.each([
     ["extra field", (plan: any) => (plan.approval = true), "keys must be exactly"],
     ["authority", (plan: any) => (plan.authority.kind = "rollout"), "must equal"],
@@ -986,6 +1057,65 @@ describe("one-use host activation lifecycle", () => {
     );
     expect(fixture.writes.has(`${plan.evidence.ledgerDirectory}/00-claim.json`)).toBe(true);
     expect(fixture.writes.has(plan.evidence.receiptPath)).toBe(true);
+  });
+
+  it("accepts the real external predecessor and bundled successor runtime topology", () => {
+    const plan = realisticMacHostPlan();
+    const { fixture, receipt } = executeFixture(plan);
+    expect(receipt.outcome).toBe("ACTIVATED_VERIFIED");
+    expect(fixture.runtime.assertSecureDirectoryChain).toHaveBeenCalledWith(
+      path.dirname(plan.successor.runtimePath),
+      plan.host.stateDir,
+      "successor staging chain",
+    );
+  });
+
+  it("fails closed before probes when the bundled successor runtime chain is unsafe", () => {
+    const plan = realisticMacHostPlan();
+    const runtimeDirectory = path.dirname(plan.successor.runtimePath);
+    const fixture = createRuntime(plan, { insecureDirectoryChain: runtimeDirectory });
+    const planBytes = canonicalJsonBytes(plan);
+    expect(() =>
+      executeHostActivation({
+        planBytes,
+        expectedPlanSha256: hash(planBytes),
+        execute: true,
+        runtime: fixture.runtime,
+      }),
+    ).toThrow("unsafe directory chain");
+    expect(fixture.commands).toHaveLength(0);
+  });
+
+  it("rejects predecessor and successor runtime paths that alias one physical file", () => {
+    const plan = realisticMacHostPlan();
+    const fixture = createRuntime(plan, { sameRuntimeFileAlias: true });
+    const planBytes = canonicalJsonBytes(plan);
+    expect(() =>
+      executeHostActivation({
+        planBytes,
+        expectedPlanSha256: hash(planBytes),
+        execute: true,
+        runtime: fixture.runtime,
+      }),
+    ).toThrow("must be distinct physical files");
+    expect(fixture.commands).toHaveLength(0);
+  });
+
+  it("rejects a successor plist that launches the CLI instead of the Gateway entrypoint", () => {
+    const plan = realisticMacHostPlan();
+    const fixture = createRuntime(plan, {
+      successorPlistEntrypointOverride: plan.successor.cliPath,
+    });
+    const planBytes = canonicalJsonBytes(plan);
+    expect(() =>
+      executeHostActivation({
+        planBytes,
+        expectedPlanSha256: hash(planBytes),
+        execute: false,
+        runtime: fixture.runtime,
+      }),
+    ).toThrow("Gateway entrypoint identity does not match");
+    expect(fixture.writes.size).toBe(0);
   });
 
   it("keeps preflight read-only and does not claim the generation", () => {
@@ -3822,6 +3952,26 @@ describe("real filesystem contention and path safety", () => {
       expect(() => runtime.assertSecureDirectoryChain(linkedRoot, linkedRoot, "test root")).toThrow(
         "unsafe allowed root",
       );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects canonical-path aliases as the same physical runtime file", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "openclaw-host-runtime-alias-"));
+    try {
+      const predecessor = path.join(directory, "predecessor-node");
+      const successor = path.join(directory, "successor-node");
+      writeFileSync(predecessor, "runtime-bytes", { mode: 0o600 });
+      symlinkSync(predecessor, successor);
+      const runtime = createDefaultHostActivationRuntime();
+      expect(() =>
+        runtime.assertDistinctFiles(
+          predecessor,
+          successor,
+          "predecessor and successor Node runtimes",
+        ),
+      ).toThrow("must be distinct physical files");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
