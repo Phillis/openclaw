@@ -1200,6 +1200,80 @@ describe("one-use host activation lifecycle", () => {
     expect(fixture.commands.some(({ args }) => args[0] === "disable")).toBe(false);
   });
 
+  it("keeps preflight read-only when the exact predecessor backup already exists", () => {
+    const plan = fixturePlan();
+    const predecessorBackup = Buffer.from("predecessor-plist");
+    plan.predecessor.servicePlistSha256 = hash(predecessorBackup);
+    const { fixture, receipt } = executeFixture(
+      plan,
+      { existingPlistBackup: predecessorBackup },
+      false,
+    );
+
+    expect(receipt).toMatchObject({ outcome: "PREFLIGHT_PASS" });
+    for (const method of [
+      "ensureFileDurable",
+      "writeExclusive",
+      "replaceFileDurably",
+      "removeFileDurably",
+      "installFile",
+      "preserveFile",
+    ] as const) {
+      expect(Reflect.get(fixture.runtime, method)).not.toHaveBeenCalled();
+    }
+    expect(
+      fixture.commands.some(
+        ({ command, args }) =>
+          (command === "/bin/launchctl" &&
+            ["disable", "enable", "bootout", "bootstrap"].includes(args[0] ?? "")) ||
+          args.includes("gateway.suspend.prepare") ||
+          args.includes("gateway.suspend.resume"),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["empty", Buffer.alloc(0)],
+    ["malformed", Buffer.from("{")],
+    ["unrecognized", canonicalJsonBytes({ schema: "foreign-claim/v1" })],
+  ])(
+    "refuses read-only recovery for an %s lifecycle claim before every side effect",
+    (_claimState, existingGlobalClaim) => {
+      const plan = fixturePlan();
+      const fixture = createRuntime(plan, { existingGlobalClaim });
+      const planBytes = canonicalJsonBytes(plan);
+
+      expect(() =>
+        executeHostActivation({
+          planBytes,
+          expectedPlanSha256: hash(planBytes),
+          execute: false,
+          runtime: fixture.runtime,
+        }),
+      ).toThrow("read-only preflight cannot recover an existing lifecycle claim");
+      expect(fixture.commands).toHaveLength(0);
+      expect(fixture.writes.size).toBe(0);
+      expect(Reflect.get(fixture.runtime, "readOptionalFile")).toHaveBeenCalledTimes(1);
+      for (const method of [
+        "assertOutputAvailable",
+        "ensureFileDurable",
+        "assertClaimOwnerDead",
+        "listLedgerPhases",
+        "verifyFile",
+        "acquireRecoveryOwnership",
+        "releaseRecoveryOwnership",
+        "writeExclusive",
+        "replaceFileDurably",
+        "removeFileDurably",
+        "installFile",
+        "preserveFile",
+        "sleep",
+      ] as const) {
+        expect(Reflect.get(fixture.runtime, method)).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it.each(["resume-pending", "resume-expired"] as const)(
     "rejects a normal activation that encounters a %s marker",
     (resumeState) => {
