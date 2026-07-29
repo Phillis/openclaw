@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GATEWAY_SUSPEND_MODE_LEGACY } from "../../packages/gateway-protocol/src/index.js";
 
 const durableDeletionFault = vi.hoisted(() => ({
   path: "",
@@ -226,6 +227,7 @@ describe("gateway suspend coordinator", () => {
       expect(getGatewaySuspendStatus("suspension-renew-retry")).toEqual({
         status: "ready",
         expiresAtMs: 2_000 + SUSPEND_TTL_MS,
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
     } finally {
       resetGatewaySuspendCoordinatorForLifecycleRestart();
@@ -266,6 +268,7 @@ describe("gateway suspend coordinator", () => {
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
       expect(getGatewaySuspendStatus("suspension-rename-drift")).toEqual({
         status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
     } finally {
       vi.useRealTimers();
@@ -306,6 +309,7 @@ describe("gateway suspend coordinator", () => {
       expect(durableDeletionFault.retryParentSyncCount).toBe(1);
       expect(getGatewaySuspendStatus("suspension-unlink-retry")).toEqual({
         status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
     } finally {
       vi.useRealTimers();
@@ -360,6 +364,7 @@ describe("gateway suspend coordinator", () => {
         ok: true,
         status: "running",
         resumed: true,
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
       expect(successorResume).toHaveBeenCalledOnce();
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
@@ -517,7 +522,10 @@ describe("gateway suspend coordinator", () => {
       vi.advanceTimersByTime(1_000);
       expect(resumeScheduling).toHaveBeenCalledTimes(2);
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
-      expect(getGatewaySuspendStatus("stale-id")).toEqual({ status: "running" });
+      expect(getGatewaySuspendStatus("stale-id")).toEqual({
+        status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      });
 
       expect(
         prepareGatewaySuspend({
@@ -558,7 +566,10 @@ describe("gateway suspend coordinator", () => {
 
       expect(resumeScheduling).toHaveBeenCalledOnce();
       expect(isGatewayWorkAdmissionClosed()).toBe(true);
-      expect(getGatewaySuspendStatus("stale-id")).toEqual({ status: "running" });
+      expect(getGatewaySuspendStatus("stale-id")).toEqual({
+        status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -641,6 +652,7 @@ describe("gateway suspend coordinator", () => {
       ok: true,
       status: "running",
       resumed: true,
+      suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
     });
     expect(resumeScheduling).toHaveBeenCalledOnce();
     expect(isGatewayWorkAdmissionClosed()).toBe(false);
@@ -913,7 +925,10 @@ describe("gateway suspend coordinator", () => {
 
     markGatewayRestartDraining();
 
-    expect(getGatewaySuspendStatus("suspension-restart")).toEqual({ status: "running" });
+    expect(getGatewaySuspendStatus("suspension-restart")).toEqual({
+      status: "running",
+      suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+    });
     expect(resumeScheduling).not.toHaveBeenCalled();
     expect(isGatewayWorkAdmissionClosed()).toBe(true);
   });
@@ -954,7 +969,10 @@ describe("gateway suspend coordinator", () => {
 
       vi.advanceTimersByTime(1_000);
       expect(resumeScheduling).toHaveBeenCalledTimes(2);
-      expect(getGatewaySuspendStatus("suspension-resume-retry")).toEqual({ status: "running" });
+      expect(getGatewaySuspendStatus("suspension-resume-retry")).toEqual({
+        status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      });
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
     } finally {
       vi.useRealTimers();

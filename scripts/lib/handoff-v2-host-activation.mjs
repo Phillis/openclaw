@@ -22,6 +22,9 @@ import { DatabaseSync } from "node:sqlite";
 const HOST_ACTIVATION_PLAN_SCHEMA = "handoff-v2-host-activation-plan/v1";
 export const HOST_ACTIVATION_RECEIPT_SCHEMA = "handoff-v2-host-activation-receipt/v1";
 const SLACK_ACCESS_PROOF_SCHEMA = "openclaw-slack-access-proof/v1";
+const GATEWAY_SUSPENSION_BINDING_SCHEMA = "handoff-v2-gateway-suspension-binding/v1";
+const GATEWAY_SUSPEND_MODE = "handoff-durable-hold/v1";
+const GATEWAY_SUSPEND_HANDOFF_SCHEMA = "openclaw-gateway-suspend-handoff/v3";
 
 const SHA256_RE = /^[a-f0-9]{64}$/u;
 const GIT_OBJECT_RE = /^[a-f0-9]{40}$/u;
@@ -40,6 +43,7 @@ const PLAN_KEYS = [
   "quiescence",
   "slack",
   "operations",
+  "gatewaySuspension",
   "evidence",
 ];
 const AUTHORITY_KEYS = ["kind", "grants", "reusable"];
@@ -135,6 +139,7 @@ const OPERATIONS_KEYS = [
   "automaticRollback",
   "automaticSecondRestart",
 ];
+const GATEWAY_SUSPENSION_KEYS = ["schema", "suspendMode", "handoffSchema"];
 const EVIDENCE_KEYS = [
   "supervisorLeasePath",
   "supervisorLeaseSha256",
@@ -152,6 +157,7 @@ const RECEIPT_KEYS = [
   "outcome",
   "authority",
   "operations",
+  "gatewaySuspension",
   "predecessor",
   "successor",
   "proofs",
@@ -338,6 +344,13 @@ function requiredLiteral(value, expected, path) {
   if (value !== expected) {
     throw new Error(`${path} must equal ${JSON.stringify(expected)}`);
   }
+}
+
+function validateGatewaySuspensionBinding(value, path) {
+  exactKeys(value, GATEWAY_SUSPENSION_KEYS, path);
+  requiredLiteral(value.schema, GATEWAY_SUSPENSION_BINDING_SCHEMA, `${path}.schema`);
+  requiredLiteral(value.suspendMode, GATEWAY_SUSPEND_MODE, `${path}.suspendMode`);
+  requiredLiteral(value.handoffSchema, GATEWAY_SUSPEND_HANDOFF_SCHEMA, `${path}.handoffSchema`);
 }
 
 function sha256(bytes) {
@@ -545,6 +558,8 @@ export function validateHostActivationPlan(value, options = {}) {
     false,
     "plan.operations.automaticSecondRestart",
   );
+
+  validateGatewaySuspensionBinding(value.gatewaySuspension, "plan.gatewaySuspension");
 
   exactKeys(value.evidence, EVIDENCE_KEYS, "plan.evidence");
   const supervisorLeasePath = requiredPathWithin(
@@ -929,13 +944,14 @@ function gatewaySuspendHandoffPath(plan) {
 
 function gatewaySuspendHandoffBytes(suspension) {
   return canonicalJsonBytes({
-    schema: "openclaw-gateway-suspend-handoff/v2",
+    schema: suspension.handoffSchema,
     requestId: suspension.requestId,
     suspensionId: suspension.suspensionId,
     gatewayInstanceId: suspension.gatewayInstanceId,
     gatewayPid: suspension.gatewayPid,
     launchdRunCount: suspension.launchdRunCount,
     expiresAtMs: suspension.expiresAtMs,
+    suspendMode: suspension.suspendMode,
     resumeState: "held",
     resumeBeforeMs: null,
   });
@@ -958,19 +974,21 @@ function validateGatewaySuspendHandoff(bytes, suspension) {
       "gatewayPid",
       "launchdRunCount",
       "expiresAtMs",
+      "suspendMode",
       "resumeState",
       "resumeBeforeMs",
     ],
     "Gateway suspension handoff",
   );
   if (
-    handoff.schema !== "openclaw-gateway-suspend-handoff/v2" ||
+    handoff.schema !== suspension.handoffSchema ||
     handoff.requestId !== suspension.requestId ||
     handoff.suspensionId !== suspension.suspensionId ||
     handoff.gatewayInstanceId !== suspension.gatewayInstanceId ||
     handoff.gatewayPid !== suspension.gatewayPid ||
     handoff.launchdRunCount !== suspension.launchdRunCount ||
     handoff.expiresAtMs !== suspension.expiresAtMs ||
+    handoff.suspendMode !== suspension.suspendMode ||
     handoff.resumeState !== "held" ||
     handoff.resumeBeforeMs !== null
   ) {
@@ -979,7 +997,7 @@ function validateGatewaySuspendHandoff(bytes, suspension) {
   return handoff;
 }
 
-function persistGatewaySuspendHandoff(
+export function persistGatewaySuspendHandoff(
   plan,
   suspension,
   runtime,
@@ -1030,6 +1048,7 @@ function persistGatewaySuspendHandoff(
         "gatewayPid",
         "launchdRunCount",
         "expiresAtMs",
+        "suspendMode",
         "resumeState",
         "resumeBeforeMs",
       ],
@@ -1039,7 +1058,8 @@ function persistGatewaySuspendHandoff(
     throw new Error("existing Gateway suspension handoff contains malformed JSON");
   }
   if (
-    existingHandoff?.schema !== "openclaw-gateway-suspend-handoff/v2" ||
+    existingHandoff?.schema !== suspension.handoffSchema ||
+    existingHandoff?.suspendMode !== suspension.suspendMode ||
     existingHandoff?.resumeState !== "held" ||
     existingHandoff?.resumeBeforeMs !== null ||
     existingHandoff?.requestId !== suspension.requestId ||
@@ -1152,6 +1172,7 @@ function prepareGatewaySuspension(
         "--params",
         JSON.stringify({
           requestId,
+          suspendMode: plan.gatewaySuspension.suspendMode,
           ...(expectedSuspensionId === undefined ? {} : { suspensionId: expectedSuspensionId }),
           gatewayPid: expectedService.pid,
           launchdRunCount: expectedService.runCount,
@@ -1164,6 +1185,7 @@ function prepareGatewaySuspension(
   );
   if (
     result?.status !== "ready" ||
+    result.suspendMode !== plan.gatewaySuspension.suspendMode ||
     typeof result.suspensionId !== "string" ||
     result.suspensionId.length === 0 ||
     typeof result.gatewayInstanceId !== "string" ||
@@ -1195,6 +1217,8 @@ function prepareGatewaySuspension(
     gatewayPid: result.gatewayPid,
     launchdRunCount: result.launchdRunCount,
     expiresAtMs: result.expiresAtMs,
+    suspendMode: result.suspendMode,
+    handoffSchema: plan.gatewaySuspension.handoffSchema,
   };
   persistGatewaySuspendHandoff(
     plan,
@@ -1222,6 +1246,7 @@ function renewGatewaySuspension(plan, suspension, runtime, generation = "predece
           gatewayInstanceId: suspension.gatewayInstanceId,
           gatewayPid: suspension.gatewayPid,
           launchdRunCount: suspension.launchdRunCount,
+          suspendMode: suspension.suspendMode,
         }),
         "--json",
       ],
@@ -1232,6 +1257,7 @@ function renewGatewaySuspension(plan, suspension, runtime, generation = "predece
   const nowMs = Date.parse(runtime.now());
   if (
     result?.status !== "ready" ||
+    result.suspendMode !== suspension.suspendMode ||
     result.suspensionId !== suspension.suspensionId ||
     result.gatewayInstanceId !== suspension.gatewayInstanceId ||
     result.gatewayPid !== suspension.gatewayPid ||
@@ -1274,6 +1300,7 @@ function resumeGatewaySuspension(plan, suspension, runtime, generation = "predec
           suspensionId: suspension.suspensionId,
           gatewayInstanceId: suspension.gatewayInstanceId,
           resumeBeforeMs,
+          suspendMode: suspension.suspendMode,
         }),
         "--json",
       ],
@@ -1283,6 +1310,7 @@ function resumeGatewaySuspension(plan, suspension, runtime, generation = "predec
   );
   if (
     result?.ok !== true ||
+    result.suspendMode !== suspension.suspendMode ||
     result.status !== "running" ||
     result.resumed !== true ||
     result.gatewayInstanceId !== suspension.gatewayInstanceId
@@ -1309,6 +1337,7 @@ function getGatewaySuspensionStatus(plan, suspension, runtime) {
         JSON.stringify({
           suspensionId: suspension.suspensionId,
           gatewayInstanceId: suspension.gatewayInstanceId,
+          suspendMode: suspension.suspendMode,
         }),
         "--json",
       ],
@@ -1337,6 +1366,7 @@ function readGatewaySuspendHandoffForRecovery(plan, runtime, expectedSuspension)
         "gatewayPid",
         "launchdRunCount",
         "expiresAtMs",
+        "suspendMode",
         "resumeState",
         "resumeBeforeMs",
       ],
@@ -1346,7 +1376,8 @@ function readGatewaySuspendHandoffForRecovery(plan, runtime, expectedSuspension)
     throw new PhasePersistenceError("Gateway suspension handoff recovery", error);
   }
   if (
-    handoff.schema !== "openclaw-gateway-suspend-handoff/v2" ||
+    handoff.schema !== plan.gatewaySuspension.handoffSchema ||
+    handoff.suspendMode !== plan.gatewaySuspension.suspendMode ||
     handoff.requestId !== `handoff-v2:${plan.planId}` ||
     typeof handoff.suspensionId !== "string" ||
     handoff.suspensionId.length === 0 ||
@@ -1372,6 +1403,7 @@ function readGatewaySuspendHandoffForRecovery(plan, runtime, expectedSuspension)
       handoff.gatewayInstanceId !== expectedSuspension.gatewayInstanceId ||
       handoff.gatewayPid !== expectedSuspension.gatewayPid ||
       handoff.launchdRunCount !== expectedSuspension.launchdRunCount ||
+      handoff.suspendMode !== expectedSuspension.suspendMode ||
       handoff.expiresAtMs < expectedSuspension.expiresAtMs)
   ) {
     throw new PhasePersistenceError(
@@ -1386,7 +1418,7 @@ function readGatewaySuspendHandoffForRecovery(plan, runtime, expectedSuspension)
     "Gateway suspension handoff recovery",
     PhasePersistenceError,
   );
-  return { ...handoff, bytes: handoffBytes };
+  return { ...handoff, handoffSchema: handoff.schema, bytes: handoffBytes };
 }
 
 function recoverPreBootoutGatewaySuspension(
@@ -1405,7 +1437,11 @@ function recoverPreBootoutGatewaySuspension(
       throw new Error("Gateway suspension recovery status changed process incarnation");
     }
     if (status?.status === "ready") {
-      if (!Number.isSafeInteger(status.expiresAtMs) || status.expiresAtMs !== handoff.expiresAtMs) {
+      if (
+        status.suspendMode !== handoff.suspendMode ||
+        !Number.isSafeInteger(status.expiresAtMs) ||
+        status.expiresAtMs !== handoff.expiresAtMs
+      ) {
         throw new Error("Gateway suspension recovery status does not match its handoff");
       }
       beforeResume(handoff);
@@ -1715,6 +1751,11 @@ function makeReceipt(params) {
       automaticRollbackCount: 0,
       automaticSecondRestartCount: 0,
     },
+    gatewaySuspension: {
+      schema: params.plan.gatewaySuspension.schema,
+      suspendMode: params.plan.gatewaySuspension.suspendMode,
+      handoffSchema: params.plan.gatewaySuspension.handoffSchema,
+    },
     predecessor: {
       commit: params.plan.predecessor.commit,
       tree: params.plan.predecessor.tree,
@@ -1887,6 +1928,7 @@ export function validateHostActivationReceipt(value) {
   if (!Array.isArray(value.authority.grants) || value.authority.grants.length !== 0) {
     throw new Error("activation receipt authority grants must be empty");
   }
+  validateGatewaySuspensionBinding(value.gatewaySuspension, "activation receipt.gatewaySuspension");
   exactKeys(
     value.operations,
     [
@@ -3428,6 +3470,8 @@ export function executeHostActivation(params) {
               "gatewayPid",
               "launchdRunCount",
               "expiresAtMs",
+              "suspendMode",
+              "handoffSchema",
             ],
             "durable suspension-prepared recovery identity",
           );
@@ -3439,6 +3483,8 @@ export function executeHostActivation(params) {
             suspensionPreparedEntry.detail.gatewayInstanceId.length === 0 ||
             suspensionPreparedEntry.detail.gatewayPid !== plan.predecessor.pid ||
             suspensionPreparedEntry.detail.launchdRunCount !== plan.predecessor.runCount ||
+            suspensionPreparedEntry.detail.suspendMode !== plan.gatewaySuspension.suspendMode ||
+            suspensionPreparedEntry.detail.handoffSchema !== plan.gatewaySuspension.handoffSchema ||
             !Number.isSafeInteger(suspensionPreparedEntry.detail.expiresAtMs)
           ) {
             throw new Error("durable suspension-prepared recovery identity is invalid");
@@ -3901,6 +3947,8 @@ export function executeHostActivation(params) {
       gatewayPid: suspension.gatewayPid,
       launchdRunCount: suspension.launchdRunCount,
       expiresAtMs: suspension.expiresAtMs,
+      suspendMode: suspension.suspendMode,
+      handoffSchema: suspension.handoffSchema,
     });
 
     writePhase("disable-requested");
@@ -4016,6 +4064,8 @@ export function executeHostActivation(params) {
       gatewayPid: successorSuspension.gatewayPid,
       launchdRunCount: successorSuspension.launchdRunCount,
       expiresAtMs: successorSuspension.expiresAtMs,
+      suspendMode: successorSuspension.suspendMode,
+      handoffSchema: successorSuspension.handoffSchema,
     });
 
     const firstPostflight = verifySuccessorPostflight(plan, runtime);
@@ -4072,6 +4122,8 @@ export function executeHostActivation(params) {
     writePhase("successor-suspension-resume-requested", {
       suspensionId: successorSuspension.suspensionId,
       gatewayInstanceId: successorSuspension.gatewayInstanceId,
+      suspendMode: successorSuspension.suspendMode,
+      handoffSchema: successorSuspension.handoffSchema,
     });
     verifyMutationAuthority(
       plan,

@@ -24,6 +24,7 @@ import {
   HOST_ACTIVATION_RECEIPT_SCHEMA,
   parseLaunchdEnabledState,
   parseLaunchdServiceState,
+  persistGatewaySuspendHandoff,
   validateHostActivationPlan,
   validateHostActivationReceipt,
   validateHostRollbackEvidence,
@@ -59,6 +60,7 @@ type MutableHostActivationReceipt = Record<string, unknown> & {
   outcome: string;
   holdReason?: string;
   rollbackPacketSha256?: string;
+  gatewaySuspension: Record<string, string>;
   operations: Record<string, number>;
   predecessor: Record<string, string>;
   proofs: Record<string, unknown> & {
@@ -240,6 +242,11 @@ function fixturePlan() {
       automaticRollback: false,
       automaticSecondRestart: false,
     },
+    gatewaySuspension: {
+      schema: "handoff-v2-gateway-suspension-binding/v1",
+      suspendMode: "handoff-durable-hold/v1",
+      handoffSchema: "openclaw-gateway-suspend-handoff/v3",
+    },
     evidence: {
       supervisorLeasePath: `${evidenceRoot}/supervisor-lease.json`,
       supervisorLeaseSha256: sha("e"),
@@ -272,6 +279,11 @@ function slackProof(plan: ReturnType<typeof fixturePlan>) {
       sameCredentialForIdentityAndAccess: true,
     },
   };
+}
+
+function requestSuspendMode(args: string[]): unknown {
+  const paramsIndex = args.indexOf("--params");
+  return paramsIndex === -1 ? undefined : JSON.parse(args[paramsIndex + 1]!).suspendMode;
 }
 
 type RuntimeOptions = {
@@ -758,6 +770,7 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
                   launchdRunCount:
                     generation === "successor" ? successorRunCount : plan.predecessor.runCount,
                   expiresAtMs: nowMs + 120_000,
+                  suspendMode: requestSuspendMode(args),
                   activeCount: 0,
                   blockers: [],
                 },
@@ -778,6 +791,7 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
                     generation === "successor"
                       ? successorGatewayInstanceId
                       : predecessorGatewayInstanceId,
+                  suspendMode: requestSuspendMode(args),
                 }
               : {
                   status: "ready",
@@ -786,6 +800,7 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
                       ? successorGatewayInstanceId
                       : predecessorGatewayInstanceId,
                   expiresAtMs,
+                  suspendMode: requestSuspendMode(args),
                 },
           ),
           stderr: "",
@@ -820,6 +835,7 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
             status: "running",
             resumed: options.resumeReturnsFalse !== true,
             gatewayInstanceId,
+            suspendMode: request.suspendMode,
           }),
           stderr: "",
         };
@@ -852,11 +868,13 @@ function restoreSuspensionPreparedHandoff(
   if (!prepared) {
     throw new Error("test fixture lacks suspension-prepared");
   }
+  const { handoffSchema, suspendMode, ...identity } = prepared.detail;
   files.set(
     `${plan.host.stateDir}/gateway-suspend-handoff.json`,
     canonicalJsonBytes({
-      schema: "openclaw-gateway-suspend-handoff/v2",
-      ...prepared.detail,
+      schema: handoffSchema,
+      ...identity,
+      suspendMode,
       resumeState: "held",
       resumeBeforeMs: null,
     }),
@@ -895,6 +913,16 @@ describe("host activation plan contract", () => {
       "must equal",
     ],
     ["wrong Slack account", (plan: any) => (plan.slack.accountId = "default"), "must equal"],
+    [
+      "wrong Gateway suspension mode",
+      (plan: any) => (plan.gatewaySuspension.suspendMode = "legacy-auto-expire/v1"),
+      "must equal",
+    ],
+    [
+      "wrong Gateway handoff schema",
+      (plan: any) => (plan.gatewaySuspension.handoffSchema = "openclaw-gateway-suspend-handoff/v2"),
+      "must equal",
+    ],
     [
       "equal CLI paths",
       (plan: any) => (plan.successor.cliPath = plan.predecessor.cliPath),
@@ -1004,13 +1032,14 @@ describe("one-use host activation lifecycle", () => {
         [
           handoffPath,
           canonicalJsonBytes({
-            schema: "openclaw-gateway-suspend-handoff/v2",
+            schema: "openclaw-gateway-suspend-handoff/v3",
             requestId: `handoff-v2:${plan.planId}`,
             suspensionId: "fixture-suspension",
             gatewayInstanceId: "fixture-predecessor-gateway-instance",
             gatewayPid: plan.predecessor.pid,
             launchdRunCount: plan.predecessor.runCount,
             expiresAtMs: Date.parse("2026-07-28T08:32:00.000Z"),
+            suspendMode: "handoff-durable-hold/v1",
             resumeState,
             resumeBeforeMs: Date.parse("2026-07-28T08:31:00.000Z"),
           }),
@@ -2030,13 +2059,14 @@ describe("one-use host activation lifecycle", () => {
         existingFiles.set(
           handoffPath,
           canonicalJsonBytes({
-            schema: "openclaw-gateway-suspend-handoff/v2",
+            schema: "openclaw-gateway-suspend-handoff/v3",
             requestId: `handoff-v2:${plan.planId}`,
             suspensionId: "substituted-suspension",
             gatewayInstanceId: "substituted-gateway-instance",
             gatewayPid: plan.predecessor.pid,
             launchdRunCount: plan.predecessor.runCount,
             expiresAtMs: Date.parse("2026-07-28T08:32:00.000Z"),
+            suspendMode: "handoff-durable-hold/v1",
             resumeState: "held",
             resumeBeforeMs: null,
           }),
@@ -3122,13 +3152,14 @@ describe("one-use host activation lifecycle", () => {
     });
     expect(receipt.outcome).toBe("ACTIVATED_VERIFIED");
     expect(handoffAtBootout).toEqual({
-      schema: "openclaw-gateway-suspend-handoff/v2",
+      schema: "openclaw-gateway-suspend-handoff/v3",
       requestId: `handoff-v2:${plan.planId}`,
       suspensionId: "fixture-suspension",
       gatewayInstanceId: "fixture-predecessor-gateway-instance",
       gatewayPid: plan.predecessor.pid,
       launchdRunCount: plan.predecessor.runCount,
       expiresAtMs: expect.any(Number),
+      suspendMode: "handoff-durable-hold/v1",
       resumeState: "held",
       resumeBeforeMs: null,
     });
@@ -3270,6 +3301,7 @@ describe("one-use host activation lifecycle", () => {
           gatewayInstanceId: request.gatewayInstanceId,
           gatewayPid: request.gatewayPid,
           launchdRunCount: request.launchdRunCount,
+          suspendMode: request.suspendMode,
           currentGatewayInstanceId: successorBootstrapped
             ? successorGatewayInstanceId
             : predecessorGatewayInstanceId,
@@ -3329,6 +3361,7 @@ describe("one-use host activation lifecycle", () => {
       ).toEqual({
         status: "running",
         gatewayInstanceId: successorGatewayInstanceId,
+        suspendMode: "legacy-auto-expire/v1",
       });
     } finally {
       resetGatewaySuspendCoordinatorForLifecycleRestart();
@@ -3337,6 +3370,108 @@ describe("one-use host activation lifecycle", () => {
     }
     expect(resumeScheduling).toHaveBeenCalledTimes(2);
     expect(isGatewayWorkAdmissionClosed()).toBe(false);
+  });
+
+  it("renews and resumes after the controller canonically rewrites a real durable handoff", () => {
+    resetGatewaySuspendCoordinatorForLifecycleRestart();
+    resetGatewayWorkAdmission();
+    const directory = mkdtempSync(path.join(tmpdir(), "openclaw-host-handoff-rewrite-"));
+    const durableHandoffPath = path.join(directory, "gateway-suspend-handoff.json");
+    const plan = fixturePlan();
+    plan.host.stateDir = directory;
+    const runtime = createDefaultHostActivationRuntime();
+    const pauseScheduling = vi.fn();
+    const resumeScheduling = vi.fn();
+    const gatewayInstanceId = "controller-rewrite-gateway-instance";
+    const durableMode = "handoff-durable-hold/v1" as const;
+    const nowMs = Date.parse("2026-07-28T08:30:00.000Z");
+    try {
+      expect(plan.gatewaySuspension.suspendMode).toBe(durableMode);
+      const prepared = prepareGatewaySuspend({
+        requestId: `handoff-v2:${plan.planId}`,
+        gatewayPid: plan.predecessor.pid,
+        launchdRunCount: plan.predecessor.runCount,
+        suspendMode: durableMode,
+        currentGatewayInstanceId: gatewayInstanceId,
+        currentGatewayPid: plan.predecessor.pid,
+        pauseScheduling,
+        resumeScheduling,
+        nowMs: () => nowMs,
+        createSuspensionId: () => "controller-rewrite-suspension",
+        durableHandoffPath,
+      });
+      expect(prepared).toMatchObject({
+        status: "ready",
+        suspensionId: "controller-rewrite-suspension",
+        gatewayInstanceId,
+        suspendMode: plan.gatewaySuspension.suspendMode,
+      });
+      if (prepared.status !== "ready") {
+        throw new Error("test preparation did not establish the durable fence");
+      }
+      const compactBytes = readFileSync(durableHandoffPath);
+      const suspension = {
+        requestId: `handoff-v2:${plan.planId}`,
+        suspensionId: prepared.suspensionId,
+        gatewayInstanceId: prepared.gatewayInstanceId,
+        gatewayPid: prepared.gatewayPid,
+        launchdRunCount: prepared.launchdRunCount,
+        expiresAtMs: prepared.expiresAtMs,
+        suspendMode: durableMode,
+        handoffSchema: "openclaw-gateway-suspend-handoff/v3" as const,
+      };
+
+      persistGatewaySuspendHandoff(plan, suspension, runtime);
+
+      const rewrittenBytes = readFileSync(durableHandoffPath);
+      expect(rewrittenBytes).not.toEqual(compactBytes);
+      expect(rewrittenBytes).toEqual(canonicalJsonBytes(JSON.parse(compactBytes.toString("utf8"))));
+      expect(
+        prepareGatewaySuspend({
+          requestId: suspension.requestId,
+          suspensionId: suspension.suspensionId,
+          gatewayInstanceId: suspension.gatewayInstanceId,
+          gatewayPid: suspension.gatewayPid,
+          launchdRunCount: suspension.launchdRunCount,
+          suspendMode: suspension.suspendMode,
+          currentGatewayInstanceId: gatewayInstanceId,
+          currentGatewayPid: plan.predecessor.pid,
+          pauseScheduling,
+          resumeScheduling,
+          nowMs: () => nowMs + 1_000,
+          durableHandoffPath,
+        }),
+      ).toMatchObject({
+        status: "ready",
+        suspensionId: suspension.suspensionId,
+        suspendMode: suspension.suspendMode,
+      });
+      expect(
+        resumeGatewaySuspend(
+          {
+            suspensionId: suspension.suspensionId,
+            gatewayInstanceId,
+            resumeBeforeMs: nowMs + 60_000,
+            suspendMode: suspension.suspendMode,
+          },
+          gatewayInstanceId,
+          () => nowMs + 2_000,
+        ),
+      ).toEqual({
+        ok: true,
+        status: "running",
+        resumed: true,
+        gatewayInstanceId,
+        suspendMode: suspension.suspendMode,
+      });
+      expect(runtime.readOptionalFile(durableHandoffPath, "test handoff")).toBeNull();
+      expect(pauseScheduling).toHaveBeenCalledTimes(1);
+      expect(resumeScheduling).toHaveBeenCalledTimes(1);
+    } finally {
+      resetGatewaySuspendCoordinatorForLifecycleRestart();
+      resetGatewayWorkAdmission();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("rechecks full successor authority after the durable final resume request", () => {
@@ -3904,6 +4039,18 @@ describe("terminal contract enforcement", () => {
     const receipt = mutableReceipt(structuredClone(executeFixture().receipt));
     receipt.operations.disableCount = 0;
     expect(() => validateHostActivationReceipt(receipt)).toThrow("durable phase ledger");
+    const validateReceiptSchema = compileContractSchema(
+      "handoff-v2-host-activation-receipt.v1.schema.json",
+    );
+    expect(validateReceiptSchema(receipt)).toBe(false);
+  });
+
+  it("rejects a receipt that changes its durable suspension binding", () => {
+    const receipt = mutableReceipt(structuredClone(executeFixture().receipt));
+    receipt.gatewaySuspension.suspendMode = "legacy-auto-expire/v1";
+    expect(() => validateHostActivationReceipt(receipt)).toThrow(
+      "activation receipt.gatewaySuspension.suspendMode",
+    );
     const validateReceiptSchema = compileContractSchema(
       "handoff-v2-host-activation-receipt.v1.schema.json",
     );

@@ -72,12 +72,13 @@ must keep its authenticated connection open across the host operation. If that
 cannot be guaranteed, enable and use the
 [Admin HTTP RPC plugin](/plugins/admin-http-rpc) before preparing. If the
 control path is lost, wait for the two-minute lease to expire before
-reconnecting; expiry reopens admission automatically.
+reconnecting; expiry reopens admission automatically in the default
+`legacy-auto-expire/v1` mode.
 
 The RPC contract is:
 
 - `gateway.suspend.prepare` — `operator.admin`; params
-  `{ "requestId": "stable-host-operation-id" }`
+  `{ "requestId": "stable-host-operation-id", "suspendMode": "legacy-auto-expire/v1" }`
 - `gateway.suspend.status` — `operator.read`; params
   `{ "suspensionId": "id-from-prepare" }`
 - `gateway.suspend.resume` — `operator.admin`; params
@@ -92,14 +93,30 @@ IDs are trimmed, must contain a non-whitespace character, and are limited to
   "status": "ready",
   "suspensionId": "2c3f...",
   "expiresAtMs": 1770000000000,
+  "suspendMode": "legacy-auto-expire/v1",
   "activeCount": 0,
   "blockers": []
 }
 ```
 
-Status returns `{"status":"running"}` or a ready result with `expiresAtMs`.
-Resume returns `{"ok":true,"status":"running","resumed":true}`; repeating it
-after a successful resume returns `resumed: false`.
+Status returns
+`{"status":"running","suspendMode":"legacy-auto-expire/v1"}` or a ready result
+with `expiresAtMs` and the exact `suspendMode`. Resume returns
+`{"ok":true,"status":"running","resumed":true,"suspendMode":"legacy-auto-expire/v1"}`;
+repeating it after a successful resume returns `resumed: false`.
+
+Omitting `suspendMode` is backward-compatible and selects
+`legacy-auto-expire/v1`. Unknown values are rejected. An active lease cannot be
+upgraded or downgraded: prepare renewal, status, and resume must repeat its
+exact mode.
+
+The Handoff host-activation controller uses the separately versioned
+`handoff-durable-hold/v1` mode and binds it in its activation plan and receipt.
+That mode writes an `openclaw-gateway-suspend-handoff/v3` marker, remains
+fail-closed after the two-minute authority window, and is adopted before
+successor startup admits work. It can be cleared only after the successor
+rebinds the exact suspension identity and an explicit, deadline-bound resume
+succeeds. Do not request this mode from an ordinary suspension client.
 
 A competing request ID or transient scheduler-resume failure returns retryable
 `UNAVAILABLE` with `retryAfterMs`. During scheduler recovery, prepare, status,

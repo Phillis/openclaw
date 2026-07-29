@@ -40,6 +40,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
       gatewayInstanceId: params.gatewayInstanceId?.trim(),
       gatewayPid: params.gatewayPid,
       launchdRunCount: params.launchdRunCount,
+      suspendMode: params.suspendMode,
       currentGatewayPid: process.pid,
       pauseScheduling: () => context.cron.pauseScheduling(),
       resumeScheduling: () => context.cron.resumeScheduling(),
@@ -67,6 +68,14 @@ export const suspendHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    if (result.status === "mode-mismatch") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "gateway suspension mode does not match"),
+      );
+      return;
+    }
     if (result.status === "recovering") {
       respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
       return;
@@ -81,6 +90,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
     const result = getGatewaySuspendStatus({
       suspensionId: params.suspensionId.trim(),
       gatewayInstanceId: params.gatewayInstanceId.trim(),
+      suspendMode: params.suspendMode,
     });
     if (result.status === "conflict") {
       respond(
@@ -106,6 +116,14 @@ export const suspendHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    if (result.status === "mode-mismatch") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "gateway suspension mode does not match"),
+      );
+      return;
+    }
     respond(true, result);
   },
   "gateway.suspend.resume": async ({ respond, params }) => {
@@ -117,6 +135,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
       suspensionId: params.suspensionId.trim(),
       gatewayInstanceId: params.gatewayInstanceId.trim(),
       resumeBeforeMs: params.resumeBeforeMs,
+      suspendMode: params.suspendMode,
     });
     if (!result.ok) {
       if (result.reason === "scheduler-resume-failed") {
@@ -128,6 +147,14 @@ export const suspendHandlers: GatewayRequestHandlers = {
           false,
           undefined,
           errorShape(ErrorCodes.INVALID_REQUEST, "gateway process incarnation does not match"),
+        );
+        return;
+      }
+      if (result.reason === "mode-mismatch") {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "gateway suspension mode does not match"),
         );
         return;
       }

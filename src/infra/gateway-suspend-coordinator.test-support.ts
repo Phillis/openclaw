@@ -1,3 +1,4 @@
+import type { GatewaySuspendMode } from "../../packages/gateway-protocol/src/index.js";
 import {
   getGatewaySuspendStatus as getGatewaySuspendStatusWithIdentity,
   prepareGatewaySuspend as prepareGatewaySuspendWithIdentity,
@@ -35,23 +36,29 @@ export function prepareTestGatewaySuspend(
   });
 }
 
-export function getTestGatewaySuspendStatus(suspensionId: string) {
+export function getTestGatewaySuspendStatus(
+  suspensionId: string,
+  suspendMode?: GatewaySuspendMode,
+) {
   const gatewayInstanceId = getGatewayInstanceId();
   return omitGatewayInstance(
-    getGatewaySuspendStatusWithIdentity({ suspensionId, gatewayInstanceId }, gatewayInstanceId),
+    getGatewaySuspendStatusWithIdentity(
+      { suspensionId, gatewayInstanceId, suspendMode },
+      gatewayInstanceId,
+    ),
   );
 }
 
-export function resumeTestGatewaySuspend(suspensionId: string) {
+export function resumeTestGatewaySuspend(suspensionId: string, suspendMode?: GatewaySuspendMode) {
   const gatewayInstanceId = getGatewayInstanceId();
   const status = getGatewaySuspendStatusWithIdentity(
-    { suspensionId, gatewayInstanceId },
+    { suspensionId, gatewayInstanceId, suspendMode },
     gatewayInstanceId,
   );
   const resumeBeforeMs = "expiresAtMs" in status ? status.expiresAtMs : Number.MAX_SAFE_INTEGER;
   return omitGatewayInstance(
     resumeGatewaySuspendWithIdentity(
-      { suspensionId, gatewayInstanceId, resumeBeforeMs },
+      { suspensionId, gatewayInstanceId, resumeBeforeMs, suspendMode },
       gatewayInstanceId,
       () => resumeBeforeMs - 1,
     ),

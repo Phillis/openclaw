@@ -1,3 +1,4 @@
+import type { GatewaySuspendMode } from "../../packages/gateway-protocol/src/index.js";
 import {
   clearDurableHandoff,
   createGatewaySuspendHandoff,
@@ -11,6 +12,7 @@ export type GatewaySuspendResumeLease = {
   gatewayInstanceId: string;
   gatewayPid: number;
   launchdRunCount: number;
+  suspendMode: GatewaySuspendMode;
   expiresAtMs: number;
   resumeState: GatewaySuspendHandoff["resumeState"];
   resumeBeforeMs: number | null;
@@ -41,6 +43,7 @@ function durableHandoffFor(
   resumeBeforeMs = lease.resumeBeforeMs,
 ): GatewaySuspendHandoff {
   return createGatewaySuspendHandoff({
+    suspendMode: lease.suspendMode,
     requestId: lease.requestId,
     suspensionId: lease.suspensionId,
     gatewayInstanceId: lease.gatewayInstanceId,

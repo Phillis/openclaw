@@ -4,7 +4,7 @@
   "title": "Handoff v2 host activation plan",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "planId", "createdAt", "expiresAt", "authority", "host", "predecessor", "successor", "guard", "quiescence", "slack", "operations", "evidence"],
+  "required": ["schema", "planId", "createdAt", "expiresAt", "authority", "host", "predecessor", "successor", "guard", "quiescence", "slack", "operations", "gatewaySuspension", "evidence"],
   "properties": {
     "schema": { "const": "handoff-v2-host-activation-plan/v1" },
     "planId": { "$ref": "#/$defs/nonempty" },
@@ -84,6 +84,16 @@
         "stabilityWindowMs": { "const": 60000 },
         "automaticRollback": { "const": false },
         "automaticSecondRestart": { "const": false }
+      }
+    },
+    "gatewaySuspension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "suspendMode", "handoffSchema"],
+      "properties": {
+        "schema": { "const": "handoff-v2-gateway-suspension-binding/v1" },
+        "suspendMode": { "const": "handoff-durable-hold/v1" },
+        "handoffSchema": { "const": "openclaw-gateway-suspend-handoff/v3" }
       }
     },
     "evidence": {

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -12,11 +12,17 @@ import {
   type Stats,
 } from "node:fs";
 import { dirname } from "node:path";
+import {
+  GATEWAY_SUSPEND_MODE_DURABLE,
+  GATEWAY_SUSPEND_MODE_LEGACY,
+  type GatewaySuspendMode,
+} from "../../packages/gateway-protocol/src/index.js";
 
-export const GATEWAY_SUSPEND_HANDOFF_SCHEMA = "openclaw-gateway-suspend-handoff/v2";
+export const GATEWAY_SUSPEND_HANDOFF_SCHEMA_LEGACY = "openclaw-gateway-suspend-handoff/v2";
+export const GATEWAY_SUSPEND_HANDOFF_SCHEMA_DURABLE = "openclaw-gateway-suspend-handoff/v3";
+export const GATEWAY_SUSPEND_HANDOFF_SCHEMA = GATEWAY_SUSPEND_HANDOFF_SCHEMA_LEGACY;
 
-export type GatewaySuspendHandoff = {
-  schema: typeof GATEWAY_SUSPEND_HANDOFF_SCHEMA;
+type GatewaySuspendHandoffValue = {
   requestId: string;
   suspensionId: string;
   gatewayInstanceId: string;
@@ -32,14 +38,45 @@ export type GatewaySuspendHandoff = {
   resumeBeforeMs: number | null;
 };
 
+type LegacyGatewaySuspendHandoff = GatewaySuspendHandoffValue & {
+  schema: typeof GATEWAY_SUSPEND_HANDOFF_SCHEMA_LEGACY;
+};
+
+type DurableGatewaySuspendHandoff = GatewaySuspendHandoffValue & {
+  schema: typeof GATEWAY_SUSPEND_HANDOFF_SCHEMA_DURABLE;
+  suspendMode: typeof GATEWAY_SUSPEND_MODE_DURABLE;
+};
+
+export type GatewaySuspendHandoff = LegacyGatewaySuspendHandoff | DurableGatewaySuspendHandoff;
+
 export function createGatewaySuspendHandoff(
-  value: Omit<GatewaySuspendHandoff, "schema">,
+  value: GatewaySuspendHandoffValue & { suspendMode: GatewaySuspendMode },
 ): GatewaySuspendHandoff {
-  return { schema: GATEWAY_SUSPEND_HANDOFF_SCHEMA, ...value };
+  const { suspendMode, ...handoff } = value;
+  return suspendMode === GATEWAY_SUSPEND_MODE_DURABLE
+    ? {
+        schema: GATEWAY_SUSPEND_HANDOFF_SCHEMA_DURABLE,
+        suspendMode,
+        ...handoff,
+      }
+    : { schema: GATEWAY_SUSPEND_HANDOFF_SCHEMA_LEGACY, ...handoff };
+}
+
+export function gatewaySuspendModeForHandoff(handoff: GatewaySuspendHandoff): GatewaySuspendMode {
+  return handoff.schema === GATEWAY_SUSPEND_HANDOFF_SCHEMA_DURABLE
+    ? handoff.suspendMode
+    : GATEWAY_SUSPEND_MODE_LEGACY;
 }
 
 function gatewaySuspendHandoffBytes(handoff: GatewaySuspendHandoff): Buffer {
   return Buffer.from(`${JSON.stringify(handoff)}\n`, "utf8");
+}
+
+function gatewaySuspendHandoffIdentity(handoff: GatewaySuspendHandoff): string {
+  const normalized = Object.fromEntries(
+    Object.entries(handoff).toSorted(([left], [right]) => left.localeCompare(right)),
+  );
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 
 function syncDirectory(path: string): void {
@@ -159,13 +196,17 @@ export function replaceDurableHandoff(
   replacement: GatewaySuspendHandoff,
 ): void {
   const persisted = readDurableHandoff(path);
-  const expectedBytes = gatewaySuspendHandoffBytes(expected);
-  if (!persisted || !persisted.bytes.equals(expectedBytes)) {
+  const expectedIdentity = gatewaySuspendHandoffIdentity(expected);
+  if (!persisted || gatewaySuspendHandoffIdentity(persisted.handoff) !== expectedIdentity) {
     throw new Error("gateway suspension handoff does not match the active durable fence");
   }
-  proveDurableHandoffBytes(path, expectedBytes);
+  proveDurableHandoffBytes(path, persisted.bytes);
   const proven = readDurableHandoff(path);
-  if (!proven || !proven.bytes.equals(expectedBytes)) {
+  if (
+    !proven ||
+    !proven.bytes.equals(persisted.bytes) ||
+    gatewaySuspendHandoffIdentity(proven.handoff) !== expectedIdentity
+  ) {
     throw new Error("gateway suspension handoff changed before its durable replacement");
   }
   persistDurableHandoff(path, replacement);
@@ -209,6 +250,14 @@ export function normalizeDurableHandoffAtStartup(
     persistDurableHandoff(path, expired);
     return expired;
   }
+  if (
+    gatewaySuspendModeForHandoff(handoff) === GATEWAY_SUSPEND_MODE_LEGACY &&
+    handoff.resumeState === "held" &&
+    handoff.expiresAtMs <= nowMs
+  ) {
+    clearDurableHandoff(path);
+    return null;
+  }
   return handoff;
 }
 
@@ -234,18 +283,21 @@ export function readDurableHandoff(
     }
   }
   const value: unknown = JSON.parse(bytes.toString("utf8"));
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).toSorted().join(",") !==
-      "expiresAtMs,gatewayInstanceId,gatewayPid,launchdRunCount,requestId,resumeBeforeMs,resumeState,schema,suspensionId"
-  ) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("gateway suspension handoff has an invalid shape");
   }
   const handoff = value as Record<string, unknown>;
+  const durable = handoff.schema === GATEWAY_SUSPEND_HANDOFF_SCHEMA_DURABLE;
+  const expectedKeys = durable
+    ? "expiresAtMs,gatewayInstanceId,gatewayPid,launchdRunCount,requestId,resumeBeforeMs,resumeState,schema,suspendMode,suspensionId"
+    : "expiresAtMs,gatewayInstanceId,gatewayPid,launchdRunCount,requestId,resumeBeforeMs,resumeState,schema,suspensionId";
+  if (Object.keys(handoff).toSorted().join(",") !== expectedKeys) {
+    throw new Error("gateway suspension handoff has an invalid shape");
+  }
   if (
-    handoff.schema !== GATEWAY_SUSPEND_HANDOFF_SCHEMA ||
+    (handoff.schema !== GATEWAY_SUSPEND_HANDOFF_SCHEMA_LEGACY &&
+      handoff.schema !== GATEWAY_SUSPEND_HANDOFF_SCHEMA_DURABLE) ||
+    (durable && handoff.suspendMode !== GATEWAY_SUSPEND_MODE_DURABLE) ||
     typeof handoff.requestId !== "string" ||
     handoff.requestId.trim().length === 0 ||
     typeof handoff.suspensionId !== "string" ||

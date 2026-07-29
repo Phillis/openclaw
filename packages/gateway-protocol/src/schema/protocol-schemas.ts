@@ -331,6 +331,7 @@ import {
 import { FsDirEntrySchema, FsListDirParamsSchema, FsListDirResultSchema } from "./fs.js";
 import {
   GatewaySuspendBlockerSchema,
+  GatewaySuspendModeSchema,
   GatewaySuspendPrepareBusyResultSchema,
   GatewaySuspendPrepareParamsSchema,
   GatewaySuspendPrepareReadyResultSchema,
@@ -701,6 +702,7 @@ export const ProtocolSchemas = {
   GatewayErrorDetails: GatewayErrorDetailsSchema,
   GatewaySuspendTaskBlocker: GatewaySuspendTaskBlockerSchema,
   GatewaySuspendBlocker: GatewaySuspendBlockerSchema,
+  GatewaySuspendMode: GatewaySuspendModeSchema,
   GatewaySuspendPrepareParams: GatewaySuspendPrepareParamsSchema,
   GatewaySuspendPrepareBusyResult: GatewaySuspendPrepareBusyResultSchema,
   GatewaySuspendPrepareReadyResult: GatewaySuspendPrepareReadyResultSchema,
