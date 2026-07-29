@@ -42,6 +42,11 @@ public enum AuthProbeStatus: String, Codable, Sendable {
     case noModel = "no_model"
 }
 
+public enum GatewaySuspendMode: String, Codable, Sendable {
+    case legacyAutoExpireV1 = "legacy-auto-expire/v1"
+    case handoffDurableHoldV1 = "handoff-durable-hold/v1"
+}
+
 public enum EnvironmentStatus: String, Codable, Sendable {
     case available = "available"
     case unavailable = "unavailable"
@@ -1556,19 +1561,22 @@ public struct GatewaySuspendPrepareParams: Codable, Sendable {
     public let gatewayinstanceid: String?
     public let gatewaypid: Int
     public let launchdruncount: Int
+    public let suspendmode: GatewaySuspendMode?
 
     public init(
         requestid: String,
         suspensionid: String? = nil,
         gatewayinstanceid: String? = nil,
         gatewaypid: Int,
-        launchdruncount: Int)
+        launchdruncount: Int,
+        suspendmode: GatewaySuspendMode? = nil)
     {
         self.requestid = requestid
         self.suspensionid = suspensionid
         self.gatewayinstanceid = gatewayinstanceid
         self.gatewaypid = gatewaypid
         self.launchdruncount = launchdruncount
+        self.suspendmode = suspendmode
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1577,6 +1585,7 @@ public struct GatewaySuspendPrepareParams: Codable, Sendable {
         case gatewayinstanceid = "gatewayInstanceId"
         case gatewaypid = "gatewayPid"
         case launchdruncount = "launchdRunCount"
+        case suspendmode = "suspendMode"
     }
 }
 
@@ -1617,6 +1626,7 @@ public struct GatewaySuspendPrepareReadyResult: Codable, Sendable {
     public let gatewaypid: Int
     public let launchdruncount: Int
     public let expiresatms: Int
+    public let suspendmode: GatewaySuspendMode
     public let activecount: Int
     public let blockers: [GatewaySuspendBlocker]
 
@@ -1627,6 +1637,7 @@ public struct GatewaySuspendPrepareReadyResult: Codable, Sendable {
         gatewaypid: Int,
         launchdruncount: Int,
         expiresatms: Int,
+        suspendmode: GatewaySuspendMode,
         activecount: Int,
         blockers: [GatewaySuspendBlocker])
     {
@@ -1636,6 +1647,7 @@ public struct GatewaySuspendPrepareReadyResult: Codable, Sendable {
         self.gatewaypid = gatewaypid
         self.launchdruncount = launchdruncount
         self.expiresatms = expiresatms
+        self.suspendmode = suspendmode
         self.activecount = activecount
         self.blockers = blockers
     }
@@ -1647,6 +1659,7 @@ public struct GatewaySuspendPrepareReadyResult: Codable, Sendable {
         case gatewaypid = "gatewayPid"
         case launchdruncount = "launchdRunCount"
         case expiresatms = "expiresAtMs"
+        case suspendmode = "suspendMode"
         case activecount = "activeCount"
         case blockers
     }
@@ -1655,36 +1668,44 @@ public struct GatewaySuspendPrepareReadyResult: Codable, Sendable {
 public struct GatewaySuspendStatusParams: Codable, Sendable {
     public let suspensionid: String
     public let gatewayinstanceid: String
+    public let suspendmode: GatewaySuspendMode?
 
     public init(
         suspensionid: String,
-        gatewayinstanceid: String)
+        gatewayinstanceid: String,
+        suspendmode: GatewaySuspendMode? = nil)
     {
         self.suspensionid = suspensionid
         self.gatewayinstanceid = gatewayinstanceid
+        self.suspendmode = suspendmode
     }
 
     private enum CodingKeys: String, CodingKey {
         case suspensionid = "suspensionId"
         case gatewayinstanceid = "gatewayInstanceId"
+        case suspendmode = "suspendMode"
     }
 }
 
 public struct GatewaySuspendStatusRunningResult: Codable, Sendable {
     public let status: String
     public let gatewayinstanceid: String
+    public let suspendmode: GatewaySuspendMode
 
     public init(
         status: String,
-        gatewayinstanceid: String)
+        gatewayinstanceid: String,
+        suspendmode: GatewaySuspendMode)
     {
         self.status = status
         self.gatewayinstanceid = gatewayinstanceid
+        self.suspendmode = suspendmode
     }
 
     private enum CodingKeys: String, CodingKey {
         case status
         case gatewayinstanceid = "gatewayInstanceId"
+        case suspendmode = "suspendMode"
     }
 }
 
@@ -1692,21 +1713,25 @@ public struct GatewaySuspendStatusReadyResult: Codable, Sendable {
     public let status: String
     public let gatewayinstanceid: String
     public let expiresatms: Int
+    public let suspendmode: GatewaySuspendMode
 
     public init(
         status: String,
         gatewayinstanceid: String,
-        expiresatms: Int)
+        expiresatms: Int,
+        suspendmode: GatewaySuspendMode)
     {
         self.status = status
         self.gatewayinstanceid = gatewayinstanceid
         self.expiresatms = expiresatms
+        self.suspendmode = suspendmode
     }
 
     private enum CodingKeys: String, CodingKey {
         case status
         case gatewayinstanceid = "gatewayInstanceId"
         case expiresatms = "expiresAtMs"
+        case suspendmode = "suspendMode"
     }
 }
 
@@ -1714,21 +1739,25 @@ public struct GatewaySuspendResumeParams: Codable, Sendable {
     public let suspensionid: String
     public let gatewayinstanceid: String
     public let resumebeforems: Int
+    public let suspendmode: GatewaySuspendMode?
 
     public init(
         suspensionid: String,
         gatewayinstanceid: String,
-        resumebeforems: Int)
+        resumebeforems: Int,
+        suspendmode: GatewaySuspendMode? = nil)
     {
         self.suspensionid = suspensionid
         self.gatewayinstanceid = gatewayinstanceid
         self.resumebeforems = resumebeforems
+        self.suspendmode = suspendmode
     }
 
     private enum CodingKeys: String, CodingKey {
         case suspensionid = "suspensionId"
         case gatewayinstanceid = "gatewayInstanceId"
         case resumebeforems = "resumeBeforeMs"
+        case suspendmode = "suspendMode"
     }
 }
 
@@ -1737,17 +1766,20 @@ public struct GatewaySuspendResumeResult: Codable, Sendable {
     public let status: String
     public let resumed: Bool
     public let gatewayinstanceid: String
+    public let suspendmode: GatewaySuspendMode
 
     public init(
         ok: Bool,
         status: String,
         resumed: Bool,
-        gatewayinstanceid: String)
+        gatewayinstanceid: String,
+        suspendmode: GatewaySuspendMode)
     {
         self.ok = ok
         self.status = status
         self.resumed = resumed
         self.gatewayinstanceid = gatewayinstanceid
+        self.suspendmode = suspendmode
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1755,6 +1787,7 @@ public struct GatewaySuspendResumeResult: Codable, Sendable {
         case status
         case resumed
         case gatewayinstanceid = "gatewayInstanceId"
+        case suspendmode = "suspendMode"
     }
 }
 
