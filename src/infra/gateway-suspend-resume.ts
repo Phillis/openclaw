@@ -1,5 +1,6 @@
+import type { GatewaySuspendMode } from "../../packages/gateway-protocol/src/index.js";
 import {
-  clearDurableHandoff,
+  clearExactDurableHandoff,
   createGatewaySuspendHandoff,
   replaceDurableHandoff,
   type GatewaySuspendHandoff,
@@ -11,18 +12,23 @@ export type GatewaySuspendResumeLease = {
   gatewayInstanceId: string;
   gatewayPid: number;
   launchdRunCount: number;
+  suspendMode: GatewaySuspendMode;
   expiresAtMs: number;
   resumeState: GatewaySuspendHandoff["resumeState"];
   resumeBeforeMs: number | null;
+  releaseRequestId?: string;
+  releaseAuthoritySha256?: string;
+  releaseCommittedAtMs?: number;
   admissionReopened?: boolean;
   durableHandoffPath?: string;
   durableHandoff?: GatewaySuspendHandoff;
+  pauseScheduling: () => void;
   resumeScheduling: () => void;
   reopenAdmission: () => boolean;
   warn?: (message: string) => void;
 };
 
-export type GatewaySuspendResumeAttempt = {
+type GatewaySuspendResumeAttempt = {
   lease: GatewaySuspendResumeLease;
   nowMs: () => number;
   isCurrent: () => boolean;
@@ -41,6 +47,7 @@ function durableHandoffFor(
   resumeBeforeMs = lease.resumeBeforeMs,
 ): GatewaySuspendHandoff {
   return createGatewaySuspendHandoff({
+    suspendMode: lease.suspendMode,
     requestId: lease.requestId,
     suspensionId: lease.suspensionId,
     gatewayInstanceId: lease.gatewayInstanceId,
@@ -138,7 +145,10 @@ export function attemptGatewaySuspendResume(
   try {
     persistGatewaySuspendResumeState(lease, "resume-cleanup", resumeBeforeMs);
     if (lease.durableHandoffPath) {
-      clearDurableHandoff(lease.durableHandoffPath);
+      if (!lease.durableHandoff) {
+        throw new Error("gateway suspension cleanup lacks its exact durable fence");
+      }
+      clearExactDurableHandoff(lease.durableHandoffPath, lease.durableHandoff);
     }
   } catch (err) {
     lease.warn?.(`gateway suspension handoff cleanup failed after reopen: ${String(err)}`);
@@ -165,7 +175,10 @@ function attemptGatewaySuspendCleanup(params: GatewaySuspendResumeAttempt): void
       if (lease.resumeState === "resume-reopen-authorized") {
         persistGatewaySuspendResumeState(lease, "resume-cleanup", lease.resumeBeforeMs);
       }
-      clearDurableHandoff(lease.durableHandoffPath);
+      if (!lease.durableHandoff) {
+        throw new Error("gateway suspension cleanup retry lacks its exact durable fence");
+      }
+      clearExactDurableHandoff(lease.durableHandoffPath, lease.durableHandoff);
       params.clearTimer();
       params.clearCurrent();
     } catch (err) {

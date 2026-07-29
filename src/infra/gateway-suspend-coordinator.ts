@@ -1,21 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type {
-  GatewaySuspendPrepareResult as GatewaySuspendPrepareWireResult,
-  GatewaySuspendResumeResult as GatewaySuspendResumeWireResult,
-  GatewaySuspendStatusResult as GatewaySuspendStatusWireResult,
-} from "../../packages/gateway-protocol/src/index.js";
 import { resolveStateDir } from "../config/paths.js";
 import { tryBeginGatewaySuspendAdmission } from "../process/gateway-work-admission.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
   createGatewayActiveWorkSnapshot,
   type GatewayActiveWorkInspectors,
-  type GatewayActiveWorkSnapshot,
 } from "./gateway-active-work.js";
+import {
+  GATEWAY_SCHEDULER_RECOVERY_RETRY_MS,
+  GATEWAY_SUSPEND_MODE_LEGACY,
+  type GatewaySchedulerRecovery,
+  type GatewaySuspendCoordinatorEntry,
+  type GatewaySuspendCoordinatorState,
+  type GatewaySuspendMode,
+  type GatewaySuspendPrepareResult,
+  type GatewaySuspendResumeResult,
+  type GatewaySuspendStatusResult,
+  type HeldGatewaySuspension,
+  resolveGatewaySuspendMode,
+  resumeSchedulerRecoveryResult,
+  schedulerRecoveryResult,
+} from "./gateway-suspend-coordinator-contract.js";
 import {
   clearDurableHandoff,
   createGatewaySuspendHandoff,
+  gatewaySuspendModeForHandoff,
   normalizeDurableHandoffAtStartup,
   persistDurableHandoff,
   proveDurableHandoffBytes,
@@ -26,65 +36,11 @@ import {
   attemptGatewaySuspendResume,
   isGatewaySuspendCleanupState,
   persistGatewaySuspendResumeState,
-  type GatewaySuspendResumeLease,
 } from "./gateway-suspend-resume.js";
 
 const GATEWAY_SUSPEND_TTL_MS = 2 * 60_000;
 const GATEWAY_SUSPEND_RETRY_AFTER_MS = 20_000;
-const GATEWAY_SCHEDULER_RECOVERY_RETRY_MS = 1_000;
 const GATEWAY_SUSPEND_HANDOFF_FILENAME = "gateway-suspend-handoff.json";
-
-type GatewaySchedulerRecoveryResult = {
-  status: "recovering";
-  reason: "scheduler-resume-failed";
-  retryAfterMs: number;
-};
-
-type GatewaySuspendPrepareResult =
-  | GatewaySuspendPrepareWireResult
-  | { status: "conflict"; expiresAtMs: number }
-  | { status: "process-mismatch" }
-  | GatewaySchedulerRecoveryResult;
-
-type GatewaySuspendStatusResult =
-  | GatewaySuspendStatusWireResult
-  | { status: "conflict"; expiresAtMs: number }
-  | { status: "process-mismatch" }
-  | GatewaySchedulerRecoveryResult;
-
-type GatewaySuspendResumeResult =
-  | GatewaySuspendResumeWireResult
-  | { ok: false; reason: "suspension-mismatch" }
-  | { ok: false; reason: "process-mismatch" | "resume-authority-expired" }
-  | { ok: false; reason: "scheduler-resume-failed"; retryAfterMs: number };
-
-type GatewaySuspendCoordinatorEntryBase = {
-  owner: object;
-  resumeScheduling: () => void;
-  reopenAdmission: () => boolean;
-  warn?: (message: string) => void;
-  timer?: ReturnType<typeof setTimeout>;
-  durableHandoffPath?: string;
-};
-
-type HeldGatewaySuspension = GatewaySuspendCoordinatorEntryBase &
-  GatewaySuspendResumeLease & {
-    kind: "held";
-    snapshot: GatewayActiveWorkSnapshot;
-    nowMs: () => number;
-    adoptedAtStartup?: boolean;
-  };
-
-type GatewaySchedulerRecovery = GatewaySuspendCoordinatorEntryBase & {
-  kind: "recovering";
-};
-
-type GatewaySuspendCoordinatorEntry = HeldGatewaySuspension | GatewaySchedulerRecovery;
-
-type GatewaySuspendCoordinatorState = {
-  current: GatewaySuspendCoordinatorEntry | null;
-  retiredForLifecycleReset?: GatewaySuspendCoordinatorEntry | null;
-};
 
 const COORDINATOR_STATE = resolveGlobalSingleton(
   Symbol.for("openclaw.gatewaySuspendCoordinatorState"),
@@ -100,22 +56,6 @@ const GATEWAY_INSTANCE_ID: string = resolveGlobalSingleton(
 
 export function getGatewayProcessIncarnationId(): string {
   return GATEWAY_INSTANCE_ID;
-}
-
-function schedulerRecoveryResult(): GatewaySchedulerRecoveryResult {
-  return {
-    status: "recovering",
-    reason: "scheduler-resume-failed",
-    retryAfterMs: GATEWAY_SCHEDULER_RECOVERY_RETRY_MS,
-  };
-}
-
-function resumeSchedulerRecoveryResult(): GatewaySuspendResumeResult {
-  return {
-    ok: false,
-    reason: "scheduler-resume-failed",
-    retryAfterMs: GATEWAY_SCHEDULER_RECOVERY_RETRY_MS,
-  };
 }
 
 function clearEntryTimer(entry: GatewaySuspendCoordinatorEntry): void {
@@ -218,8 +158,12 @@ function normalizeHeldSuspension(
   held: HeldGatewaySuspension,
 ): GatewaySuspendCoordinatorEntry | null {
   if (held.resumeState === "held" && held.nowMs() >= held.expiresAtMs) {
-    // Expiry ends renewal authority, not the fence. Only an exact explicit
-    // resume may reopen admission after a durable suspension was prepared.
+    if (held.suspendMode === GATEWAY_SUSPEND_MODE_LEGACY) {
+      resumeAndReopen(held);
+      return COORDINATOR_STATE.current;
+    }
+    // Durable-hold expiry ends renewal authority, not the fence. Only an
+    // exact successor rebind followed by explicit resume may reopen admission.
     clearEntryTimer(held);
   }
   return held;
@@ -262,7 +206,15 @@ function resumeSchedulingBeforeReopen(params: {
 }
 
 function createHeldSuspension(held: Omit<HeldGatewaySuspension, "kind">): HeldGatewaySuspension {
-  return { kind: "held", ...held };
+  const entry: HeldGatewaySuspension = { kind: "held", ...held };
+  if (entry.suspendMode === GATEWAY_SUSPEND_MODE_LEGACY && entry.resumeState === "held") {
+    scheduleEntry(entry, Math.max(0, entry.expiresAtMs - entry.nowMs()), () => {
+      if (COORDINATOR_STATE.current === entry) {
+        resumeAndReopen(entry);
+      }
+    });
+  }
+  return entry;
 }
 
 function renewHeldSuspension(
@@ -276,6 +228,7 @@ function renewHeldSuspension(
 ): void {
   const expiresAtMs = nowMs + GATEWAY_SUSPEND_TTL_MS;
   const replacement = createGatewaySuspendHandoff({
+    suspendMode: held.suspendMode,
     requestId: held.requestId,
     suspensionId: held.suspensionId,
     gatewayInstanceId: identity.gatewayInstanceId,
@@ -298,6 +251,13 @@ function renewHeldSuspension(
   held.launchdRunCount = identity.launchdRunCount;
   held.resumeState = "held";
   held.resumeBeforeMs = null;
+  if (held.suspendMode === GATEWAY_SUSPEND_MODE_LEGACY) {
+    scheduleEntry(held, GATEWAY_SUSPEND_TTL_MS, () => {
+      if (COORDINATOR_STATE.current === held) {
+        resumeAndReopen(held);
+      }
+    });
+  }
 }
 
 /** Acquire, inspect, and either roll back immediately or hold an idle fence. */
@@ -307,6 +267,7 @@ export function prepareGatewaySuspend(params: {
   gatewayInstanceId?: string;
   gatewayPid: number;
   launchdRunCount: number;
+  suspendMode?: GatewaySuspendMode;
   currentGatewayInstanceId?: string;
   currentGatewayPid?: number;
   pauseScheduling: () => void;
@@ -317,6 +278,10 @@ export function prepareGatewaySuspend(params: {
   warn?: (message: string) => void;
   durableHandoffPath?: string;
 }): GatewaySuspendPrepareResult {
+  const suspendMode = resolveGatewaySuspendMode(params.suspendMode);
+  if (!suspendMode) {
+    return { status: "mode-mismatch" };
+  }
   const currentGatewayInstanceId = params.currentGatewayInstanceId ?? GATEWAY_INSTANCE_ID;
   const currentGatewayPid = params.currentGatewayPid ?? process.pid;
   if (
@@ -339,6 +304,9 @@ export function prepareGatewaySuspend(params: {
     return schedulerRecoveryResult();
   }
   if (existing) {
+    if (existing.suspendMode !== suspendMode) {
+      return { status: "mode-mismatch" };
+    }
     if (
       existing.gatewayInstanceId !== currentGatewayInstanceId ||
       (!existing.adoptedAtStartup &&
@@ -385,6 +353,7 @@ export function prepareGatewaySuspend(params: {
       gatewayPid: existing.gatewayPid,
       launchdRunCount: existing.launchdRunCount,
       expiresAtMs: existing.expiresAtMs,
+      suspendMode: existing.suspendMode,
       activeCount: existing.snapshot.counts.totalActive,
       blockers: existing.snapshot.blockers,
     };
@@ -448,6 +417,7 @@ export function prepareGatewaySuspend(params: {
     const expiresAtMs = nowMs + GATEWAY_SUSPEND_TTL_MS;
     const durableHandoff = params.durableHandoffPath
       ? createGatewaySuspendHandoff({
+          suspendMode,
           requestId: params.requestId,
           suspensionId,
           gatewayInstanceId: currentGatewayInstanceId,
@@ -465,6 +435,7 @@ export function prepareGatewaySuspend(params: {
       gatewayInstanceId: currentGatewayInstanceId,
       gatewayPid: params.gatewayPid,
       launchdRunCount: params.launchdRunCount,
+      suspendMode,
       expiresAtMs,
       snapshot,
       reopenAdmission: admission.release,
@@ -489,6 +460,7 @@ export function prepareGatewaySuspend(params: {
       gatewayPid: params.gatewayPid,
       launchdRunCount: params.launchdRunCount,
       expiresAtMs,
+      suspendMode,
       activeCount: snapshot.counts.totalActive,
       blockers: snapshot.blockers,
     };
@@ -573,6 +545,7 @@ export function adoptGatewaySuspendHandoffAtStartup(
     gatewayInstanceId: currentGatewayInstanceId,
     gatewayPid: currentGatewayPid,
     launchdRunCount: handoff.launchdRunCount,
+    suspendMode: gatewaySuspendModeForHandoff(handoff),
     expiresAtMs: handoff.expiresAtMs,
     snapshot: createGatewayActiveWorkSnapshot(),
     reopenAdmission: admission.release,
@@ -589,11 +562,19 @@ export function adoptGatewaySuspendHandoffAtStartup(
 }
 
 export function getGatewaySuspendStatus(
-  params: { suspensionId: string; gatewayInstanceId: string },
+  params: {
+    suspensionId: string;
+    gatewayInstanceId: string;
+    suspendMode?: GatewaySuspendMode;
+  },
   currentGatewayInstanceId = GATEWAY_INSTANCE_ID,
 ): GatewaySuspendStatusResult {
   if (params.gatewayInstanceId !== currentGatewayInstanceId) {
     return { status: "process-mismatch" };
+  }
+  const suspendMode = resolveGatewaySuspendMode(params.suspendMode);
+  if (!suspendMode) {
+    return { status: "mode-mismatch" };
   }
   const current = COORDINATOR_STATE.current;
   if (current?.kind === "recovering") {
@@ -607,7 +588,10 @@ export function getGatewaySuspendStatus(
     return schedulerRecoveryResult();
   }
   if (!held) {
-    return { status: "running", gatewayInstanceId: currentGatewayInstanceId };
+    return { status: "running", gatewayInstanceId: currentGatewayInstanceId, suspendMode };
+  }
+  if (held.suspendMode !== suspendMode) {
+    return { status: "mode-mismatch" };
   }
   if (held.gatewayInstanceId !== currentGatewayInstanceId) {
     return { status: "process-mismatch" };
@@ -619,14 +603,24 @@ export function getGatewaySuspendStatus(
     status: "ready",
     gatewayInstanceId: currentGatewayInstanceId,
     expiresAtMs: held.expiresAtMs,
+    suspendMode: held.suspendMode,
   };
 }
 
 export function resumeGatewaySuspend(
-  params: { suspensionId: string; gatewayInstanceId: string; resumeBeforeMs: number },
+  params: {
+    suspensionId: string;
+    gatewayInstanceId: string;
+    resumeBeforeMs: number;
+    suspendMode?: GatewaySuspendMode;
+  },
   currentGatewayInstanceId = GATEWAY_INSTANCE_ID,
   nowMs: () => number = Date.now,
 ): GatewaySuspendResumeResult {
+  const suspendMode = resolveGatewaySuspendMode(params.suspendMode);
+  if (!suspendMode) {
+    return { ok: false, reason: "mode-mismatch" };
+  }
   if (params.gatewayInstanceId !== currentGatewayInstanceId) {
     return { ok: false, reason: "process-mismatch" };
   }
@@ -647,7 +641,11 @@ export function resumeGatewaySuspend(
       status: "running",
       resumed: false,
       gatewayInstanceId: currentGatewayInstanceId,
+      suspendMode,
     };
+  }
+  if (held.suspendMode !== suspendMode) {
+    return { ok: false, reason: "mode-mismatch" };
   }
   if (held.gatewayInstanceId !== currentGatewayInstanceId) {
     return { ok: false, reason: "process-mismatch" };
@@ -694,6 +692,7 @@ export function resumeGatewaySuspend(
     status: "running",
     resumed: true,
     gatewayInstanceId: currentGatewayInstanceId,
+    suspendMode: held.suspendMode,
   };
 }
 

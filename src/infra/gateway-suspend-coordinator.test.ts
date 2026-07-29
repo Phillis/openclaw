@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GATEWAY_SUSPEND_MODE_LEGACY } from "../../packages/gateway-protocol/src/index.js";
 
 const durableDeletionFault = vi.hoisted(() => ({
   path: "",
@@ -16,7 +17,7 @@ const durableDeletionFault = vi.hoisted(() => ({
   mutateAfterPostFailureProof: false,
   adoptionProofSyncsRemaining: 0,
   adoptionProofSyncCount: 0,
-  observeUnlink: undefined as (() => void) | undefined,
+  observeUnlink: undefined as ((path: import("node:fs").PathLike) => void) | undefined,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -24,7 +25,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return {
     ...actual,
     unlinkSync: (path: import("node:fs").PathLike) => {
-      durableDeletionFault.observeUnlink?.();
+      durableDeletionFault.observeUnlink?.(path);
       actual.unlinkSync(path);
       if (
         durableDeletionFault.failParentSyncAfterUnlink &&
@@ -40,6 +41,15 @@ vi.mock("node:fs", async (importOriginal) => {
         String(newPath) === durableDeletionFault.pathAfterRename
       ) {
         durableDeletionFault.renameProofSyncsRemaining = 2;
+      }
+    },
+    linkSync: (oldPath: import("node:fs").PathLike, newPath: import("node:fs").PathLike) => {
+      actual.linkSync(oldPath, newPath);
+      if (
+        durableDeletionFault.failParentSyncAfterRename &&
+        String(newPath) === durableDeletionFault.pathAfterRename
+      ) {
+        durableDeletionFault.renameProofSyncsRemaining = 1;
       }
     },
     fsyncSync: (descriptor: number) => {
@@ -94,6 +104,7 @@ import {
 } from "../agents/bash-process-registry.js";
 import { createProcessSessionFixture } from "../agents/bash-process-registry.test-helpers.js";
 import { resetProcessRegistryForTests } from "../agents/bash-process-registry.test-support.js";
+import { getGatewayProcessInstanceId } from "../gateway/process-instance.js";
 import {
   isGatewayWorkAdmissionClosed,
   markGatewayRestartDraining,
@@ -102,54 +113,19 @@ import {
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
 import {
   adoptGatewaySuspendHandoffAtStartup,
-  getGatewayProcessIncarnationId,
   getGatewaySuspendStatus as getGatewaySuspendStatusWithIdentity,
   prepareGatewaySuspend as prepareGatewaySuspendWithIdentity,
   resetGatewaySuspendCoordinatorForLifecycleRestart,
   resumeGatewaySuspend as resumeGatewaySuspendWithIdentity,
 } from "./gateway-suspend-coordinator.js";
+import {
+  getTestGatewaySuspendStatus as getGatewaySuspendStatus,
+  prepareTestGatewaySuspend as prepareGatewaySuspend,
+  resumeTestGatewaySuspend as resumeGatewaySuspend,
+} from "./gateway-suspend-coordinator.test-support.js";
 
 const SUSPEND_TTL_MS = 2 * 60_000;
 const SUSPEND_RETRY_AFTER_MS = 20_000;
-
-function prepareGatewaySuspend(
-  params: Omit<
-    Parameters<typeof prepareGatewaySuspendWithIdentity>[0],
-    "gatewayPid" | "launchdRunCount"
-  > &
-    Partial<
-      Pick<
-        Parameters<typeof prepareGatewaySuspendWithIdentity>[0],
-        "gatewayPid" | "launchdRunCount"
-      >
-    >,
-) {
-  return prepareGatewaySuspendWithIdentity({
-    gatewayPid: process.pid,
-    launchdRunCount: 1,
-    ...params,
-  });
-}
-
-function getGatewaySuspendStatus(suspensionId: string) {
-  const { gatewayInstanceId: _gatewayInstanceId, ...result } = getGatewaySuspendStatusWithIdentity({
-    suspensionId,
-    gatewayInstanceId: getGatewayProcessIncarnationId(),
-  });
-  return result;
-}
-
-function resumeGatewaySuspend(suspensionId: string) {
-  const gatewayInstanceId = getGatewayProcessIncarnationId();
-  const status = getGatewaySuspendStatusWithIdentity({ suspensionId, gatewayInstanceId });
-  const resumeBeforeMs = "expiresAtMs" in status ? status.expiresAtMs : Number.MAX_SAFE_INTEGER;
-  const { gatewayInstanceId: _gatewayInstanceId, ...result } = resumeGatewaySuspendWithIdentity(
-    { suspensionId, gatewayInstanceId, resumeBeforeMs },
-    gatewayInstanceId,
-    () => resumeBeforeMs - 1,
-  );
-  return result;
-}
 
 function inspectors(
   overrides: Partial<GatewayActiveWorkInspectors> = {},
@@ -199,7 +175,7 @@ afterEach(() => {
 });
 
 describe("gateway suspend coordinator", () => {
-  it("accepts initial handoff creation only after an exposed rename is freshly re-proven", () => {
+  it("accepts initial handoff creation only after an exposed hardlink is freshly re-proven", () => {
     const directory = mkdtempSync(join(tmpdir(), "openclaw-suspend-rename-retry-"));
     const durableHandoffPath = join(directory, "gateway-suspend-handoff.json");
     try {
@@ -261,6 +237,7 @@ describe("gateway suspend coordinator", () => {
       expect(getGatewaySuspendStatus("suspension-renew-retry")).toEqual({
         status: "ready",
         expiresAtMs: 2_000 + SUSPEND_TTL_MS,
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
     } finally {
       resetGatewaySuspendCoordinatorForLifecycleRestart();
@@ -301,6 +278,7 @@ describe("gateway suspend coordinator", () => {
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
       expect(getGatewaySuspendStatus("suspension-rename-drift")).toEqual({
         status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
     } finally {
       vi.useRealTimers();
@@ -328,19 +306,23 @@ describe("gateway suspend coordinator", () => {
 
       durableDeletionFault.path = durableHandoffPath;
       durableDeletionFault.failParentSyncAfterUnlink = true;
-      durableDeletionFault.observeUnlink = () => {
-        expect(isGatewayWorkAdmissionClosed()).toBe(false);
+      durableDeletionFault.observeUnlink = (path) => {
+        if (String(path) === durableHandoffPath) {
+          expect(isGatewayWorkAdmissionClosed()).toBe(false);
+        }
       };
       expect(resumeGatewaySuspend("suspension-unlink-retry")).toEqual({
-        ok: false,
-        reason: "scheduler-resume-failed",
-        retryAfterMs: 1_000,
+        ok: true,
+        status: "running",
+        resumed: true,
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
-      vi.advanceTimersByTime(1_000);
-
       expect(durableDeletionFault.retryParentSyncCount).toBe(1);
+      expect(isGatewayWorkAdmissionClosed()).toBe(false);
+      expect(() => readFileSync(durableHandoffPath)).toThrow();
       expect(getGatewaySuspendStatus("suspension-unlink-retry")).toEqual({
         status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
     } finally {
       vi.useRealTimers();
@@ -380,21 +362,25 @@ describe("gateway suspend coordinator", () => {
 
       const successorPause = vi.fn();
       const successorResume = vi.fn();
-      expect(
-        prepareGatewaySuspend({
-          requestId: "request-cross-process",
-          suspensionId: "suspension-cross-process",
-          pauseScheduling: successorPause,
-          resumeScheduling: successorResume,
-          inspect: inspectors(),
-          durableHandoffPath,
-        }),
-      ).toMatchObject({ status: "ready", suspensionId: "suspension-cross-process" });
+      const successorPrepared = prepareGatewaySuspend({
+        requestId: "request-cross-process",
+        suspensionId: "suspension-cross-process",
+        pauseScheduling: successorPause,
+        resumeScheduling: successorResume,
+        inspect: inspectors(),
+        durableHandoffPath,
+      });
+      expect(successorPrepared).toMatchObject({
+        status: "ready",
+        suspensionId: "suspension-cross-process",
+        gatewayInstanceId: getGatewayProcessInstanceId(),
+      });
       expect(successorPause).toHaveBeenCalledOnce();
       expect(resumeGatewaySuspend("suspension-cross-process")).toEqual({
         ok: true,
         status: "running",
         resumed: true,
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
       expect(successorResume).toHaveBeenCalledOnce();
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
@@ -552,7 +538,10 @@ describe("gateway suspend coordinator", () => {
       vi.advanceTimersByTime(1_000);
       expect(resumeScheduling).toHaveBeenCalledTimes(2);
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
-      expect(getGatewaySuspendStatus("stale-id")).toEqual({ status: "running" });
+      expect(getGatewaySuspendStatus("stale-id")).toEqual({
+        status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      });
 
       expect(
         prepareGatewaySuspend({
@@ -593,7 +582,10 @@ describe("gateway suspend coordinator", () => {
 
       expect(resumeScheduling).toHaveBeenCalledOnce();
       expect(isGatewayWorkAdmissionClosed()).toBe(true);
-      expect(getGatewaySuspendStatus("stale-id")).toEqual({ status: "running" });
+      expect(getGatewaySuspendStatus("stale-id")).toEqual({
+        status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -676,6 +668,7 @@ describe("gateway suspend coordinator", () => {
       ok: true,
       status: "running",
       resumed: true,
+      suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
     });
     expect(resumeScheduling).toHaveBeenCalledOnce();
     expect(isGatewayWorkAdmissionClosed()).toBe(false);
@@ -948,7 +941,10 @@ describe("gateway suspend coordinator", () => {
 
     markGatewayRestartDraining();
 
-    expect(getGatewaySuspendStatus("suspension-restart")).toEqual({ status: "running" });
+    expect(getGatewaySuspendStatus("suspension-restart")).toEqual({
+      status: "running",
+      suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+    });
     expect(resumeScheduling).not.toHaveBeenCalled();
     expect(isGatewayWorkAdmissionClosed()).toBe(true);
   });
@@ -989,7 +985,10 @@ describe("gateway suspend coordinator", () => {
 
       vi.advanceTimersByTime(1_000);
       expect(resumeScheduling).toHaveBeenCalledTimes(2);
-      expect(getGatewaySuspendStatus("suspension-resume-retry")).toEqual({ status: "running" });
+      expect(getGatewaySuspendStatus("suspension-resume-retry")).toEqual({
+        status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      });
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
     } finally {
       vi.useRealTimers();

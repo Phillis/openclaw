@@ -5,7 +5,7 @@
   "description": "Terminal evidence only. It grants no rollout, restart, rollback, canary, or production authority.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "planId", "planSha256", "startedAt", "completedAt", "outcome", "authority", "operations", "predecessor", "successor", "proofs", "ledger", "rollbackPacketSha256", "holdReason"],
+  "required": ["schema", "planId", "planSha256", "startedAt", "completedAt", "outcome", "authority", "operations", "gatewaySuspension", "predecessor", "successor", "proofs", "ledger", "rollbackPacketSha256", "holdReason"],
   "properties": {
     "schema": { "const": "handoff-v2-host-activation-receipt/v1" },
     "planId": { "$ref": "#/$defs/nonempty" },
@@ -15,6 +15,16 @@
     "outcome": { "enum": ["PREFLIGHT_PASS", "ACTIVATED_VERIFIED", "HOLD"] },
     "authority": { "$ref": "#/$defs/noAuthority" },
     "operations": { "$ref": "#/$defs/operations" },
+    "gatewaySuspension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "suspendMode", "handoffSchema"],
+      "properties": {
+        "schema": { "const": "handoff-v2-gateway-suspension-binding/v1" },
+        "suspendMode": { "const": "handoff-durable-hold/v1" },
+        "handoffSchema": { "const": "openclaw-gateway-suspend-handoff/v3" }
+      }
+    },
     "predecessor": { "$ref": "#/$defs/predecessor" },
     "successor": { "oneOf": [{ "$ref": "#/$defs/successor" }, { "type": "null" }] },
     "proofs": { "oneOf": [{ "$ref": "#/$defs/preflightProofs" }, { "$ref": "#/$defs/activationProofs" }, { "$ref": "#/$defs/observedSuccessorProofs" }, { "type": "null" }] },

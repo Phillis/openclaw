@@ -8,7 +8,6 @@ import {
 } from "../process/gateway-work-admission.js";
 import {
   adoptGatewaySuspendHandoffAtStartup,
-  getGatewayProcessIncarnationId,
   getGatewaySuspendStatus,
   prepareGatewaySuspend,
   resetGatewaySuspendCoordinatorForLifecycleRestart,
@@ -85,22 +84,24 @@ describe("gateway suspend durable cleanup", () => {
     const durableHandoffPath = join(directory, "gateway-suspend-handoff.json");
     const resumeScheduling = vi.fn();
     try {
-      expect(
-        prepareGatewaySuspend({
-          requestId: "request-cleanup-restart",
-          gatewayPid: process.pid,
-          launchdRunCount: 1,
-          pauseScheduling: vi.fn(),
-          resumeScheduling,
-          inspect: {},
-          createSuspensionId: () => "suspension-cleanup-restart",
-          durableHandoffPath,
-        }),
-      ).toMatchObject({ status: "ready" });
+      const prepared = prepareGatewaySuspend({
+        requestId: "request-cleanup-restart",
+        gatewayPid: process.pid,
+        launchdRunCount: 1,
+        pauseScheduling: vi.fn(),
+        resumeScheduling,
+        inspect: {},
+        createSuspensionId: () => "suspension-cleanup-restart",
+        durableHandoffPath,
+      });
+      expect(prepared).toMatchObject({ status: "ready" });
+      if (prepared.status !== "ready") {
+        throw new Error(`expected prepared suspension, received ${prepared.status}`);
+      }
 
       durableFault.path = durableHandoffPath;
       durableFault.failUnlinkOnce = true;
-      const gatewayInstanceId = getGatewayProcessIncarnationId();
+      const gatewayInstanceId = prepared.gatewayInstanceId;
       const status = getGatewaySuspendStatus({
         suspensionId: "suspension-cleanup-restart",
         gatewayInstanceId,
@@ -195,7 +196,7 @@ describe("gateway suspend durable cleanup", () => {
     const directory = mkdtempSync(join(tmpdir(), "openclaw-suspend-cleanup-absence-"));
     const durableHandoffPath = join(directory, "gateway-suspend-handoff.json");
     try {
-      prepareGatewaySuspend({
+      const prepared = prepareGatewaySuspend({
         requestId: "request-cleanup-absence",
         gatewayPid: process.pid,
         launchdRunCount: 1,
@@ -205,9 +206,12 @@ describe("gateway suspend durable cleanup", () => {
         createSuspensionId: () => "suspension-cleanup-absence",
         durableHandoffPath,
       });
+      if (prepared.status !== "ready") {
+        throw new Error(`expected prepared suspension, received ${prepared.status}`);
+      }
       durableFault.path = durableHandoffPath;
       durableFault.failUnlinkOnce = true;
-      const gatewayInstanceId = getGatewayProcessIncarnationId();
+      const gatewayInstanceId = prepared.gatewayInstanceId;
       const status = getGatewaySuspendStatus({
         suspensionId: "suspension-cleanup-absence",
         gatewayInstanceId,
@@ -225,9 +229,8 @@ describe("gateway suspend durable cleanup", () => {
       resetGatewayWorkAdmission();
 
       durableFault.failParentSyncAfterUnlink = true;
-      expect(() => adoptGatewaySuspendHandoffAtStartup({ durableHandoffPath })).toThrow(
-        "injected parent fsync failure",
-      );
+      expect(adoptGatewaySuspendHandoffAtStartup({ durableHandoffPath })).toBe(false);
+      expect(isGatewayWorkAdmissionClosed()).toBe(false);
       durableFault.fsyncCount = 0;
       expect(adoptGatewaySuspendHandoffAtStartup({ durableHandoffPath })).toBe(false);
       expect(durableFault.fsyncCount).toBeGreaterThan(0);

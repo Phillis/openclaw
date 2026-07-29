@@ -1,7 +1,12 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  GATEWAY_SUSPEND_MODE_DURABLE,
+  GATEWAY_SUSPEND_MODE_LEGACY,
+} from "../../packages/gateway-protocol/src/index.js";
 import {
   isGatewayWorkAdmissionClosed,
   markGatewayRestartDraining,
@@ -17,6 +22,14 @@ import {
 import { getTestGatewaySuspendStatus } from "./gateway-suspend-coordinator.test-support.js";
 
 const SUSPEND_TTL_MS = 2 * 60_000;
+
+function releaseAuthority(seed: string) {
+  const releaseAuthoritySha256 = createHash("sha256").update(seed, "utf8").digest("hex");
+  return {
+    releaseRequestId: `handoff-v2-release:${releaseAuthoritySha256.slice(0, 32)}`,
+    releaseAuthoritySha256,
+  };
+}
 
 const idleInspectors: GatewayActiveWorkInspectors = {
   getQueueSize: () => 0,
@@ -59,6 +72,7 @@ function prepareDurableFence(params: {
     suspensionId: params.suspensionId,
     gatewayPid: params.gatewayPid ?? process.pid,
     launchdRunCount: params.launchdRunCount ?? 1,
+    suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
     currentGatewayInstanceId: params.gatewayInstanceId,
     currentGatewayPid: params.gatewayPid,
     pauseScheduling: params.pauseScheduling ?? vi.fn(),
@@ -81,6 +95,74 @@ afterEach(() => {
 });
 
 describe("gateway durable suspension fence", () => {
+  it("preserves omitted-mode legacy auto-expiry and reports its versioned mode", () => {
+    vi.useFakeTimers();
+    try {
+      const resumeScheduling = vi.fn();
+      const prepared = requireReady(
+        prepareGatewaySuspend({
+          requestId: "request-legacy-expiry",
+          gatewayPid: process.pid,
+          launchdRunCount: 1,
+          pauseScheduling: vi.fn(),
+          resumeScheduling,
+          inspect: idleInspectors,
+          createSuspensionId: () => "suspension-legacy-expiry",
+        }),
+      );
+      expect(prepared.suspendMode).toBe(GATEWAY_SUSPEND_MODE_LEGACY);
+
+      vi.advanceTimersByTime(SUSPEND_TTL_MS);
+
+      expect(getTestGatewaySuspendStatus(prepared.suspensionId)).toEqual({
+        status: "running",
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      });
+      expect(resumeScheduling).toHaveBeenCalledOnce();
+      expect(isGatewayWorkAdmissionClosed()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears an expired legacy marker instead of adopting a durable hold", () => {
+    const directory = mkdtempSync(join(tmpdir(), "openclaw-suspend-legacy-restart-"));
+    const durableHandoffPath = join(directory, "gateway-suspend-handoff.json");
+    let nowMs = 1_000;
+    try {
+      const prepared = requireReady(
+        prepareGatewaySuspend({
+          requestId: "request-legacy-restart",
+          gatewayPid: process.pid,
+          launchdRunCount: 1,
+          pauseScheduling: vi.fn(),
+          resumeScheduling: vi.fn(),
+          inspect: idleInspectors,
+          nowMs: () => nowMs,
+          createSuspensionId: () => "suspension-legacy-restart",
+          durableHandoffPath,
+        }),
+      );
+      markGatewayRestartDraining();
+      resetGatewaySuspendCoordinatorForLifecycleRestart();
+      resetGatewayWorkAdmission();
+      nowMs = prepared.expiresAtMs;
+
+      expect(
+        adoptGatewaySuspendHandoffAtStartup({
+          durableHandoffPath,
+          nowMs: () => nowMs,
+        }),
+      ).toBe(false);
+      expect(isGatewayWorkAdmissionClosed()).toBe(false);
+      expect(() => readFileSync(durableHandoffPath)).toThrow();
+    } finally {
+      resetGatewaySuspendCoordinatorForLifecycleRestart();
+      resetGatewayWorkAdmission();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("keeps an expired held fence closed until an exact renewal and explicit resume", () => {
     const directory = mkdtempSync(join(tmpdir(), "openclaw-suspend-expired-held-"));
     const durableHandoffPath = join(directory, "gateway-suspend-handoff.json");
@@ -98,9 +180,12 @@ describe("gateway durable suspension fence", () => {
       );
       nowMs = prepared.expiresAtMs;
 
-      expect(getTestGatewaySuspendStatus(prepared.suspensionId)).toEqual({
+      expect(
+        getTestGatewaySuspendStatus(prepared.suspensionId, GATEWAY_SUSPEND_MODE_DURABLE),
+      ).toEqual({
         status: "ready",
         expiresAtMs: prepared.expiresAtMs,
+        suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
       });
       expect(
         resumeGatewaySuspend(
@@ -108,6 +193,8 @@ describe("gateway durable suspension fence", () => {
             suspensionId: prepared.suspensionId,
             gatewayInstanceId: prepared.gatewayInstanceId,
             resumeBeforeMs: prepared.expiresAtMs,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("expired-held-before-renewal"),
           },
           prepared.gatewayInstanceId,
           () => nowMs,
@@ -116,7 +203,9 @@ describe("gateway durable suspension fence", () => {
       expect(resumeScheduling).not.toHaveBeenCalled();
       expect(isGatewayWorkAdmissionClosed()).toBe(true);
       expect(JSON.parse(readFileSync(durableHandoffPath, "utf8"))).toMatchObject({
+        schema: "openclaw-gateway-suspend-handoff/v3",
         suspensionId: prepared.suspensionId,
+        suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
         resumeState: "held",
       });
       expect(
@@ -142,6 +231,8 @@ describe("gateway durable suspension fence", () => {
             suspensionId: renewed.suspensionId,
             gatewayInstanceId: renewed.gatewayInstanceId,
             resumeBeforeMs: renewed.expiresAtMs,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("expired-held-after-renewal"),
           },
           renewed.gatewayInstanceId,
           () => nowMs + 1,
@@ -149,6 +240,59 @@ describe("gateway durable suspension fence", () => {
       ).toMatchObject({ ok: true, status: "running", resumed: true });
       expect(resumeScheduling).toHaveBeenCalledOnce();
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
+    } finally {
+      resetGatewaySuspendCoordinatorForLifecycleRestart();
+      resetGatewayWorkAdmission();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects omission or downgrade while a durable-mode fence is active", () => {
+    const directory = mkdtempSync(join(tmpdir(), "openclaw-suspend-mode-downgrade-"));
+    const durableHandoffPath = join(directory, "gateway-suspend-handoff.json");
+    const nowMs = 1_000;
+    try {
+      const prepared = requireReady(
+        prepareDurableFence({
+          requestId: "request-mode-downgrade",
+          durableHandoffPath,
+          nowMs: () => nowMs,
+          createSuspensionId: () => "suspension-mode-downgrade",
+        }),
+      );
+      const omittedRenewal = {
+        requestId: "request-mode-downgrade",
+        suspensionId: prepared.suspensionId,
+        gatewayPid: process.pid,
+        launchdRunCount: 1,
+        pauseScheduling: vi.fn(),
+        resumeScheduling: vi.fn(),
+        inspect: idleInspectors,
+        nowMs: () => nowMs,
+        durableHandoffPath,
+      };
+      expect(prepareGatewaySuspend(omittedRenewal)).toEqual({ status: "mode-mismatch" });
+      expect(
+        prepareGatewaySuspend({
+          ...omittedRenewal,
+          suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+        }),
+      ).toEqual({ status: "mode-mismatch" });
+      expect(getTestGatewaySuspendStatus(prepared.suspensionId)).toEqual({
+        status: "mode-mismatch",
+      });
+      expect(
+        resumeGatewaySuspend(
+          {
+            suspensionId: prepared.suspensionId,
+            gatewayInstanceId: prepared.gatewayInstanceId,
+            resumeBeforeMs: prepared.expiresAtMs,
+          },
+          prepared.gatewayInstanceId,
+          () => nowMs,
+        ),
+      ).toEqual({ ok: false, reason: "mode-mismatch" });
+      expect(isGatewayWorkAdmissionClosed()).toBe(true);
     } finally {
       resetGatewaySuspendCoordinatorForLifecycleRestart();
       resetGatewayWorkAdmission();
@@ -194,6 +338,8 @@ describe("gateway durable suspension fence", () => {
             suspensionId: prepared.suspensionId,
             gatewayInstanceId: "successor-instance",
             resumeBeforeMs: prepared.expiresAtMs,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("crash-restart-before-rebind"),
           },
           "successor-instance",
           () => nowMs,
@@ -226,6 +372,8 @@ describe("gateway durable suspension fence", () => {
             suspensionId: rebound.suspensionId,
             gatewayInstanceId: rebound.gatewayInstanceId,
             resumeBeforeMs: rebound.expiresAtMs,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("crash-restart-after-rebind"),
           },
           rebound.gatewayInstanceId,
           () => nowMs + 1,
@@ -243,6 +391,14 @@ describe("gateway durable suspension fence", () => {
   it.each([
     ["missing", (path: string) => unlinkSync(path)],
     ["corrupt", (path: string) => writeFileSync(path, "{}\n")],
+    [
+      "semantically changed",
+      (path: string) => {
+        const handoff = JSON.parse(readFileSync(path, "utf8"));
+        handoff.gatewayPid += 1;
+        writeFileSync(path, `${JSON.stringify(handoff, null, 2)}\n`);
+      },
+    ],
   ])("fails closed when the active durable state is %s", (_label, mutate) => {
     const directory = mkdtempSync(join(tmpdir(), "openclaw-suspend-durable-drift-"));
     const durableHandoffPath = join(directory, "gateway-suspend-handoff.json");
@@ -266,6 +422,8 @@ describe("gateway durable suspension fence", () => {
             suspensionId: prepared.suspensionId,
             gatewayInstanceId: prepared.gatewayInstanceId,
             resumeBeforeMs: prepared.expiresAtMs,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("durable-drift"),
           },
           prepared.gatewayInstanceId,
           () => nowMs,
@@ -314,6 +472,8 @@ describe("gateway durable suspension fence", () => {
             suspensionId: first.suspensionId,
             gatewayInstanceId: first.gatewayInstanceId,
             resumeBeforeMs: first.expiresAtMs,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("stale-resume-first"),
           },
           first.gatewayInstanceId,
           () => nowMs,
@@ -335,6 +495,8 @@ describe("gateway durable suspension fence", () => {
             suspensionId: first.suspensionId,
             gatewayInstanceId: first.gatewayInstanceId,
             resumeBeforeMs: first.expiresAtMs,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("stale-resume-first"),
           },
           first.gatewayInstanceId,
           () => nowMs,
@@ -347,6 +509,8 @@ describe("gateway durable suspension fence", () => {
             suspensionId: second.suspensionId,
             gatewayInstanceId: second.gatewayInstanceId,
             resumeBeforeMs: second.expiresAtMs,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("stale-resume-second"),
           },
           second.gatewayInstanceId,
           () => nowMs,

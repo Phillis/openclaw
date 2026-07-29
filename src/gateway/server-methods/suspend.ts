@@ -1,6 +1,7 @@
 // Gateway RPC handlers for cooperative, host-neutral process suspension.
 import {
   ErrorCodes,
+  GATEWAY_SUSPEND_MODE_DURABLE,
   errorShape,
   validateGatewaySuspendPrepareParams,
   validateGatewaySuspendResumeParams,
@@ -12,6 +13,7 @@ import {
   resolveGatewaySuspendHandoffPath,
   resumeGatewaySuspend,
 } from "../../infra/gateway-suspend-coordinator.js";
+import { isGatewaySuspendReleaseAuthorityPair } from "../../infra/gateway-suspend-release.js";
 import { createGatewayServerActiveWorkInspectors } from "../server-active-work.js";
 import type { GatewayRequestHandlers } from "./types.js";
 
@@ -40,6 +42,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
       gatewayInstanceId: params.gatewayInstanceId?.trim(),
       gatewayPid: params.gatewayPid,
       launchdRunCount: params.launchdRunCount,
+      suspendMode: params.suspendMode,
       currentGatewayPid: process.pid,
       pauseScheduling: () => context.cron.pauseScheduling(),
       resumeScheduling: () => context.cron.resumeScheduling(),
@@ -67,6 +70,14 @@ export const suspendHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    if (result.status === "mode-mismatch") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "gateway suspension mode does not match"),
+      );
+      return;
+    }
     if (result.status === "recovering") {
       respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
       return;
@@ -78,10 +89,25 @@ export const suspendHandlers: GatewayRequestHandlers = {
       respond(false, undefined, invalidParams("gateway.suspend.status"));
       return;
     }
-    const result = getGatewaySuspendStatus({
-      suspensionId: params.suspensionId.trim(),
-      gatewayInstanceId: params.gatewayInstanceId.trim(),
-    });
+    if (
+      "releaseRequestId" in params &&
+      !isGatewaySuspendReleaseAuthorityPair(params.releaseRequestId, params.releaseAuthoritySha256)
+    ) {
+      respond(false, undefined, invalidParams("gateway.suspend.status"));
+      return;
+    }
+    const result =
+      params.suspendMode === GATEWAY_SUSPEND_MODE_DURABLE && "releaseRequestId" in params
+        ? getGatewaySuspendStatus({
+            releaseRequestId: params.releaseRequestId.trim(),
+            releaseAuthoritySha256: params.releaseAuthoritySha256,
+            suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+          })
+        : getGatewaySuspendStatus({
+            suspensionId: params.suspensionId.trim(),
+            gatewayInstanceId: params.gatewayInstanceId.trim(),
+            suspendMode: params.suspendMode,
+          });
     if (result.status === "conflict") {
       respond(
         false,
@@ -106,18 +132,53 @@ export const suspendHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    if (result.status === "mode-mismatch") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "gateway suspension mode does not match"),
+      );
+      return;
+    }
     respond(true, result);
   },
-  "gateway.suspend.resume": async ({ respond, params }) => {
+  "gateway.suspend.resume": async ({ respond, params, context }) => {
     if (!validateGatewaySuspendResumeParams(params)) {
       respond(false, undefined, invalidParams("gateway.suspend.resume"));
       return;
     }
-    const result = resumeGatewaySuspend({
-      suspensionId: params.suspensionId.trim(),
-      gatewayInstanceId: params.gatewayInstanceId.trim(),
-      resumeBeforeMs: params.resumeBeforeMs,
-    });
+    if (
+      params.suspendMode === GATEWAY_SUSPEND_MODE_DURABLE &&
+      !isGatewaySuspendReleaseAuthorityPair(params.releaseRequestId, params.releaseAuthoritySha256)
+    ) {
+      respond(false, undefined, invalidParams("gateway.suspend.resume"));
+      return;
+    }
+    const result =
+      params.suspendMode === GATEWAY_SUSPEND_MODE_DURABLE
+        ? resumeGatewaySuspend(
+            {
+              suspensionId: params.suspensionId.trim(),
+              gatewayInstanceId: params.gatewayInstanceId.trim(),
+              resumeBeforeMs: params.resumeBeforeMs,
+              suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+              releaseRequestId: params.releaseRequestId.trim(),
+              releaseAuthoritySha256: params.releaseAuthoritySha256,
+            },
+            undefined,
+            Date.now,
+            {
+              pauseScheduling: () => context.cron.pauseScheduling(),
+              resumeScheduling: () => context.cron.resumeScheduling(),
+              durableHandoffPath: resolveGatewaySuspendHandoffPath(),
+            },
+          )
+        : resumeGatewaySuspend({
+            suspensionId: params.suspensionId.trim(),
+            gatewayInstanceId: params.gatewayInstanceId.trim(),
+            resumeBeforeMs: params.resumeBeforeMs,
+            suspendMode: params.suspendMode,
+          });
     if (!result.ok) {
       if (result.reason === "scheduler-resume-failed") {
         respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
@@ -128,6 +189,14 @@ export const suspendHandlers: GatewayRequestHandlers = {
           false,
           undefined,
           errorShape(ErrorCodes.INVALID_REQUEST, "gateway process incarnation does not match"),
+        );
+        return;
+      }
+      if (result.reason === "mode-mismatch") {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "gateway suspension mode does not match"),
         );
         return;
       }

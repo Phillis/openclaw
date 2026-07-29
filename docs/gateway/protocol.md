@@ -500,7 +500,7 @@ methods. Treat this as feature discovery, not a full enumeration of
     - `system-event` appends a system event and can update/broadcast presence context.
     - `last-heartbeat` returns the latest persisted heartbeat event.
     - `set-heartbeats` toggles heartbeat processing on the gateway.
-    - `gateway.suspend.prepare` creates a short cooperative-suspension lease only when tracked Gateway work is idle. `gateway.suspend.status` checks that lease, and `gateway.suspend.resume` releases it after thaw or an aborted host operation.
+    - `gateway.suspend.prepare` creates a cooperative-suspension lease only when tracked Gateway work is idle. Ordinary callers use the default `legacy-auto-expire/v1` mode. The Handoff host-activation controller binds every request and response to `handoff-durable-hold/v1`, whose admission fence survives expiry and restart until an exact successor rebind and explicit resume. `gateway.suspend.status` checks the mode-bound lease, and `gateway.suspend.resume` releases it after thaw or an aborted host operation.
 
   </Accordion>
 
