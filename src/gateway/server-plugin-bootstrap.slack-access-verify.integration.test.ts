@@ -15,7 +15,15 @@ import { handleGatewayRequest } from "./server-methods.js";
 import { loadGatewayStartupPluginRuntime } from "./server-startup-plugins.js";
 
 const SLACK_ACCESS_VERIFY_METHOD = "slack.access.verify";
+const SLACK_ACCESS_BOOTSTRAP_TEST_NAME =
+  "omits setup runtime, advertises full runtime, and denies callers without operator.read";
+// Cold hosted runners load both Slack setup and full runtimes from source in this integration test.
+const SLACK_ACCESS_BOOTSTRAP_INTEGRATION_TIMEOUT_MS = 180_000;
 const tempRoots: string[] = [];
+
+function itColdSlack(name: string, run: () => Promise<void>): void {
+  it(name, run, SLACK_ACCESS_BOOTSTRAP_INTEGRATION_TIMEOUT_MS);
+}
 
 function resetPluginState(): void {
   clearPluginLoaderCache();
@@ -43,7 +51,7 @@ afterEach(async () => {
 });
 
 describe("Slack access proof Gateway bootstrap", () => {
-  it("omits setup runtime, advertises full runtime, and denies callers without operator.read", async () => {
+  itColdSlack(SLACK_ACCESS_BOOTSTRAP_TEST_NAME, async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-slack-access-bootstrap-"));
     tempRoots.push(root);
     const stateDir = path.join(root, "state");
