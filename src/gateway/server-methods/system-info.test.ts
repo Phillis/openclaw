@@ -1,8 +1,18 @@
 /** Gateway system.info method tests. */
 
 import { expectDefined } from "@openclaw/normalization-core";
-import { describe, expect, it, vi } from "vitest";
-import { validateSystemInfoResult } from "../../../packages/gateway-protocol/src/index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  GATEWAY_SUSPEND_MODE_LEGACY,
+  validateSystemInfoResult,
+} from "../../../packages/gateway-protocol/src/index.js";
+import {
+  getGatewaySuspendStatus,
+  prepareGatewaySuspend,
+  resetGatewaySuspendCoordinatorForLifecycleRestart,
+  resumeGatewaySuspend,
+} from "../../infra/gateway-suspend-coordinator.js";
+import { resetGatewayWorkAdmission } from "../../process/gateway-work-admission.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
@@ -18,6 +28,11 @@ vi.mock("../../infra/advertised-lan-host.js", async (importOriginal) => ({
 }));
 
 import { systemHandlers } from "./system.js";
+
+afterEach(() => {
+  resetGatewaySuspendCoordinatorForLifecycleRestart();
+  resetGatewayWorkAdmission();
+});
 
 describe("system.info", () => {
   it("returns a schema-valid host resource snapshot", async () => {
@@ -53,5 +68,69 @@ describe("system.info", () => {
     expect(payload.processInstanceId).toBe(getGatewayProcessInstanceId());
     expect(payload.uptimeMs).toBeGreaterThanOrEqual(0);
     expect(payload.defaultAgentUtilityModel).toEqual({ status: "unavailable" });
+  });
+
+  it("shares one process identity with suspend prepare, status, and resume", async () => {
+    const respond = vi.fn();
+    const request = {
+      params: {},
+      respond,
+      context: {
+        getRuntimeConfig: () => ({ gateway: { port: 18789 } }),
+      },
+    } as unknown as GatewayRequestHandlerOptions;
+
+    await expectDefined(
+      systemHandlers["system.info"],
+      'systemHandlers["system.info"] test invariant',
+    )(request);
+    const [ok, payload, error] = respond.mock.calls[0] ?? [];
+    expect(ok).toBe(true);
+    expect(error).toBeUndefined();
+    if (!validateSystemInfoResult(payload) || typeof payload.processInstanceId !== "string") {
+      throw new Error("system.info returned an invalid process identity");
+    }
+
+    const prepared = prepareGatewaySuspend({
+      requestId: "system-info-process-identity",
+      gatewayInstanceId: payload.processInstanceId,
+      gatewayPid: payload.pid,
+      launchdRunCount: 1,
+      suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      pauseScheduling: vi.fn(),
+      resumeScheduling: vi.fn(),
+      createSuspensionId: () => "system-info-process-suspension",
+    });
+    expect(prepared).toMatchObject({
+      status: "ready",
+      suspensionId: "system-info-process-suspension",
+      gatewayInstanceId: payload.processInstanceId,
+    });
+    if (prepared.status !== "ready") {
+      throw new Error(`suspend preparation failed with ${prepared.status}`);
+    }
+
+    expect(
+      getGatewaySuspendStatus({
+        suspensionId: prepared.suspensionId,
+        gatewayInstanceId: payload.processInstanceId,
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      }),
+    ).toMatchObject({
+      status: "ready",
+      gatewayInstanceId: payload.processInstanceId,
+    });
+    expect(
+      resumeGatewaySuspend({
+        suspensionId: prepared.suspensionId,
+        gatewayInstanceId: payload.processInstanceId,
+        resumeBeforeMs: prepared.expiresAtMs,
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
+      }),
+    ).toMatchObject({
+      ok: true,
+      status: "running",
+      gatewayInstanceId: payload.processInstanceId,
+    });
   });
 });

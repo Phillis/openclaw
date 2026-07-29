@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { GatewaySuspendMode } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_SUSPEND_MODE_DURABLE } from "../../packages/gateway-protocol/src/index.js";
+import { getGatewayProcessInstanceId } from "../gateway/process-instance.js";
 import {
   getGatewaySuspendStatus as getGatewaySuspendStatusWithIdentity,
   prepareGatewaySuspend as prepareGatewaySuspendWithIdentity,
@@ -8,14 +9,6 @@ import {
 } from "./gateway-suspend-coordinator.js";
 
 type PrepareParams = Parameters<typeof prepareGatewaySuspendWithIdentity>[0];
-type GatewaySuspendTestApi = { getGatewayInstanceId(): string };
-
-function getGatewayInstanceId(): string {
-  const api = (globalThis as Record<PropertyKey, unknown>)[
-    Symbol.for("openclaw.gatewaySuspendTestApi")
-  ] as GatewaySuspendTestApi;
-  return api.getGatewayInstanceId();
-}
 
 function omitGatewayInstance<T extends object>(result: T) {
   if (!("gatewayInstanceId" in result)) {
@@ -29,7 +22,7 @@ export function prepareTestGatewaySuspend(
   params: Omit<PrepareParams, "gatewayPid" | "launchdRunCount"> &
     Partial<Pick<PrepareParams, "gatewayPid" | "launchdRunCount">>,
 ) {
-  const currentGatewayInstanceId = getGatewayInstanceId();
+  const currentGatewayInstanceId = getGatewayProcessInstanceId();
   return prepareGatewaySuspendWithIdentity({
     gatewayPid: process.pid,
     launchdRunCount: 1,
@@ -42,7 +35,7 @@ export function getTestGatewaySuspendStatus(
   suspensionId: string,
   suspendMode?: GatewaySuspendMode,
 ) {
-  const gatewayInstanceId = getGatewayInstanceId();
+  const gatewayInstanceId = getGatewayProcessInstanceId();
   return omitGatewayInstance(
     getGatewaySuspendStatusWithIdentity(
       { suspensionId, gatewayInstanceId, suspendMode },
@@ -52,7 +45,7 @@ export function getTestGatewaySuspendStatus(
 }
 
 export function resumeTestGatewaySuspend(suspensionId: string, suspendMode?: GatewaySuspendMode) {
-  const gatewayInstanceId = getGatewayInstanceId();
+  const gatewayInstanceId = getGatewayProcessInstanceId();
   const status = getGatewaySuspendStatusWithIdentity(
     { suspensionId, gatewayInstanceId, suspendMode },
     gatewayInstanceId,

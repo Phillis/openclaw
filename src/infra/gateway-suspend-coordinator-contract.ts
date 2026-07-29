@@ -14,7 +14,7 @@ export type { GatewaySuspendMode };
 
 export const GATEWAY_SCHEDULER_RECOVERY_RETRY_MS = 1_000;
 
-export type GatewaySchedulerRecoveryResult = {
+type GatewaySchedulerRecoveryResult = {
   status: "recovering";
   reason: "scheduler-resume-failed";
   retryAfterMs: number;

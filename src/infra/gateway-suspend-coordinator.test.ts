@@ -104,6 +104,7 @@ import {
 } from "../agents/bash-process-registry.js";
 import { createProcessSessionFixture } from "../agents/bash-process-registry.test-helpers.js";
 import { resetProcessRegistryForTests } from "../agents/bash-process-registry.test-support.js";
+import { getGatewayProcessInstanceId } from "../gateway/process-instance.js";
 import {
   isGatewayWorkAdmissionClosed,
   markGatewayRestartDraining,
@@ -361,16 +362,19 @@ describe("gateway suspend coordinator", () => {
 
       const successorPause = vi.fn();
       const successorResume = vi.fn();
-      expect(
-        prepareGatewaySuspend({
-          requestId: "request-cross-process",
-          suspensionId: "suspension-cross-process",
-          pauseScheduling: successorPause,
-          resumeScheduling: successorResume,
-          inspect: inspectors(),
-          durableHandoffPath,
-        }),
-      ).toMatchObject({ status: "ready", suspensionId: "suspension-cross-process" });
+      const successorPrepared = prepareGatewaySuspend({
+        requestId: "request-cross-process",
+        suspensionId: "suspension-cross-process",
+        pauseScheduling: successorPause,
+        resumeScheduling: successorResume,
+        inspect: inspectors(),
+        durableHandoffPath,
+      });
+      expect(successorPrepared).toMatchObject({
+        status: "ready",
+        suspensionId: "suspension-cross-process",
+        gatewayInstanceId: getGatewayProcessInstanceId(),
+      });
       expect(successorPause).toHaveBeenCalledOnce();
       expect(resumeGatewaySuspend("suspension-cross-process")).toEqual({
         ok: true,

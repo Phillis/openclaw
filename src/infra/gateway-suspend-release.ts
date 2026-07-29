@@ -17,7 +17,7 @@ import {
 } from "./gateway-suspend-handoff.js";
 
 export const GATEWAY_SUSPEND_RELEASE_SCHEMA = "openclaw-gateway-suspend-release/v1";
-export const GATEWAY_SUSPEND_RELEASE_FILENAME_PREFIX = "gateway-suspend-release-";
+const GATEWAY_SUSPEND_RELEASE_FILENAME_PREFIX = "gateway-suspend-release-";
 const MAX_RELEASE_RECEIPT_BYTES = 16 * 1024;
 const SHA256_RE = /^[a-f0-9]{64}$/u;
 const RELEASE_REQUEST_ID_RE = /^handoff-v2-release:[a-f0-9]{32}$/u;
@@ -109,13 +109,11 @@ function canonicalReceiptBytes(receipt: GatewaySuspendReleaseReceipt): Buffer {
   return Buffer.from(`${JSON.stringify(canonical)}\n`, "utf8");
 }
 
-export function gatewaySuspendReleaseReceiptIdentity(
-  receipt: GatewaySuspendReleaseReceipt,
-): string {
+function gatewaySuspendReleaseReceiptIdentity(receipt: GatewaySuspendReleaseReceipt): string {
   return createHash("sha256").update(canonicalReceiptBytes(receipt)).digest("hex");
 }
 
-export function parseGatewaySuspendReleaseReceipt(bytes: Buffer): GatewaySuspendReleaseReceipt {
+function parseGatewaySuspendReleaseReceipt(bytes: Buffer): GatewaySuspendReleaseReceipt {
   if (bytes.length === 0 || bytes.length > MAX_RELEASE_RECEIPT_BYTES) {
     throw new Error("gateway suspension release receipt has an invalid size");
   }

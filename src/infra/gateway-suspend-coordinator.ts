@@ -5,6 +5,7 @@ import type {
   GatewaySuspendReleaseReceipt,
 } from "../../packages/gateway-protocol/src/index.js";
 import { resolveStateDir } from "../config/paths.js";
+import { getGatewayProcessInstanceId } from "../gateway/process-instance.js";
 import {
   isGatewayWorkAdmissionClosed,
   tryBeginGatewaySuspendAdmission,
@@ -74,16 +75,6 @@ const COORDINATOR_STATE = resolveGlobalSingleton(
     retiredForLifecycleReset: null,
   }),
 );
-const GATEWAY_INSTANCE_ID: string = resolveGlobalSingleton(
-  Symbol.for("openclaw.gatewayProcessIncarnationId"),
-  () => randomUUID(),
-);
-
-if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.gatewaySuspendTestApi")] = {
-    getGatewayInstanceId: () => GATEWAY_INSTANCE_ID,
-  };
-}
 
 function clearEntryTimer(entry: GatewaySuspendCoordinatorEntry): void {
   if (entry.timer) {
@@ -345,7 +336,7 @@ export function prepareGatewaySuspend(params: {
   if (!suspendMode) {
     return { status: "mode-mismatch" };
   }
-  const currentGatewayInstanceId = params.currentGatewayInstanceId ?? GATEWAY_INSTANCE_ID;
+  const currentGatewayInstanceId = params.currentGatewayInstanceId ?? getGatewayProcessInstanceId();
   const currentGatewayPid = params.currentGatewayPid ?? process.pid;
   if (
     params.gatewayPid !== currentGatewayPid ||
@@ -579,7 +570,7 @@ export function adoptGatewaySuspendHandoffAtStartup(
 ): boolean {
   const path = params.durableHandoffPath ?? resolveGatewaySuspendHandoffPath();
   const nowMs = params.nowMs ?? Date.now;
-  const currentGatewayInstanceId = params.currentGatewayInstanceId ?? GATEWAY_INSTANCE_ID;
+  const currentGatewayInstanceId = params.currentGatewayInstanceId ?? getGatewayProcessInstanceId();
   const currentGatewayPid = params.currentGatewayPid ?? process.pid;
   recoverDurableHandoffCompareAndSwap(path);
   const persisted = readDurableHandoff(path);
@@ -669,7 +660,7 @@ export function getGatewaySuspendStatus(
         releaseAuthoritySha256: string;
         suspendMode: typeof GATEWAY_SUSPEND_MODE_DURABLE;
       },
-  currentGatewayInstanceId = GATEWAY_INSTANCE_ID,
+  currentGatewayInstanceId = getGatewayProcessInstanceId(),
   durableHandoffPath = resolveGatewaySuspendHandoffPath(),
 ): GatewaySuspendStatusResult {
   if ("releaseRequestId" in params) {
@@ -920,7 +911,7 @@ function finishDurableRelease(params: {
 
 export function resumeGatewaySuspend(
   params: GatewaySuspendResumeParams,
-  currentGatewayInstanceId = GATEWAY_INSTANCE_ID,
+  currentGatewayInstanceId = getGatewayProcessInstanceId(),
   nowMs: () => number = Date.now,
   runtime: GatewaySuspendResumeRuntime = {},
 ): GatewaySuspendResumeResult {

@@ -32,11 +32,10 @@ import {
   beginDurableHandoffRelease,
   compareAndSwapPrivateDurableBytes,
   createGatewaySuspendHandoff,
-  deletePrivateDurableBytesCompareAndSwap,
-  persistPrivateDurableBytes,
   readDurableHandoff,
   recoverPrivateDurableBytesCompareAndSwap,
 } from "./gateway-suspend-handoff.js";
+import { deletePrivateDurableBytesCompareAndSwapForTest } from "./gateway-suspend-handoff.test-support.js";
 import {
   commitGatewaySuspendRelease,
   completeGatewaySuspendRelease,
@@ -213,6 +212,9 @@ describe("gateway durable release tombstones", () => {
           suspensionId: "shared-suspension-id",
         },
       });
+      if (!resumed.ok || resumed.suspendMode !== GATEWAY_SUSPEND_MODE_DURABLE) {
+        throw new Error("expected a durable release result");
+      }
       expect(existsSync(handoffPath)).toBe(false);
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
       expect(resumeScheduling).toHaveBeenCalledOnce();
@@ -720,7 +722,7 @@ describe("private durable compare-and-swap recovery", () => {
     try {
       writePrivate(path, expected);
       expect(() =>
-        deletePrivateDurableBytesCompareAndSwap(path, expected, {
+        deletePrivateDurableBytesCompareAndSwapForTest(path, expected, {
           beforeDeleteCommit: () => {
             writePrivate(replacementPath, replacement);
             renameSync(replacementPath, path);
@@ -742,9 +744,9 @@ describe("private durable compare-and-swap recovery", () => {
     const replacement = Buffer.from("newer fence\n", "utf8");
     try {
       writePrivate(path, expected);
-      deletePrivateDurableBytesCompareAndSwap(path, expected, {
+      deletePrivateDurableBytesCompareAndSwapForTest(path, expected, {
         beforeDeleteCommit: () => {
-          expect(() => persistPrivateDurableBytes(path, replacement)).toThrow();
+          expect(() => compareAndSwapPrivateDurableBytes(path, null, replacement)).toThrow();
           expect(readFileSync(path)).toEqual(expected);
         },
       });

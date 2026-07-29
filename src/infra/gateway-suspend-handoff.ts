@@ -20,9 +20,8 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { getFileLockProcessStartTime, isPidAlive } from "../shared/pid-alive.js";
 
-export const GATEWAY_SUSPEND_HANDOFF_SCHEMA_LEGACY = "openclaw-gateway-suspend-handoff/v2";
+const GATEWAY_SUSPEND_HANDOFF_SCHEMA_LEGACY = "openclaw-gateway-suspend-handoff/v2";
 export const GATEWAY_SUSPEND_HANDOFF_SCHEMA_DURABLE = "openclaw-gateway-suspend-handoff/v3";
-export const GATEWAY_SUSPEND_HANDOFF_SCHEMA = GATEWAY_SUSPEND_HANDOFF_SCHEMA_LEGACY;
 
 type GatewaySuspendHandoffValue = {
   requestId: string;
@@ -198,7 +197,7 @@ export function proveDurableHandoffBytes(path: string, expectedBytes: Buffer): v
   provePrivateDurableBytes(path, expectedBytes);
 }
 
-export function persistPrivateDurableBytes(path: string, bytes: Buffer): void {
+function persistPrivateDurableBytes(path: string, bytes: Buffer): void {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
     throw new Error("private durable file bytes are required");
   }
@@ -514,7 +513,7 @@ export function compareAndSwapPrivateDurableBytes(
   }
 }
 
-export function deletePrivateDurableBytesCompareAndSwap(
+function deletePrivateDurableBytesCompareAndSwap(
   path: string,
   expectedBytes: Buffer,
   options: { beforeDeleteCommit?: () => void } = {},
@@ -583,6 +582,14 @@ export function deletePrivateDurableBytesCompareAndSwap(
     }
     throw error;
   }
+}
+
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  (globalThis as Record<PropertyKey, unknown>)[
+    Symbol.for("openclaw.gatewaySuspendHandoffTestApi")
+  ] = {
+    deletePrivateDurableBytesCompareAndSwap,
+  };
 }
 
 export function persistDurableHandoff(path: string, handoff: GatewaySuspendHandoff): void {
