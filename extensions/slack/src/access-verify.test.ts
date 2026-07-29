@@ -4,12 +4,12 @@ import type { WebClient } from "@slack/web-api";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { ErrorCodes } from "openclaw/plugin-sdk/gateway-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { handleSlackAccessVerify } from "./access-verify.js";
 import {
-  handleSlackAccessVerify,
   SLACK_ACCESS_PROOF_API_URL,
   SLACK_ACCESS_PROOF_CONTRACT_VERSION,
   verifySlackAccess,
-} from "./access-verify.js";
+} from "./access-verify.test-support.js";
 
 const BOT_TOKEN = "xoxb-oscar-secret";
 const USER_TOKEN = "xoxp-human-secret";

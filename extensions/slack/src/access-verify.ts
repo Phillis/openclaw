@@ -17,8 +17,8 @@ import { z } from "zod";
 import { createSlackLookupClient } from "./client.js";
 import { resolveSlackBotToken, resolveSlackUserToken } from "./token.js";
 
-export const SLACK_ACCESS_PROOF_CONTRACT_VERSION = "openclaw-slack-access-proof/v1" as const;
-export const SLACK_ACCESS_PROOF_API_URL = "https://slack.com/api/" as const;
+const SLACK_ACCESS_PROOF_CONTRACT_VERSION = "openclaw-slack-access-proof/v1" as const;
+const SLACK_ACCESS_PROOF_API_URL = "https://slack.com/api/" as const;
 
 const SLACK_ACCESS_PROOF_METHOD = "conversations.history" as const;
 const SLACK_ACCESS_PROOF_LIMIT = 1 as const;
@@ -171,8 +171,8 @@ const SlackAccessVerifyResultSchema = z.discriminatedUnion("ok", [
   SlackAccessVerifyFailureSchema,
 ]);
 
-export type SlackAccessVerifyParams = z.infer<typeof SlackAccessVerifyParamsSchema>;
-export type SlackAccessVerifyResult = z.infer<typeof SlackAccessVerifyResultSchema>;
+type SlackAccessVerifyParams = z.infer<typeof SlackAccessVerifyParamsSchema>;
+type SlackAccessVerifyResult = z.infer<typeof SlackAccessVerifyResultSchema>;
 
 type SlackCredentialKind = SlackAccessVerifyParams["credentialKind"];
 type SlackCredentialSource = "account" | "root" | "env";
@@ -522,7 +522,7 @@ async function runSlackAccessVerification(params: {
   });
 }
 
-export async function verifySlackAccess(params: {
+async function verifySlackAccess(params: {
   cfg: OpenClawConfig;
   request: unknown;
   createClient?: (token: string, options: SlackAccessClientOptions) => SlackAccessClient;
@@ -654,4 +654,12 @@ export async function handleSlackAccessVerify({
     return;
   }
   respond(true, verification.result);
+}
+
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.slackAccessVerifyTestApi")] = {
+    contractVersion: SLACK_ACCESS_PROOF_CONTRACT_VERSION,
+    slackApiUrl: SLACK_ACCESS_PROOF_API_URL,
+    verify: verifySlackAccess,
+  };
 }

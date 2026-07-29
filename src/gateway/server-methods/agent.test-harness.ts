@@ -775,7 +775,7 @@ export async function invokeGatewaySuspendPrepare(
     suspendHandlers["gateway.suspend.prepare"],
     'suspendHandlers["gateway.suspend.prepare"] test invariant',
   )({
-    params: { requestId },
+    params: { requestId, gatewayPid: process.pid, launchdRunCount: 1 },
     respond: respond as never,
     context: {
       ...context,

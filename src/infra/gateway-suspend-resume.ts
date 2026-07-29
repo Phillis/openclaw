@@ -21,7 +21,7 @@ export type GatewaySuspendResumeLease = {
   warn?: (message: string) => void;
 };
 
-export type GatewaySuspendResumeAttempt = {
+type GatewaySuspendResumeAttempt = {
   lease: GatewaySuspendResumeLease;
   nowMs: () => number;
   isCurrent: () => boolean;

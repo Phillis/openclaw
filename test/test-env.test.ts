@@ -302,6 +302,13 @@ describe("installTestEnv", () => {
     setTestEnvValue("OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR", "1");
     setTestEnvValue("OPENCLAW_DISABLE_BUNDLED_PLUGINS", "1");
     setTestEnvValue("OPENCLAW_HOME", realHome);
+    setTestEnvValue("OPENCLAW_LAUNCHD_LABEL", "ai.openclaw.gateway");
+    setTestEnvValue("LAUNCH_JOB_LABEL", "ai.openclaw.gateway");
+    setTestEnvValue("LAUNCH_JOB_NAME", "ai.openclaw.gateway");
+    setTestEnvValue("XPC_SERVICE_NAME", "0");
+    setTestEnvValue("OPENCLAW_SERVICE_MARKER", "openclaw");
+    setTestEnvValue("OPENCLAW_SERVICE_KIND", "gateway");
+    setTestEnvValue("OPENCLAW_GATEWAY_SERVICE_PID", "4242");
 
     const testEnv = installTestEnv({ mode: "hermetic" });
     cleanupFns.push(testEnv.cleanup);
@@ -318,6 +325,13 @@ describe("installTestEnv", () => {
     expect(process.env.OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR).toBe("1");
     expect(process.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS).toBeUndefined();
     expect(process.env.OPENCLAW_HOME).toBeUndefined();
+    expect(process.env.OPENCLAW_LAUNCHD_LABEL).toMatch(/^ai\.openclaw\.test\./u);
+    expect(process.env.LAUNCH_JOB_LABEL).toBeUndefined();
+    expect(process.env.LAUNCH_JOB_NAME).toBeUndefined();
+    expect(process.env.XPC_SERVICE_NAME).toBeUndefined();
+    expect(process.env.OPENCLAW_SERVICE_MARKER).toBeUndefined();
+    expect(process.env.OPENCLAW_SERVICE_KIND).toBeUndefined();
+    expect(process.env.OPENCLAW_GATEWAY_SERVICE_PID).toBeUndefined();
     expect(fs.existsSync(path.join(testEnv.tempHome, ".openclaw", "openclaw.json"))).toBe(false);
     expect(
       fs.existsSync(path.join(testEnv.tempHome, ".openclaw", "credentials", "token.txt")),
@@ -338,6 +352,38 @@ describe("installTestEnv", () => {
 
     testEnv.cleanup();
     expect(process.env.OPENCLAW_HOME).toBe(configuredOpenClawHome);
+  });
+
+  it("replaces inherited production launchd identity in normal isolated test runs", () => {
+    const realHome = createTempHome();
+    setTestEnvValue("HOME", realHome);
+    setTestEnvValue("USERPROFILE", realHome);
+    setTestEnvValue("OPENCLAW_LAUNCHD_LABEL", "ai.openclaw.gateway");
+    setTestEnvValue("LAUNCH_JOB_LABEL", "ai.openclaw.gateway");
+    setTestEnvValue("LAUNCH_JOB_NAME", "ai.openclaw.gateway");
+    setTestEnvValue("XPC_SERVICE_NAME", "0");
+    setTestEnvValue("OPENCLAW_SERVICE_MARKER", "openclaw");
+    setTestEnvValue("OPENCLAW_SERVICE_KIND", "gateway");
+
+    const testEnv = installTestEnv();
+
+    expect(process.env.HOME).toBe(testEnv.tempHome);
+    expect(process.env.OPENCLAW_TEST_HOME).toBe(testEnv.tempHome);
+    expect(process.env.OPENCLAW_LAUNCHD_LABEL).toMatch(/^ai\.openclaw\.test\./u);
+    expect(process.env.OPENCLAW_LAUNCHD_LABEL).toContain(path.basename(testEnv.tempHome));
+    expect(process.env.LAUNCH_JOB_LABEL).toBeUndefined();
+    expect(process.env.LAUNCH_JOB_NAME).toBeUndefined();
+    expect(process.env.XPC_SERVICE_NAME).toBeUndefined();
+    expect(process.env.OPENCLAW_SERVICE_MARKER).toBeUndefined();
+    expect(process.env.OPENCLAW_SERVICE_KIND).toBeUndefined();
+
+    testEnv.cleanup();
+    expect(process.env.OPENCLAW_LAUNCHD_LABEL).toBe("ai.openclaw.gateway");
+    expect(process.env.LAUNCH_JOB_LABEL).toBe("ai.openclaw.gateway");
+    expect(process.env.LAUNCH_JOB_NAME).toBe("ai.openclaw.gateway");
+    expect(process.env.XPC_SERVICE_NAME).toBe("0");
+    expect(process.env.OPENCLAW_SERVICE_MARKER).toBe("openclaw");
+    expect(process.env.OPENCLAW_SERVICE_KIND).toBe("gateway");
   });
 
   it("does not load ~/.profile for normal isolated test runs", () => {

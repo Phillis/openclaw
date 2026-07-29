@@ -65,6 +65,8 @@ const OPENCLAW_SCRIPT_NAMES = new Set(["openclaw.mjs"]);
 const LAUNCH_AGENT_STOP_PORT_RELEASE_TIMEOUT_MS = LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS * 1_000;
 const LAUNCH_AGENT_STOP_PORT_RELEASE_POLL_MS = 100;
 const LAUNCHCTL_PROTECTED_PID_TIMEOUT_MS = 2_000;
+const TEST_LAUNCH_AGENT_LABEL_PATTERN =
+  /^ai\.openclaw\.(?:test\.[A-Za-z0-9._-]+|launchd-int-[A-Fa-f0-9]{8})$/;
 
 export type StaleOpenClawUpdateLaunchdJob = {
   label: string;
@@ -163,6 +165,46 @@ function resolveLaunchAgentPlistPathForLabel(
 ): string {
   const home = toPosixPath(resolveHomeDir(env));
   return path.posix.join(home, "Library", "LaunchAgents", `${label}.plist`);
+}
+
+function assertTestLaunchdMutationIsolation(params: {
+  env: Record<string, string | undefined>;
+  label: string;
+  plistPaths?: string[];
+}): void {
+  if (params.env.NODE_ENV !== "test" || params.env.OPENCLAW_TEST_FAST !== "1") {
+    return;
+  }
+
+  const label = assertValidLaunchAgentLabel(params.label);
+  const productionLabels = new Set([
+    GATEWAY_LAUNCH_AGENT_LABEL,
+    ...resolveLegacyGatewayLaunchAgentLabels(params.env.OPENCLAW_PROFILE),
+  ]);
+  const serviceHome = path.resolve(resolveHomeDir(params.env));
+  const ordinaryTestLabel = `ai.openclaw.test.${path.basename(serviceHome)}`;
+  const ordinaryHomeMatches = path.basename(serviceHome).startsWith("openclaw-test-home-");
+  const integrationMatch = label.match(/^ai\.openclaw\.launchd-int-([A-Fa-f0-9]{8})$/);
+  const integrationHomeMatches =
+    integrationMatch !== null &&
+    path.basename(serviceHome).startsWith(`openclaw-launchd-int-${integrationMatch[1]}-`);
+  if (
+    productionLabels.has(label) ||
+    !TEST_LAUNCH_AGENT_LABEL_PATTERN.test(label) ||
+    ((label !== ordinaryTestLabel || !ordinaryHomeMatches) && !integrationHomeMatches)
+  ) {
+    throw new Error(`Refusing test-mode launchd mutation for non-isolated label ${label}`);
+  }
+
+  const launchAgentsDir = path.join(serviceHome, "Library", "LaunchAgents");
+  const expectedPlistPath = path.join(launchAgentsDir, `${label}.plist`);
+  for (const plistPath of params.plistPaths ?? []) {
+    if (path.resolve(plistPath) !== expectedPlistPath) {
+      throw new Error(
+        `Refusing test-mode launchd mutation for non-isolated plist ${sanitizeForLog(plistPath)}`,
+      );
+    }
+  }
 }
 
 function resolveLaunchAgentEnvDir(env: GatewayServiceEnv): string {
@@ -380,6 +422,20 @@ async function execLaunchctl(
   return await execFileUtf8(file, fileArgs, isWindows ? { windowsHide: true } : {});
 }
 
+async function execLaunchctlMutation(
+  args: string[],
+  target: {
+    env: Record<string, string | undefined>;
+    label: string;
+    plistPaths?: string[];
+  },
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  // Test workers may reach this module through child CLIs after clearing VITEST.
+  // The shared fast-test contract plus the HOME-derived label still blocks host targets.
+  assertTestLaunchdMutationIsolation(target);
+  return await execLaunchctl(args);
+}
+
 function readLaunchAgentPidForCleanupSync(serviceTarget: string): number {
   const probe = spawnSync("launchctl", ["print", serviceTarget], {
     encoding: "utf8",
@@ -530,8 +586,12 @@ async function disableOpenClawUpdateLaunchdJobCandidate(params: {
   ) {
     return false;
   }
-  const serviceTarget = `${resolveGuiDomain()}/${assertValidLaunchAgentLabel(params.candidate.label)}`;
-  const result = await execLaunchctl(["disable", serviceTarget]);
+  const label = assertValidLaunchAgentLabel(params.candidate.label);
+  const serviceTarget = `${resolveGuiDomain()}/${label}`;
+  const result = await execLaunchctlMutation(["disable", serviceTarget], {
+    env: params.env,
+    label,
+  });
   return result.code === 0;
 }
 
@@ -626,7 +686,9 @@ function writeLaunchAgentActionLine(
 }
 
 async function bootstrapLaunchAgentOrThrow(params: {
+  env: Record<string, string | undefined>;
   domain: string;
+  label: string;
   serviceTarget: string;
   plistPath: string;
   actionHint: string;
@@ -636,12 +698,20 @@ async function bootstrapLaunchAgentOrThrow(params: {
   // `disable` state survives bootout and plist rewrites; explicit start/repair
   // paths must clear it before asking launchd to load the job again.
   if (!params.skipEnable) {
-    const enable = await execLaunchctl(["enable", params.serviceTarget]);
+    const enable = await execLaunchctlMutation(["enable", params.serviceTarget], {
+      env: params.env,
+      label: params.label,
+      plistPaths: [params.plistPath],
+    });
     if (enable.code === 0) {
       params.onMutation?.("enable");
     }
   }
-  const boot = await execLaunchctl(["bootstrap", params.domain, params.plistPath]);
+  const boot = await execLaunchctlMutation(["bootstrap", params.domain, params.plistPath], {
+    env: params.env,
+    label: params.label,
+    plistPaths: [params.plistPath],
+  });
   if (boot.code === 0) {
     params.onMutation?.("bootstrap");
     return;
@@ -802,13 +872,15 @@ export async function repairLaunchAgentBootstrap(args: {
   const label = resolveLaunchAgentLabel({ env });
   const plistPath = resolveLaunchAgentPlistPath(env);
   const serviceTarget = `${domain}/${label}`;
+  const mutationTarget = { env, label, plistPaths: [plistPath] };
+  assertTestLaunchdMutationIsolation(mutationTarget);
   // Rewrite first so legacy inline environment secrets move into the private
   // env file before the plist becomes world-readable for launchd.
   const warn =
     args.warn ?? ((message: string) => process.stderr.write(`${formatLine("Warning", message)}\n`));
   await rewriteLaunchAgentPlistForRestart({ env, label, plistPath, warn });
-  await execLaunchctl(["enable", serviceTarget]);
-  const boot = await execLaunchctl(["bootstrap", domain, plistPath]);
+  await execLaunchctlMutation(["enable", serviceTarget], mutationTarget);
+  const boot = await execLaunchctlMutation(["bootstrap", domain, plistPath], mutationTarget);
   let repairStatus: "repaired" | "already-loaded" = "repaired";
   if (boot.code !== 0) {
     const detail = (boot.stderr || boot.stdout).trim();
@@ -836,7 +908,7 @@ export async function repairLaunchAgentBootstrap(args: {
     return { ok: true, status: repairStatus };
   }
 
-  const kick = await execLaunchctl(["kickstart", serviceTarget]);
+  const kick = await execLaunchctlMutation(["kickstart", serviceTarget], mutationTarget);
   if (kick.code !== 0) {
     return {
       ok: false,
@@ -854,8 +926,10 @@ export async function uninstallLaunchAgent({
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env });
   const plistPath = resolveLaunchAgentPlistPath(env);
-  await execLaunchctl(["bootout", domain, plistPath]);
-  await execLaunchctl(["unload", plistPath]);
+  const mutationTarget = { env, label, plistPaths: [plistPath] };
+  assertTestLaunchdMutationIsolation(mutationTarget);
+  await execLaunchctlMutation(["bootout", domain, plistPath], mutationTarget);
+  await execLaunchctlMutation(["unload", plistPath], mutationTarget);
 
   try {
     await fs.access(plistPath);
@@ -914,12 +988,19 @@ function formatLaunchctlResultDetail(res: {
 }
 
 async function bootoutLaunchAgentOrThrow(params: {
+  env: GatewayServiceEnv;
+  label: string;
+  plistPath: string;
   serviceTarget: string;
   warning: string;
   stdout: NodeJS.WritableStream;
   onMutation?: () => void;
 }): Promise<void> {
-  const bootout = await execLaunchctl(["bootout", params.serviceTarget]);
+  const bootout = await execLaunchctlMutation(["bootout", params.serviceTarget], {
+    env: params.env,
+    label: params.label,
+    plistPaths: [params.plistPath],
+  });
   if (bootout.code !== 0 && !isLaunchctlNotLoaded(bootout)) {
     throw new Error(
       `${params.warning}; launchctl bootout failed: ${formatLaunchctlResultDetail(bootout)}`,
@@ -1017,8 +1098,11 @@ export async function stopLaunchAgent({
   const serviceEnv = env ?? (process.env as GatewayServiceEnv);
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env: serviceEnv });
+  const plistPath = resolveLaunchAgentPlistPath(serviceEnv);
   const serviceTarget = `${domain}/${label}`;
   const reportMutation = createGatewayLifecycleMutationReporter(onMutation);
+  const mutationTarget = { env: serviceEnv, label, plistPaths: [plistPath] };
+  assertTestLaunchdMutationIsolation(mutationTarget);
 
   if (
     isCurrentProcessLaunchdServiceLabel(label, process.env, { allowConfiguredLabelFallback: false })
@@ -1032,7 +1116,7 @@ export async function stopLaunchAgent({
     // Default: bootout only. Removes the job from the current launchd domain without
     // persisting a disable, so KeepAlive auto-recovery survives future crashes and
     // `openclaw gateway start` re-enables cleanly without a manual `launchctl enable`.
-    const bootout = await execLaunchctl(["bootout", serviceTarget]);
+    const bootout = await execLaunchctlMutation(["bootout", serviceTarget], mutationTarget);
     if (bootout.code !== 0 && !isLaunchctlNotLoaded(bootout)) {
       throw new Error(`launchctl bootout failed: ${formatLaunchctlResultDetail(bootout)}`);
     }
@@ -1044,9 +1128,12 @@ export async function stopLaunchAgent({
 
   // --disable: persistently suppress KeepAlive/RunAtLoad before stopping.
   // Without this, launchd can relaunch the process as soon as `stop` exits.
-  const disableResult = await execLaunchctl(["disable", serviceTarget]);
+  const disableResult = await execLaunchctlMutation(["disable", serviceTarget], mutationTarget);
   if (disableResult.code !== 0) {
     await bootoutLaunchAgentOrThrow({
+      env: serviceEnv,
+      label,
+      plistPath,
       serviceTarget,
       stdout,
       warning: `launchctl disable failed; used bootout fallback and left service unloaded: ${formatLaunchctlResultDetail(disableResult)}`,
@@ -1059,9 +1146,12 @@ export async function stopLaunchAgent({
   reportMutation("disable");
 
   // `launchctl stop` targets the plain label (not the fully-qualified service target).
-  const stop = await execLaunchctl(["stop", label]);
+  const stop = await execLaunchctlMutation(["stop", label], mutationTarget);
   if (stop.code !== 0 && !isLaunchctlNotLoaded(stop)) {
     await bootoutLaunchAgentOrThrow({
+      env: serviceEnv,
+      label,
+      plistPath,
       serviceTarget,
       stdout,
       warning: `launchctl stop failed; used bootout fallback and left service unloaded: ${formatLaunchctlResultDetail(stop)}`,
@@ -1081,6 +1171,9 @@ export async function stopLaunchAgent({
         ? `launchctl print could not confirm stop; used bootout fallback and left service unloaded: ${stopState.detail ?? "unknown error"}`
         : "launchctl stop did not fully stop the service; used bootout fallback and left service unloaded";
     await bootoutLaunchAgentOrThrow({
+      env: serviceEnv,
+      label,
+      plistPath,
       serviceTarget,
       stdout,
       warning,
@@ -1109,10 +1202,13 @@ async function writeLaunchAgentPlist({
 
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env });
+  const plistPath = resolveLaunchAgentPlistPathForLabel(env, label);
+  assertTestLaunchdMutationIsolation({ env, label, plistPaths: [plistPath] });
   for (const legacyLabel of resolveLegacyGatewayLaunchAgentLabels(env.OPENCLAW_PROFILE)) {
     const legacyPlistPath = resolveLaunchAgentPlistPathForLabel(env, legacyLabel);
-    await execLaunchctl(["bootout", domain, legacyPlistPath]);
-    await execLaunchctl(["unload", legacyPlistPath]);
+    const legacyTarget = { env, label: legacyLabel, plistPaths: [legacyPlistPath] };
+    await execLaunchctlMutation(["bootout", domain, legacyPlistPath], legacyTarget);
+    await execLaunchctlMutation(["unload", legacyPlistPath], legacyTarget);
     try {
       await fs.unlink(legacyPlistPath);
     } catch {
@@ -1120,7 +1216,6 @@ async function writeLaunchAgentPlist({
     }
   }
 
-  const plistPath = resolveLaunchAgentPlistPathForLabel(env, label);
   const home = toPosixPath(resolveHomeDir(env));
   const libraryDir = path.posix.join(home, "Library");
   await ensureSecureDirectory(home);
@@ -1170,12 +1265,19 @@ export async function stageLaunchAgent({
 async function activateLaunchAgent(params: { env: GatewayServiceEnv; plistPath: string }) {
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env: params.env });
+  const mutationTarget = {
+    env: params.env,
+    label,
+    plistPaths: [params.plistPath],
+  };
 
-  await execLaunchctl(["bootout", domain, params.plistPath]);
-  await execLaunchctl(["unload", params.plistPath]);
+  await execLaunchctlMutation(["bootout", domain, params.plistPath], mutationTarget);
+  await execLaunchctlMutation(["unload", params.plistPath], mutationTarget);
   // launchd can persist "disabled" state even after bootout + plist removal; clear it before bootstrap.
   await bootstrapLaunchAgentOrThrow({
+    env: params.env,
     domain,
+    label,
     serviceTarget: `${domain}/${label}`,
     plistPath: params.plistPath,
     actionHint: "openclaw gateway install --force",
@@ -1257,7 +1359,9 @@ async function rewriteLaunchAgentPlistForRestart({
 }
 
 async function ensureLaunchAgentLoadedAfterFailure(params: {
+  env: GatewayServiceEnv;
   domain: string;
+  label: string;
   serviceTarget: string;
   plistPath: string;
   onMutation?: (mode: "enable" | "bootstrap") => void;
@@ -1268,7 +1372,9 @@ async function ensureLaunchAgentLoadedAfterFailure(params: {
   }
   try {
     await bootstrapLaunchAgentOrThrow({
+      env: params.env,
       domain: params.domain,
+      label: params.label,
       serviceTarget: params.serviceTarget,
       plistPath: params.plistPath,
       actionHint: "openclaw gateway start",
@@ -1290,20 +1396,23 @@ export async function startLaunchAgent({
   const plistPath = resolveLaunchAgentPlistPath(serviceEnv);
   const serviceTarget = `${domain}/${label}`;
   const reportMutation = createGatewayLifecycleMutationReporter(onMutation);
+  const mutationTarget = { env: serviceEnv, label, plistPaths: [plistPath] };
 
   // Enable is an independent mutation; audit it even if the later launch fails.
-  const enable = await execLaunchctl(["enable", serviceTarget]);
+  const enable = await execLaunchctlMutation(["enable", serviceTarget], mutationTarget);
   const enabled = enable.code === 0;
   if (enabled) {
     reportMutation("enable");
   }
 
-  const start = await execLaunchctl(["kickstart", serviceTarget]);
+  const start = await execLaunchctlMutation(["kickstart", serviceTarget], mutationTarget);
   if (start.code === 0) {
     reportMutation("kickstart");
   } else if (isLaunchctlNotLoaded(start)) {
     await bootstrapLaunchAgentOrThrow({
+      env: serviceEnv,
       domain,
+      label,
       serviceTarget,
       plistPath,
       actionHint: "openclaw gateway start",
@@ -1329,6 +1438,7 @@ export async function restartLaunchAgent({
   const plistPath = resolveLaunchAgentPlistPath(serviceEnv);
   const serviceTarget = `${domain}/${label}`;
   const reportMutation = createGatewayLifecycleMutationReporter(onMutation);
+  assertTestLaunchdMutationIsolation({ env: serviceEnv, label, plistPaths: [plistPath] });
 
   // Restart requests issued from inside the managed gateway process tree need a
   // detached handoff. A direct `kickstart -k` would terminate the caller before
@@ -1392,13 +1502,14 @@ export async function restartLaunchAgent({
 
   // `openclaw gateway restart` is an explicit operator request to bring the
   // LaunchAgent back, so clear any persisted disabled state before restart.
-  const enable = await execLaunchctl(["enable", serviceTarget]);
+  const mutationTarget = { env: serviceEnv, label, plistPaths: [plistPath] };
+  const enable = await execLaunchctlMutation(["enable", serviceTarget], mutationTarget);
   if (enable.code === 0) {
     reportMutation("enable");
   }
 
   if (plistReloadNeeded) {
-    const bootout = await execLaunchctl(["bootout", serviceTarget]);
+    const bootout = await execLaunchctlMutation(["bootout", serviceTarget], mutationTarget);
     if (bootout.code !== 0 && !isLaunchctlNotLoaded(bootout)) {
       throw new Error(`launchctl bootout failed: ${formatLaunchctlResultDetail(bootout)}`);
     }
@@ -1406,7 +1517,9 @@ export async function restartLaunchAgent({
       reportMutation("bootout");
     }
     await bootstrapLaunchAgentOrThrow({
+      env: serviceEnv,
       domain,
+      label,
       serviceTarget,
       plistPath,
       actionHint: "openclaw gateway restart",
@@ -1416,7 +1529,7 @@ export async function restartLaunchAgent({
     return { outcome: "completed" };
   }
 
-  const start = await execLaunchctl(["kickstart", "-k", serviceTarget]);
+  const start = await execLaunchctlMutation(["kickstart", "-k", serviceTarget], mutationTarget);
   if (start.code === 0) {
     reportMutation("kickstart");
     writeLaunchAgentActionLine(stdout, "Restarted LaunchAgent", serviceTarget);
@@ -1425,7 +1538,9 @@ export async function restartLaunchAgent({
 
   if (!isLaunchctlNotLoaded(start)) {
     await ensureLaunchAgentLoadedAfterFailure({
+      env: serviceEnv,
       domain,
+      label,
       serviceTarget,
       plistPath,
       onMutation: reportMutation,
@@ -1435,7 +1550,9 @@ export async function restartLaunchAgent({
 
   // If the service was previously booted out, re-register the rewritten plist and retry.
   await bootstrapLaunchAgentOrThrow({
+    env: serviceEnv,
     domain,
+    label,
     serviceTarget,
     plistPath,
     actionHint: "openclaw gateway restart",

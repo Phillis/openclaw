@@ -129,6 +129,8 @@ function prepareSuspension(requestId: string) {
   };
   return prepareGatewaySuspend({
     requestId,
+    gatewayPid: process.pid,
+    launchdRunCount: 1,
     pauseScheduling: vi.fn(),
     resumeScheduling: vi.fn(),
     inspect,
@@ -683,7 +685,13 @@ describe("sandbox exec finalization suspension", () => {
       const ready = prepareSuspension(`after-finalize-${expectedFailureKind ?? "success"}`);
       expect(ready.status).toBe("ready");
       if (ready.status === "ready") {
-        expect(resumeGatewaySuspend(ready.suspensionId)).toMatchObject({ ok: true });
+        expect(
+          resumeGatewaySuspend({
+            suspensionId: ready.suspensionId,
+            gatewayInstanceId: ready.gatewayInstanceId,
+            resumeBeforeMs: ready.expiresAtMs,
+          }),
+        ).toMatchObject({ ok: true });
       }
     },
   );

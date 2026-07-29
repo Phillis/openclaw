@@ -2,6 +2,7 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { GatewayActiveWorkInspectors } from "../../infra/gateway-active-work.js";
 import {
   prepareGatewaySuspend,
@@ -23,6 +24,7 @@ import {
 } from "./plugins-http.js";
 
 const ROUTE_PATH = "/plugin/suspension-proof";
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let rateLimitEpochMs = Date.now();
 
 function deferred() {
@@ -74,6 +76,8 @@ function createRootOnlyInspectors(): GatewayActiveWorkInspectors {
 function prepareWithRootOnly(requestId: string) {
   return prepareGatewaySuspend({
     requestId,
+    gatewayPid: process.pid,
+    launchdRunCount: 1,
     pauseScheduling: vi.fn(),
     resumeScheduling: vi.fn(),
     inspect: createRootOnlyInspectors(),
@@ -113,6 +117,7 @@ function createUpgradeHandler(routes: PluginHttpRouteRegistration[]) {
 }
 
 beforeEach(() => {
+  vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("plugin-suspension-admission-"));
   rateLimitEpochMs += 60_000;
   vi.spyOn(Date, "now").mockReturnValue(rateLimitEpochMs);
   resetGatewaySuspendCoordinatorForLifecycleRestart();
@@ -120,6 +125,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   resetGatewaySuspendCoordinatorForLifecycleRestart();
   resetGatewayWorkAdmission();
@@ -253,7 +259,11 @@ describe("plugin HTTP suspension admission", () => {
       terminalSessions: new Map(),
     } as unknown as GatewayRequestContext;
     let requestedMethod = "gateway.suspend.prepare";
-    let requestedParams: Record<string, unknown> = { requestId: "admin-http-suspension" };
+    let requestedParams: Record<string, unknown> = {
+      requestId: "admin-http-suspension",
+      gatewayPid: process.pid,
+      launchdRunCount: 1,
+    };
     let dispatchResponse: Awaited<ReturnType<typeof dispatchGatewayMethod>> | undefined;
     const handler = createRequestHandler(
       [
@@ -292,18 +302,35 @@ describe("plugin HTTP suspension admission", () => {
 
     const prepared = await invoke("gateway.suspend.prepare", {
       requestId: "admin-http-suspension",
+      gatewayPid: process.pid,
+      launchdRunCount: 1,
     });
     expect(prepared).toMatchObject({
       ok: true,
       payload: { status: "ready", activeCount: 0, blockers: [] },
     });
-    const suspensionId = (prepared.payload as { suspensionId: string }).suspensionId;
+    const preparedPayload = prepared.payload as {
+      suspensionId: string;
+      gatewayInstanceId: string;
+      expiresAtMs: number;
+    };
 
-    await expect(invoke("gateway.suspend.status", { suspensionId })).resolves.toMatchObject({
+    await expect(
+      invoke("gateway.suspend.status", {
+        suspensionId: preparedPayload.suspensionId,
+        gatewayInstanceId: preparedPayload.gatewayInstanceId,
+      }),
+    ).resolves.toMatchObject({
       ok: true,
       payload: { status: "ready" },
     });
-    await expect(invoke("gateway.suspend.resume", { suspensionId })).resolves.toMatchObject({
+    await expect(
+      invoke("gateway.suspend.resume", {
+        suspensionId: preparedPayload.suspensionId,
+        gatewayInstanceId: preparedPayload.gatewayInstanceId,
+        resumeBeforeMs: preparedPayload.expiresAtMs,
+      }),
+    ).resolves.toMatchObject({
       ok: true,
       payload: { status: "running", resumed: true },
     });

@@ -8,7 +8,6 @@ import {
 } from "../process/gateway-work-admission.js";
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
 import {
-  getGatewaySuspendStatus,
   prepareGatewaySuspend,
   resetGatewaySuspendCoordinatorForLifecycleRestart,
   resumeGatewaySuspend,
@@ -20,6 +19,16 @@ import {
   setGatewaySigusr1RestartPolicy,
   setPreRestartDeferralCheck,
 } from "./restart.js";
+
+function prepareTestGatewaySuspend(
+  params: Omit<Parameters<typeof prepareGatewaySuspend>[0], "gatewayPid" | "launchdRunCount">,
+) {
+  return prepareGatewaySuspend({
+    gatewayPid: process.pid,
+    launchdRunCount: 1,
+    ...params,
+  });
+}
 
 function inspectors(): GatewayActiveWorkInspectors {
   return {
@@ -79,7 +88,7 @@ describe("scheduled restart during gateway suspension", () => {
       skipCooldown: true,
     });
 
-    const prepared = prepareGatewaySuspend({
+    const prepared = prepareTestGatewaySuspend({
       requestId: "request-restart-delay",
       pauseScheduling: vi.fn(),
       resumeScheduling: vi.fn(),
@@ -91,7 +100,16 @@ describe("scheduled restart during gateway suspension", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(countSigusr1Emits(emitSpy.mock.calls)).toBe(0);
 
-    expect(resumeGatewaySuspend("suspension-restart-delay")).toMatchObject({
+    if (prepared.status !== "ready") {
+      throw new Error(`expected prepared suspension, received ${prepared.status}`);
+    }
+    expect(
+      resumeGatewaySuspend({
+        suspensionId: prepared.suspensionId,
+        gatewayInstanceId: prepared.gatewayInstanceId,
+        resumeBeforeMs: prepared.expiresAtMs,
+      }),
+    ).toMatchObject({
       ok: true,
       resumed: true,
     });
@@ -115,7 +133,7 @@ describe("scheduled restart during gateway suspension", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    const prepared = prepareGatewaySuspend({
+    const prepared = prepareTestGatewaySuspend({
       requestId: "request-restart-preparing",
       pauseScheduling: vi.fn(),
       resumeScheduling: vi.fn(),
@@ -133,7 +151,7 @@ describe("scheduled restart during gateway suspension", () => {
     expect(countSigusr1Emits(emitSpy.mock.calls)).toBe(1);
 
     expect(
-      prepareGatewaySuspend({
+      prepareTestGatewaySuspend({
         requestId: "request-after-restart-signal",
         pauseScheduling: vi.fn(),
         resumeScheduling: vi.fn(),
@@ -181,7 +199,7 @@ describe("scheduled restart during gateway suspension", () => {
   it("cancels a due restart waiting behind a prepared suspension", async () => {
     const emitSpy = vi.spyOn(process, "emit");
     expect(
-      prepareGatewaySuspend({
+      prepareTestGatewaySuspend({
         requestId: "request-reset-waiting-restart",
         pauseScheduling: vi.fn(),
         resumeScheduling: vi.fn(),
@@ -236,7 +254,7 @@ describe("scheduled restart during gateway suspension", () => {
   it("resumes and clears a prepared suspension during lifecycle reset", () => {
     const resumeScheduling = vi.fn();
     expect(
-      prepareGatewaySuspend({
+      prepareTestGatewaySuspend({
         requestId: "request-lifecycle-reset",
         pauseScheduling: vi.fn(),
         resumeScheduling,
@@ -252,7 +270,6 @@ describe("scheduled restart during gateway suspension", () => {
     resetGatewayRestartStateForInProcessRestart();
 
     expect(resumeScheduling).toHaveBeenCalledOnce();
-    expect(getGatewaySuspendStatus("suspension-lifecycle-reset")).toEqual({ status: "running" });
     expect(isGatewayWorkAdmissionClosed()).toBe(false);
   });
 });

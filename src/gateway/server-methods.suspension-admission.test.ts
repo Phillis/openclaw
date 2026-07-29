@@ -1,6 +1,10 @@
 // Proves dispatcher root-work accounting and fail-closed suspension behavior.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resumeGatewaySuspend } from "../infra/gateway-suspend-coordinator.js";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import {
+  resetGatewaySuspendCoordinatorForLifecycleRestart,
+  resumeGatewaySuspend,
+} from "../infra/gateway-suspend-coordinator.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
@@ -14,6 +18,8 @@ import {
 import { handleGatewayRequest } from "./server-methods.js";
 import { suspendHandlers } from "./server-methods/suspend.js";
 import type { GatewayRequestHandler } from "./server-methods/types.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function deferred() {
   let resolve = () => {};
@@ -69,10 +75,14 @@ function dispatch(params: {
 }
 
 beforeEach(() => {
+  vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("suspension-admission-"));
+  resetGatewaySuspendCoordinatorForLifecycleRestart();
   resetGatewayWorkAdmission();
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
+  resetGatewaySuspendCoordinatorForLifecycleRestart();
   resetGatewayWorkAdmission();
 });
 
@@ -136,7 +146,11 @@ describe("gateway request suspension admission", () => {
       method: "gateway.suspend.prepare",
       scope: "operator.admin",
       handler: prepareHandler,
-      requestParams: { requestId: "request-concurrent-root" },
+      requestParams: {
+        requestId: "request-concurrent-root",
+        gatewayPid: process.pid,
+        launchdRunCount: 1,
+      },
       context,
     });
     await busy.request;
@@ -159,7 +173,11 @@ describe("gateway request suspension admission", () => {
       method: "gateway.suspend.prepare",
       scope: "operator.admin",
       handler: prepareHandler,
-      requestParams: { requestId: "request-own-root-excluded" },
+      requestParams: {
+        requestId: "request-own-root-excluded",
+        gatewayPid: process.pid,
+        launchdRunCount: 1,
+      },
       context,
     });
     await ready.request;
@@ -172,9 +190,28 @@ describe("gateway request suspension admission", () => {
         blockers: [],
       }),
     );
-    const readyPayload = ready.respond.mock.calls[0]?.[1] as { suspensionId?: string } | undefined;
+    const readyPayload = ready.respond.mock.calls[0]?.[1] as
+      | {
+          suspensionId?: string;
+          gatewayInstanceId?: string;
+          expiresAtMs?: number;
+        }
+      | undefined;
     expect(readyPayload?.suspensionId).toBeTypeOf("string");
-    expect(resumeGatewaySuspend(readyPayload?.suspensionId ?? "missing")).toMatchObject({
+    if (
+      !readyPayload?.suspensionId ||
+      !readyPayload.gatewayInstanceId ||
+      readyPayload.expiresAtMs === undefined
+    ) {
+      throw new Error("expected complete ready suspension payload");
+    }
+    expect(
+      resumeGatewaySuspend({
+        suspensionId: readyPayload.suspensionId,
+        gatewayInstanceId: readyPayload.gatewayInstanceId,
+        resumeBeforeMs: readyPayload.expiresAtMs,
+      }),
+    ).toMatchObject({
       ok: true,
       resumed: true,
     });

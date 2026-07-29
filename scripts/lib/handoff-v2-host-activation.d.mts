@@ -1,8 +1,5 @@
-export const HOST_ACTIVATION_PLAN_SCHEMA: "handoff-v2-host-activation-plan/v1";
 export const HOST_ACTIVATION_RECEIPT_SCHEMA: "handoff-v2-host-activation-receipt/v1";
-export const SLACK_ACCESS_PROOF_SCHEMA: "openclaw-slack-access-proof/v1";
 
-export function canonicalJson(value: unknown): unknown;
 export function canonicalJsonBytes(value: unknown): Buffer;
 export function validateHostActivationPlan<T>(
   value: T,
@@ -43,7 +40,7 @@ export type HostActivationRuntime = {
   assertSecureDirectoryChain(path: string, allowedRoot: string, description: string): void;
   assertOutputAvailable(path: string, description: string): void;
   inspectDurableAtJobs(
-    plan: Record<string, any>,
+    plan: Record<string, unknown>,
     generation: "predecessor" | "successor",
   ): Array<{ jobId: string; startupInterruptedRunAtMs: number | null }>;
   readOptionalFile(path: string, description: string): Buffer | null;

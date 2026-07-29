@@ -15,6 +15,15 @@ type InstallTestEnvOptions =
   | { mode: "hermetic" };
 
 const LIVE_TEST_TRIGGER_ENV_KEYS = ["LIVE", "OPENCLAW_LIVE_TEST", "OPENCLAW_LIVE_GATEWAY"] as const;
+const LAUNCHD_TEST_ISOLATION_ENV_KEYS = [
+  "LAUNCH_JOB_LABEL",
+  "LAUNCH_JOB_NAME",
+  "XPC_SERVICE_NAME",
+  "OPENCLAW_LAUNCHD_LABEL",
+  "OPENCLAW_SERVICE_MARKER",
+  "OPENCLAW_SERVICE_KIND",
+  "OPENCLAW_GATEWAY_SERVICE_PID",
+] as const;
 const HERMETIC_TEST_ENV_KEYS = [
   ...LIVE_TEST_TRIGGER_ENV_KEYS,
   "OPENCLAW_LIVE_USE_REAL_HOME",
@@ -204,6 +213,7 @@ function resolveRestoreEntries(): RestoreEntry[] {
     { key: "OPENCLAW_CANVAS_HOST_PORT", value: process.env.OPENCLAW_CANVAS_HOST_PORT },
     { key: "OPENCLAW_TEST_HOME", value: process.env.OPENCLAW_TEST_HOME },
     { key: "OPENCLAW_AGENT_DIR", value: process.env.OPENCLAW_AGENT_DIR },
+    ...LAUNCHD_TEST_ISOLATION_ENV_KEYS.map((key) => ({ key, value: process.env[key] })),
     { key: "TELEGRAM_BOT_TOKEN", value: process.env.TELEGRAM_BOT_TOKEN },
     { key: "DISCORD_BOT_TOKEN", value: process.env.DISCORD_BOT_TOKEN },
     { key: "SLACK_BOT_TOKEN", value: process.env.SLACK_BOT_TOKEN },
@@ -274,6 +284,14 @@ function createIsolatedTestHome(restore: RestoreEntry[]): {
   };
 
   return { cleanup, tempHome };
+}
+
+function installNonLiveLaunchdIsolation(tempHome: string): void {
+  for (const key of LAUNCHD_TEST_ISOLATION_ENV_KEYS) {
+    deleteTestEnvValue(key);
+  }
+  // The random mkdtemp suffix keeps concurrent workers in distinct launchd namespaces.
+  setTestEnvValue("OPENCLAW_LAUNCHD_LABEL", `ai.openclaw.test.${path.basename(tempHome)}`);
 }
 
 function ensureParentDir(targetPath: string): void {
@@ -489,6 +507,10 @@ export function installTestEnv(options?: InstallTestEnvOptions): {
 
   const restore = resolveRestoreEntries();
   const testEnv = createIsolatedTestHome(restore);
+
+  if (!live) {
+    installNonLiveLaunchdIsolation(testEnv.tempHome);
+  }
 
   if (hermetic) {
     for (const key of HERMETIC_TEST_ENV_KEYS) {

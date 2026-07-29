@@ -1514,6 +1514,7 @@
     "gateway:watch:raw": "node scripts/watch-node.mjs gateway --force",
     "gen:host-env-policy:swift": "node scripts/generate-host-env-security-policy-swift.mjs --write",
     "ghsa:patch": "node scripts/ghsa-patch.mjs",
+    "handoff:v2:host-activation": "node scripts/handoff-v2-host-activation.mjs",
     "ios:app-review-notes:pdf": "xcrun swift scripts/ios-app-review-notes-pdf.swift apps/ios/APP-REVIEW-NOTES.md apps/ios/build/app-review/APP-REVIEW-NOTES.pdf",
     "ios:build": "bash -c 'export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"; ./scripts/ios-configure-signing.sh && ./scripts/ios-write-version-xcconfig.sh && node scripts/ios-write-swift-filelist.mjs && cd apps/ios && xcodegen generate && xcodebuild -project OpenClaw.xcodeproj -scheme OpenClaw -destination \"${IOS_DEST:-generic/platform=iOS Simulator}\" -configuration Debug build'",
     "ios:filelist:gen": "node scripts/ios-write-swift-filelist.mjs",

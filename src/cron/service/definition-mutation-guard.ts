@@ -2,8 +2,7 @@ import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync 
 import path from "node:path";
 import process from "node:process";
 import { isDeepStrictEqual } from "node:util";
-import { resolveStateDir } from "../../config/paths.js";
-import type { CronJob, CronStoreFile } from "../types.js";
+import { resolveStateDir } from "../../config/state-dir.js";
 
 const GUARD_SCHEMA_VERSION = "model-router-evidence-cron-mutation-guard/v1";
 const REQUIRED_BLOCKED_ACTIONS = ["add", "remove", "update"];
@@ -19,7 +18,7 @@ type GuardState =
       runId?: string;
     };
 
-export class CronMutationGuardActiveError extends Error {
+class CronMutationGuardActiveError extends Error {
   code = "CRON_MUTATION_GUARD_ACTIVE" as const;
 
   constructor() {
@@ -139,7 +138,7 @@ function readOwnerOnlyJson(
   }
 }
 
-export function inspectCronDefinitionMutationGuard({
+function inspectCronDefinitionMutationGuard({
   guardPath = testPathOverrides?.guardPath ??
     defaultEvidenceStatePath("model-router-evidence-cron-mutation-guard.json"),
   rolloutLockPath = testPathOverrides?.rolloutLockPath ??
@@ -223,27 +222,38 @@ export function assertCronDefinitionMutationAllowed(
   }
 }
 
-function definitionProjection(job: CronJob): Omit<CronJob, "state" | "updatedAtMs"> {
+type CronDefinitionCarrier = { state: unknown; updatedAtMs: number };
+type CronDefinitionStore<TJob extends CronDefinitionCarrier> = {
+  version?: unknown;
+  jobs: TJob[];
+};
+
+function definitionProjection<TJob extends CronDefinitionCarrier>(
+  job: TJob,
+): Omit<TJob, "state" | "updatedAtMs"> {
   const { state: _state, updatedAtMs: _updatedAtMs, ...definition } = job;
   return definition;
 }
 
-export function cronJobDefinitionsEqual(before: CronJob, after: CronJob): boolean {
+export function cronJobDefinitionsEqual<TJob extends CronDefinitionCarrier>(
+  before: TJob,
+  after: TJob,
+): boolean {
   return isDeepStrictEqual(definitionProjection(before), definitionProjection(after));
 }
 
-export function cronDefinitionSnapshotsEqual(
-  before: CronStoreFile | null,
-  after: CronStoreFile | null,
+function cronDefinitionSnapshotsEqual<TJob extends CronDefinitionCarrier>(
+  before: CronDefinitionStore<TJob> | null,
+  after: CronDefinitionStore<TJob> | null,
 ): boolean {
   const beforeProjection = (before?.jobs ?? []).map(definitionProjection);
   const afterProjection = (after?.jobs ?? []).map(definitionProjection);
   return isDeepStrictEqual(beforeProjection, afterProjection);
 }
 
-export function assertCronDefinitionSnapshotMutationAllowed(
-  before: CronStoreFile | null,
-  after: CronStoreFile | null,
+export function assertCronDefinitionSnapshotMutationAllowed<TJob extends CronDefinitionCarrier>(
+  before: CronDefinitionStore<TJob> | null,
+  after: CronDefinitionStore<TJob> | null,
   options: Parameters<typeof inspectCronDefinitionMutationGuard>[0] = {},
 ): void {
   if (!cronDefinitionSnapshotsEqual(before, after)) {
@@ -255,6 +265,9 @@ if (process.env.VITEST || process.env.NODE_ENV === "test") {
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.cronMutationGuardTestApi")] = {
     setPathOverrides(value?: { guardPath: string; rolloutLockPath: string }) {
       testPathOverrides = value;
+    },
+    inspect(options?: Parameters<typeof inspectCronDefinitionMutationGuard>[0]) {
+      return inspectCronDefinitionMutationGuard(options);
     },
   };
 }

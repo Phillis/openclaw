@@ -83,9 +83,10 @@ afterEach(async () => {
 
 describe("real model-router cron mutation guard integration", () => {
   it("fails closed for every missing, malformed, mismatched, future, expired, or insecure campaign artifact", async () => {
-    const { inspectCronDefinitionMutationGuard } = await import("./definition-mutation-guard.js");
-    const { setCronMutationGuardPathsForTests } =
-      await import("./definition-mutation-guard.test-support.js");
+    const {
+      inspectCronDefinitionMutationGuardForTests: inspectCronDefinitionMutationGuard,
+      setCronMutationGuardPathsForTests,
+    } = await import("./definition-mutation-guard.test-support.js");
     setCronMutationGuardPathsForTests({
       guardPath,
       rolloutLockPath,

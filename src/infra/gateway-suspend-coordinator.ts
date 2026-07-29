@@ -97,8 +97,10 @@ const GATEWAY_INSTANCE_ID: string = resolveGlobalSingleton(
   () => randomUUID(),
 );
 
-export function getGatewayProcessIncarnationId(): string {
-  return GATEWAY_INSTANCE_ID;
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.gatewaySuspendTestApi")] = {
+    getGatewayInstanceId: () => GATEWAY_INSTANCE_ID,
+  };
 }
 
 function schedulerRecoveryResult(): GatewaySchedulerRecoveryResult {

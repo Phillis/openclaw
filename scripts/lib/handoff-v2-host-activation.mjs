@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   constants,
   fstatSync,
@@ -18,13 +19,14 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export const HOST_ACTIVATION_PLAN_SCHEMA = "handoff-v2-host-activation-plan/v1";
+const HOST_ACTIVATION_PLAN_SCHEMA = "handoff-v2-host-activation-plan/v1";
 export const HOST_ACTIVATION_RECEIPT_SCHEMA = "handoff-v2-host-activation-receipt/v1";
-export const SLACK_ACCESS_PROOF_SCHEMA = "openclaw-slack-access-proof/v1";
+const SLACK_ACCESS_PROOF_SCHEMA = "openclaw-slack-access-proof/v1";
 
 const SHA256_RE = /^[a-f0-9]{64}$/u;
 const GIT_OBJECT_RE = /^[a-f0-9]{40}$/u;
 const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
+let recoveryOwnershipTestHook;
 const PLAN_KEYS = [
   "schema",
   "planId",
@@ -342,7 +344,7 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-export function canonicalJson(value) {
+function canonicalJson(value) {
   if (Array.isArray(value)) {
     return value.map(canonicalJson);
   }
@@ -2409,6 +2411,74 @@ function removeFileDurably(path) {
   syncParentDirectory(path);
 }
 
+function sameFileIdentity(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function parseRecoveryOwner(bytes) {
+  const value = bytes.toString("utf8");
+  if (!/^[1-9]\d*\n$/u.test(value)) {
+    throw new Error("recovery ownership is ambiguous");
+  }
+  const pid = Number(value.slice(0, -1));
+  if (!Number.isSafeInteger(pid) || pid < 1) {
+    throw new Error("recovery ownership is ambiguous");
+  }
+  return pid;
+}
+
+function invokeRecoveryOwnershipTestHook(stage, path) {
+  recoveryOwnershipTestHook?.(stage, path);
+}
+
+function withRecoveryOwnershipTransaction(ownershipPath, action) {
+  assertSecureDirectory(dirname(ownershipPath), "recovery ownership parent");
+  const coordinationPath = `${ownershipPath}.sqlite`;
+  const database = new DatabaseSync(coordinationPath);
+  let transactionOpen = false;
+  try {
+    chmodSync(coordinationPath, 0o600);
+    database.exec(
+      "PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 30000; CREATE TABLE IF NOT EXISTS recovery_lock_runtime (id INTEGER PRIMARY KEY CHECK (id = 1));",
+    );
+    syncFileAndParent(coordinationPath);
+    const coordinationStat = lstatSync(coordinationPath);
+    assertSecureFileStat(coordinationStat, "recovery ownership coordination database");
+    database.exec("BEGIN IMMEDIATE");
+    transactionOpen = true;
+    const result = action();
+    database.exec("COMMIT");
+    transactionOpen = false;
+    syncFileAndParent(coordinationPath);
+    return result;
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        database.exec("ROLLBACK");
+      } catch {
+        // Preserve the ownership failure.
+      }
+    }
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
+function assertRecoveryOwnershipUnchanged(path, expectedBytes, before) {
+  const actual = readSecureFile(path, "recovery ownership");
+  const after = lstatSync(path);
+  if (!actual.equals(expectedBytes) || !sameFileIdentity(before, after)) {
+    throw new Error("recovery ownership changed during verification");
+  }
+}
+
 class TerminalPersistenceError extends Error {
   constructor(description, cause) {
     super(`${description} could not be proven durable`, { cause });
@@ -2843,34 +2913,50 @@ export function createDefaultHostActivationRuntime() {
     }),
     assertClaimOwnerDead: (pid) => verifyPidDead(pid, { run: runCommand }),
     acquireRecoveryOwnership: (path, executorPid) => {
-      assertSecureDirectory(dirname(path), "recovery ownership parent");
-      const acquired = runCommand("/usr/bin/shlock", ["-f", path, "-p", String(executorPid)]);
-      if (acquired.status !== 0 || acquired.signal || acquired.error) {
-        throw new Error("another process owns interrupted-attempt recovery");
-      }
       const expected = Buffer.from(`${executorPid}\n`, "utf8");
-      try {
-        syncFileAndParent(path);
-        const actual = readSecureFile(path, "recovery ownership");
-        if (!actual.equals(expected)) {
-          throw new Error("recovery ownership does not bind this executor");
-        }
-      } catch (error) {
-        try {
+      withRecoveryOwnershipTransaction(path, () => {
+        const existing = readOptionalSecureFile(path, "recovery ownership");
+        if (existing !== null) {
+          const before = lstatSync(path);
+          const ownerPid = parseRecoveryOwner(existing);
+          try {
+            verifyPidDead(ownerPid, { run: runCommand });
+          } catch (error) {
+            throw new Error("another process owns interrupted-attempt recovery", { cause: error });
+          }
+          invokeRecoveryOwnershipTestHook("after-owner-death-proof", path);
+          assertRecoveryOwnershipUnchanged(path, existing, before);
           removeFileDurably(path);
-        } catch {
-          // Preserve the original acquisition failure.
         }
-        throw error;
-      }
+        try {
+          writeExclusiveAtomic(path, expected);
+          const before = lstatSync(path);
+          assertRecoveryOwnershipUnchanged(path, expected, before);
+        } catch (error) {
+          try {
+            const actual = readOptionalSecureFile(path, "recovery ownership");
+            if (actual?.equals(expected)) {
+              removeFileDurably(path);
+            }
+          } catch {
+            // Preserve the original acquisition failure.
+          }
+          throw error;
+        }
+      });
     },
     releaseRecoveryOwnership: (path, executorPid) => {
       const expected = Buffer.from(`${executorPid}\n`, "utf8");
-      const actual = readSecureFile(path, "recovery ownership");
-      if (!actual.equals(expected)) {
-        throw new Error("recovery ownership changed before release");
-      }
-      removeFileDurably(path);
+      withRecoveryOwnershipTransaction(path, () => {
+        const before = lstatSync(path);
+        const actual = readSecureFile(path, "recovery ownership");
+        if (!actual.equals(expected)) {
+          throw new Error("recovery ownership changed before release");
+        }
+        assertRecoveryOwnershipUnchanged(path, expected, before);
+        invokeRecoveryOwnershipTestHook("before-release-delete", path);
+        removeFileDurably(path);
+      });
     },
     verifyFile,
     assertSecureDirectory,
@@ -2905,6 +2991,14 @@ export function createDefaultHostActivationRuntime() {
       syncParentDirectory(destination);
     },
     writeExclusive: writeExclusiveAtomic,
+  };
+}
+
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  globalThis[Symbol.for("openclaw.hostActivationRecoveryOwnershipTestApi")] = {
+    setHook(hook) {
+      recoveryOwnershipTestHook = hook;
+    },
   };
 }
 

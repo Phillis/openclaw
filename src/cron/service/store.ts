@@ -29,7 +29,7 @@ export type CronRollbackSnapshot = {
   durableNextRunAtMsByJobId: Map<string, number | undefined>;
 };
 
-export type CronRuntimePersistenceSnapshot = ReadonlyMap<
+type CronRuntimePersistenceSnapshot = ReadonlyMap<
   string,
   {
     state: CronJob["state"];

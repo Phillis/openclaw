@@ -199,18 +199,34 @@ describe("CronService interval/cron jobs fire on time", () => {
         throw new Error("arm failed");
       });
 
-      expect(
-        prepareGatewaySuspend({
-          requestId: "cron-resume-retry",
-          pauseScheduling: () => cron.pauseScheduling(),
-          resumeScheduling: () => cron.resumeScheduling(),
-          inspect: { getQueueSize: () => 1 },
-        }),
-      ).toMatchObject({ status: "recovering" });
+      const prepared = prepareGatewaySuspend({
+        requestId: "cron-resume-retry",
+        gatewayPid: process.pid,
+        launchdRunCount: 1,
+        currentGatewayInstanceId: "gateway-cron-resume-retry",
+        pauseScheduling: () => cron.pauseScheduling(),
+        resumeScheduling: () => cron.resumeScheduling(),
+        inspect: { getQueueSize: () => 1 },
+      });
+      expect(prepared).toMatchObject({ status: "recovering" });
       expect(isGatewayWorkAdmissionClosed()).toBe(true);
 
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(getGatewaySuspendStatus("stale-id")).toEqual({ status: "running" });
+      if (prepared.status !== "recovering") {
+        throw new Error(`expected scheduler recovery, received ${prepared.status}`);
+      }
+      expect(
+        getGatewaySuspendStatus(
+          {
+            suspensionId: "stale-id",
+            gatewayInstanceId: "gateway-cron-resume-retry",
+          },
+          "gateway-cron-resume-retry",
+        ),
+      ).toEqual({
+        status: "running",
+        gatewayInstanceId: "gateway-cron-resume-retry",
+      });
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
 
       const finishedRun = finished.waitForOk(job.id);

@@ -3,10 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CronJob, CronStoreFile } from "../types.js";
-import {
-  assertCronDefinitionSnapshotMutationAllowed,
-  inspectCronDefinitionMutationGuard,
-} from "./definition-mutation-guard.js";
+import { assertCronDefinitionSnapshotMutationAllowed } from "./definition-mutation-guard.js";
+import { inspectCronDefinitionMutationGuardForTests as inspectCronDefinitionMutationGuard } from "./definition-mutation-guard.test-support.js";
 
 const NOW_MS = Date.parse("2026-07-27T10:00:00.000Z");
 const PLAN_SHA256 = `sha256:${"a".repeat(64)}`;

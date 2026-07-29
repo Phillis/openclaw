@@ -209,6 +209,8 @@ function expectSuspendBusyWithRootWork(requestId: string): void {
   expect(
     prepareGatewaySuspend({
       requestId,
+      gatewayPid: process.pid,
+      launchdRunCount: 1,
       pauseScheduling: vi.fn(),
       resumeScheduling: vi.fn(),
     }),
@@ -221,12 +223,20 @@ function expectSuspendBusyWithRootWork(requestId: string): void {
 function expectSuspendReady(requestId: string): void {
   const result = prepareGatewaySuspend({
     requestId,
+    gatewayPid: process.pid,
+    launchdRunCount: 1,
     pauseScheduling: vi.fn(),
     resumeScheduling: vi.fn(),
   });
   expect(result).toMatchObject({ status: "ready", activeCount: 0, blockers: [] });
   if (result.status === "ready") {
-    expect(resumeGatewaySuspend(result.suspensionId)).toMatchObject({
+    expect(
+      resumeGatewaySuspend({
+        suspensionId: result.suspensionId,
+        gatewayInstanceId: result.gatewayInstanceId,
+        resumeBeforeMs: result.expiresAtMs,
+      }),
+    ).toMatchObject({
       ok: true,
       status: "running",
       resumed: true,

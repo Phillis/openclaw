@@ -102,54 +102,19 @@ import {
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
 import {
   adoptGatewaySuspendHandoffAtStartup,
-  getGatewayProcessIncarnationId,
   getGatewaySuspendStatus as getGatewaySuspendStatusWithIdentity,
   prepareGatewaySuspend as prepareGatewaySuspendWithIdentity,
   resetGatewaySuspendCoordinatorForLifecycleRestart,
   resumeGatewaySuspend as resumeGatewaySuspendWithIdentity,
 } from "./gateway-suspend-coordinator.js";
+import {
+  getTestGatewaySuspendStatus as getGatewaySuspendStatus,
+  prepareTestGatewaySuspend as prepareGatewaySuspend,
+  resumeTestGatewaySuspend as resumeGatewaySuspend,
+} from "./gateway-suspend-coordinator.test-support.js";
 
 const SUSPEND_TTL_MS = 2 * 60_000;
 const SUSPEND_RETRY_AFTER_MS = 20_000;
-
-function prepareGatewaySuspend(
-  params: Omit<
-    Parameters<typeof prepareGatewaySuspendWithIdentity>[0],
-    "gatewayPid" | "launchdRunCount"
-  > &
-    Partial<
-      Pick<
-        Parameters<typeof prepareGatewaySuspendWithIdentity>[0],
-        "gatewayPid" | "launchdRunCount"
-      >
-    >,
-) {
-  return prepareGatewaySuspendWithIdentity({
-    gatewayPid: process.pid,
-    launchdRunCount: 1,
-    ...params,
-  });
-}
-
-function getGatewaySuspendStatus(suspensionId: string) {
-  const { gatewayInstanceId: _gatewayInstanceId, ...result } = getGatewaySuspendStatusWithIdentity({
-    suspensionId,
-    gatewayInstanceId: getGatewayProcessIncarnationId(),
-  });
-  return result;
-}
-
-function resumeGatewaySuspend(suspensionId: string) {
-  const gatewayInstanceId = getGatewayProcessIncarnationId();
-  const status = getGatewaySuspendStatusWithIdentity({ suspensionId, gatewayInstanceId });
-  const resumeBeforeMs = "expiresAtMs" in status ? status.expiresAtMs : Number.MAX_SAFE_INTEGER;
-  const { gatewayInstanceId: _gatewayInstanceId, ...result } = resumeGatewaySuspendWithIdentity(
-    { suspensionId, gatewayInstanceId, resumeBeforeMs },
-    gatewayInstanceId,
-    () => resumeBeforeMs - 1,
-  );
-  return result;
-}
 
 function inspectors(
   overrides: Partial<GatewayActiveWorkInspectors> = {},

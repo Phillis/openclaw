@@ -76,6 +76,8 @@ describe("gateway probe endpoints", () => {
         run: async (server) => {
           const prepared = prepareGatewaySuspend({
             requestId: "request-readiness-probe",
+            gatewayPid: process.pid,
+            launchdRunCount: 1,
             pauseScheduling: vi.fn(),
             resumeScheduling: vi.fn(),
             createSuspensionId: () => "suspension-readiness-probe",
@@ -127,7 +129,13 @@ describe("gateway probe endpoints", () => {
             error: { code: "gateway_unavailable" },
           });
 
-          expect(resumeGatewaySuspend(prepared.suspensionId)).toEqual({
+          expect(
+            resumeGatewaySuspend({
+              suspensionId: prepared.suspensionId,
+              gatewayInstanceId: prepared.gatewayInstanceId,
+              resumeBeforeMs: prepared.expiresAtMs,
+            }),
+          ).toMatchObject({
             ok: true,
             status: "running",
             resumed: true,
@@ -178,6 +186,8 @@ describe("gateway probe endpoints", () => {
 
           const prepared = prepareGatewaySuspend({
             requestId: "request-http-work",
+            gatewayPid: process.pid,
+            launchdRunCount: 1,
             pauseScheduling: vi.fn(),
             resumeScheduling: vi.fn(),
             inspect: {

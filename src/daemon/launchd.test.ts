@@ -1037,9 +1037,9 @@ describe("launchctl list detection", () => {
   );
 
   it.runIf(process.platform === "darwin")("disables explicit legacy updater jobs", async () => {
-    await expect(disableOpenClawUpdateLaunchdJob("ai.openclaw.update.2026.5.12")).resolves.toBe(
-      true,
-    );
+    await expect(
+      disableOpenClawUpdateLaunchdJob("ai.openclaw.update.2026.5.12", createDefaultLaunchdEnv()),
+    ).resolves.toBe(true);
 
     const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
     expect(state.launchctlCalls).toContainEqual([
@@ -1050,7 +1050,10 @@ describe("launchctl list detection", () => {
 
   it.runIf(process.platform === "darwin")("disables explicit manual updater jobs", async () => {
     await expect(
-      disableOpenClawUpdateLaunchdJob("ai.openclaw.manual-update.1717168800"),
+      disableOpenClawUpdateLaunchdJob(
+        "ai.openclaw.manual-update.1717168800",
+        createDefaultLaunchdEnv(),
+      ),
     ).resolves.toBe(true);
 
     const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
@@ -1568,6 +1571,55 @@ describe("launchd install", () => {
     const serviceId = `${domain}/ai.openclaw.gateway`;
     expect(state.launchctlCalls).toEqual([["bootout", serviceId]]);
     expect(output).toContain("Stopped LaunchAgent");
+  });
+
+  it("rejects inherited production launchd identity before execution even without VITEST", async () => {
+    const isolatedHome = expectDefined(process.env.OPENCLAW_TEST_HOME, "OPENCLAW_TEST_HOME");
+    const env = {
+      ...process.env,
+      HOME: isolatedHome,
+      VITEST: undefined,
+      OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.gateway",
+      LAUNCH_JOB_LABEL: "ai.openclaw.gateway",
+      LAUNCH_JOB_NAME: "ai.openclaw.gateway",
+      XPC_SERVICE_NAME: "0",
+      OPENCLAW_SERVICE_MARKER: "openclaw",
+      OPENCLAW_SERVICE_KIND: "gateway",
+    };
+
+    await expect(stopLaunchAgent({ env, stdout: new PassThrough() })).rejects.toThrow(
+      "Refusing test-mode launchd mutation for non-isolated label ai.openclaw.gateway",
+    );
+    expect(state.launchctlCalls).toEqual([]);
+  });
+
+  it("rejects test-mode launchd mutations outside the isolated HOME before execution", async () => {
+    const env = {
+      HOME: "/Users/test",
+      NODE_ENV: "test",
+      OPENCLAW_TEST_FAST: "1",
+      OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.test.test",
+    };
+
+    await expect(stopLaunchAgent({ env, stdout: new PassThrough() })).rejects.toThrow(
+      "Refusing test-mode launchd mutation for non-isolated label ai.openclaw.test.test",
+    );
+    expect(state.launchctlCalls).toEqual([]);
+  });
+
+  it("permits randomized launchd integration labels only within their isolated HOME", async () => {
+    const label = "ai.openclaw.launchd-int-deadbeef";
+    const env = {
+      HOME: "/tmp/openclaw-launchd-int-deadbeef-fixture",
+      NODE_ENV: "test",
+      OPENCLAW_TEST_FAST: "1",
+      OPENCLAW_LAUNCHD_LABEL: label,
+    };
+
+    await stopLaunchAgent({ env, stdout: new PassThrough() });
+
+    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
+    expect(state.launchctlCalls).toEqual([["bootout", `${domain}/${label}`]]);
   });
 
   it("refuses in-band LaunchAgent stop before launchctl bootout", async () => {

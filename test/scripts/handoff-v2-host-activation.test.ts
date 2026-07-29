@@ -7,13 +7,14 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import addFormats from "ajv-formats";
-import Ajv2020 from "ajv/dist/2020.js";
+import { Compile } from "typebox/compile";
+import { Format } from "typebox/format";
 import { describe, expect, it, vi } from "vitest";
 import {
   canonicalJsonBytes,
@@ -29,7 +30,7 @@ import {
   verifyPidDead,
   type HostActivationRuntime,
 } from "../../scripts/lib/handoff-v2-host-activation.mjs";
-import { inspectCronDefinitionMutationGuard } from "../../src/cron/service/definition-mutation-guard.js";
+import { inspectCronDefinitionMutationGuardForTests as inspectCronDefinitionMutationGuard } from "../../src/cron/service/definition-mutation-guard.test-support.js";
 import {
   adoptGatewaySuspendHandoffAtStartup,
   getGatewaySuspendStatus,
@@ -46,17 +47,90 @@ import {
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const sha = (character: string) => character.repeat(64);
 
+type MutableReceiptPhase = Record<string, unknown> & {
+  phase: string;
+  sequence: number;
+  sha256: string;
+};
+
+type MutableHostActivationReceipt = Record<string, unknown> & {
+  completedAt: string;
+  startedAt: string;
+  outcome: string;
+  holdReason?: string;
+  rollbackPacketSha256?: string;
+  operations: Record<string, number>;
+  predecessor: Record<string, string>;
+  proofs: Record<string, unknown> & {
+    healthSha256: string;
+    observedAt: string;
+    predecessorBuild: Record<string, string>;
+    stabilityWindowMs?: number;
+  };
+  ledger: Record<string, unknown> & {
+    phases: MutableReceiptPhase[];
+    recoveryPhases: MutableReceiptPhase[];
+    terminalPhase: Record<string, unknown> & {
+      phase: string;
+      sequence?: number;
+      sha256: string;
+    };
+  };
+};
+
+function mutableReceipt(value: unknown): MutableHostActivationReceipt {
+  return value as MutableHostActivationReceipt;
+}
+
+function recoveryPhaseNames(value: unknown): string[] {
+  return mutableReceipt(value).ledger.recoveryPhases.map((phase) => phase.phase);
+}
+
+function requiredArrayEntry<T>(values: readonly T[], index: number): T {
+  const value = values[index];
+  if (value === undefined) {
+    throw new Error(`expected array entry ${index}`);
+  }
+  return value;
+}
+
+type RecoveryOwnershipTestHook = (
+  stage: "after-owner-death-proof" | "before-release-delete",
+  path: string,
+) => void;
+
+function setRecoveryOwnershipTestHook(hook?: RecoveryOwnershipTestHook): void {
+  const api = (globalThis as Record<PropertyKey, unknown>)[
+    Symbol.for("openclaw.hostActivationRecoveryOwnershipTestApi")
+  ] as { setHook(value?: RecoveryOwnershipTestHook): void };
+  api.setHook(hook);
+}
+
 function compileContractSchema(fileName: string) {
   type ContractValidator = ((value: unknown) => boolean) & { errors?: unknown };
-  const AjvConstructor = Ajv2020 as unknown as new (options: Record<string, unknown>) => {
-    compile(schema: unknown): ContractValidator;
+  const withContractFormats = <T>(callback: () => T): T => {
+    const previousFormats = Format.Entries();
+    Format.Set("date-time", Format.IsDateTime);
+    try {
+      return callback();
+    } finally {
+      Format.Clear();
+      for (const [format, check] of previousFormats) {
+        Format.Set(format, check);
+      }
+    }
   };
-  const applyFormats = addFormats as unknown as (ajv: unknown) => void;
-  const ajv = new AjvConstructor({ allErrors: true, strict: false });
-  applyFormats(ajv);
-  return ajv.compile(
-    JSON.parse(readFileSync(path.resolve(process.cwd(), "scripts/contracts", fileName), "utf8")),
+  const schema = JSON.parse(
+    readFileSync(path.resolve(process.cwd(), "scripts/contracts", fileName), "utf8"),
   );
+  const compiled = withContractFormats(() => Compile(schema));
+  const validate: ContractValidator = (value) =>
+    withContractFormats(() => {
+      const errors = [...compiled.Errors(value)];
+      validate.errors = errors.length === 0 ? undefined : errors;
+      return errors.length === 0;
+    });
+  return validate;
 }
 
 function fixturePlan() {
@@ -1328,7 +1402,7 @@ describe("one-use host activation lifecycle", () => {
         },
       });
       expect(receipt.holdReason).toContain(`recovered at phase ${expectedFailedPhase}`);
-      expect((receipt.ledger as any).recoveryPhases.map((phase: any) => phase.phase)).toEqual([
+      expect(recoveryPhaseNames(receipt)).toEqual([
         "pre-bootout-service-loaded-proven",
         "pre-bootout-reenable-requested",
         "pre-bootout-reenabled-same-predecessor-proven",
@@ -1389,7 +1463,7 @@ describe("one-use host activation lifecycle", () => {
       },
       holdReason: expect.stringContaining("manual rollback required"),
     });
-    expect((receipt.ledger as any).recoveryPhases.map((phase: any) => phase.phase)).toEqual([
+    expect(recoveryPhaseNames(receipt)).toEqual([
       "pre-bootout-service-unloaded-proven",
       "pre-bootout-reenable-requested",
       "pre-bootout-label-enabled-unloaded-proven",
@@ -1461,7 +1535,7 @@ describe("one-use host activation lifecycle", () => {
       operations: { enableCount: 1, bootstrapCount: 0 },
       holdReason: expect.stringContaining("recovered at phase bootout-invocation-started"),
     });
-    expect((receipt.ledger as any).recoveryPhases.map((phase: any) => phase.phase)).toEqual([
+    expect(recoveryPhaseNames(receipt)).toEqual([
       "pre-bootout-service-loaded-proven",
       "pre-bootout-reenable-requested",
       "pre-bootout-reenabled-same-predecessor-proven",
@@ -2230,7 +2304,7 @@ describe("one-use host activation lifecycle", () => {
       runtime: second.runtime,
     });
     expect(receipt.outcome).toBe("HOLD");
-    expect((receipt.ledger as any).recoveryPhases.map((phase: any) => phase.phase)).toEqual([
+    expect(recoveryPhaseNames(receipt)).toEqual([
       "pre-bootout-reenable-requested",
       "pre-bootout-reenabled-same-predecessor-proven",
       "pre-bootout-suspension-resume-requested",
@@ -2275,7 +2349,7 @@ describe("one-use host activation lifecycle", () => {
         runtime: second.runtime,
       });
       expect(receipt.outcome).toBe("HOLD");
-      expect((receipt.ledger as any).recoveryPhases.map((phase: any) => phase.phase)).toEqual([
+      expect(recoveryPhaseNames(receipt)).toEqual([
         "pre-bootout-service-loaded-proven",
         "pre-bootout-reenabled-same-predecessor-proven",
         "pre-bootout-suspension-resume-requested",
@@ -2334,7 +2408,7 @@ describe("one-use host activation lifecycle", () => {
       runtime: second.runtime,
     });
     expect(receipt.outcome).toBe("HOLD");
-    expect((receipt.ledger as any).recoveryPhases.map((phase: any) => phase.phase)).toEqual([
+    expect(recoveryPhaseNames(receipt)).toEqual([
       ...expectedRecoveryPhases,
       ...(expectedRecoveryPhases.includes("pre-bootout-reenabled-same-predecessor-proven")
         ? []
@@ -3827,7 +3901,7 @@ describe("terminal contract enforcement", () => {
   });
 
   it("rejects receipt operation counts that do not match durable phases", () => {
-    const receipt = structuredClone(executeFixture().receipt) as any;
+    const receipt = mutableReceipt(structuredClone(executeFixture().receipt));
     receipt.operations.disableCount = 0;
     expect(() => validateHostActivationReceipt(receipt)).toThrow("durable phase ledger");
     const validateReceiptSchema = compileContractSchema(
@@ -3837,13 +3911,12 @@ describe("terminal contract enforcement", () => {
   });
 
   it("rejects reordered terminal phases in both validators", () => {
-    const receipt = structuredClone(executeFixture().receipt) as any;
-    [receipt.ledger.phases[8], receipt.ledger.phases[9]] = [
-      receipt.ledger.phases[9],
-      receipt.ledger.phases[8],
-    ];
-    receipt.ledger.phases[8].sequence = 8;
-    receipt.ledger.phases[9].sequence = 9;
+    const receipt = mutableReceipt(structuredClone(executeFixture().receipt));
+    const phase8 = requiredArrayEntry(receipt.ledger.phases, 8);
+    const phase9 = requiredArrayEntry(receipt.ledger.phases, 9);
+    [receipt.ledger.phases[8], receipt.ledger.phases[9]] = [phase9, phase8];
+    phase9.sequence = 8;
+    phase8.sequence = 9;
     expect(() => validateHostActivationReceipt(receipt)).toThrow("phase sequence");
     const validateReceiptSchema = compileContractSchema(
       "handoff-v2-host-activation-receipt.v1.schema.json",
@@ -3852,11 +3925,11 @@ describe("terminal contract enforcement", () => {
   });
 
   it("derives claim and terminal sequence identity without duplicate receipt fields", () => {
-    const held = structuredClone(
-      executeFixture(fixturePlan(), { ambiguousPidAbsence: true }).receipt,
-    ) as any;
+    const held = mutableReceipt(
+      structuredClone(executeFixture(fixturePlan(), { ambiguousPidAbsence: true }).receipt),
+    );
     expect(held.ledger).not.toHaveProperty("claimSha256");
-    held.ledger.claimSha256 = held.ledger.phases[0].sha256;
+    held.ledger.claimSha256 = requiredArrayEntry(held.ledger.phases, 0).sha256;
     expect(() => validateHostActivationReceipt(held)).toThrow("keys must be exactly");
     const validateReceiptSchema = compileContractSchema(
       "handoff-v2-host-activation-receipt.v1.schema.json",
@@ -3871,7 +3944,7 @@ describe("terminal contract enforcement", () => {
   });
 
   it("rejects malformed predecessor and successor proof identities", () => {
-    const receipt = structuredClone(executeFixture().receipt) as any;
+    const receipt = mutableReceipt(structuredClone(executeFixture().receipt));
     receipt.predecessor.commit = "";
     receipt.proofs.healthSha256 = "";
     expect(() => validateHostActivationReceipt(receipt)).toThrow();
@@ -3882,26 +3955,30 @@ describe("terminal contract enforcement", () => {
   });
 
   it("rejects HOLD observations outside the receipt interval", () => {
-    const receipt = structuredClone(
-      executeFixture(fixturePlan(), { driftStablePid: true }).receipt,
-    ) as any;
+    const receipt = mutableReceipt(
+      structuredClone(executeFixture(fixturePlan(), { driftStablePid: true }).receipt),
+    );
     receipt.proofs.observedAt = "2026-07-28T07:59:59.999Z";
     expect(() => validateHostActivationReceipt(receipt)).toThrow("outside the receipt interval");
   });
 
   it("rejects duplicate recovery phases in both receipt validators", () => {
-    const receipt = structuredClone(
-      executeFixture(fixturePlan(), {
-        failCommand: (_command, args) =>
-          args[0] === "disable" ? "injected disable failure" : undefined,
-      }).receipt,
-    ) as any;
-    const recoveryIndex = receipt.ledger.recoveryPhases.findIndex(
-      (phase: any) => phase.phase === "pre-bootout-suspension-resume-requested",
+    const receipt = mutableReceipt(
+      structuredClone(
+        executeFixture(fixturePlan(), {
+          failCommand: (_command, args) =>
+            args[0] === "disable" ? "injected disable failure" : undefined,
+        }).receipt,
+      ),
     );
-    const duplicate = structuredClone(receipt.ledger.recoveryPhases[recoveryIndex]);
+    const recoveryIndex = receipt.ledger.recoveryPhases.findIndex(
+      (phase) => phase.phase === "pre-bootout-suspension-resume-requested",
+    );
+    const duplicate = structuredClone(
+      requiredArrayEntry(receipt.ledger.recoveryPhases, recoveryIndex),
+    );
     receipt.ledger.recoveryPhases.splice(recoveryIndex + 1, 0, duplicate);
-    receipt.ledger.recoveryPhases.forEach((phase: any, index: number) => {
+    receipt.ledger.recoveryPhases.forEach((phase, index) => {
       phase.sequence = receipt.ledger.phases.length + index;
     });
     expect(() => validateHostActivationReceipt(receipt)).toThrow("recovery phase sequence");
@@ -3912,17 +3989,21 @@ describe("terminal contract enforcement", () => {
   });
 
   it("rejects impossible recovery ordering in both receipt validators", () => {
-    const receipt = structuredClone(
-      executeFixture(fixturePlan(), {
-        failCommand: (_command, args) =>
-          args[0] === "disable" ? "injected disable failure" : undefined,
-      }).receipt,
-    ) as any;
+    const receipt = mutableReceipt(
+      structuredClone(
+        executeFixture(fixturePlan(), {
+          failCommand: (_command, args) =>
+            args[0] === "disable" ? "injected disable failure" : undefined,
+        }).receipt,
+      ),
+    );
+    const firstRecovery = requiredArrayEntry(receipt.ledger.recoveryPhases, 0);
+    const secondRecovery = requiredArrayEntry(receipt.ledger.recoveryPhases, 1);
     [receipt.ledger.recoveryPhases[0], receipt.ledger.recoveryPhases[1]] = [
-      receipt.ledger.recoveryPhases[1],
-      receipt.ledger.recoveryPhases[0],
+      secondRecovery,
+      firstRecovery,
     ];
-    receipt.ledger.recoveryPhases.forEach((phase: any, index: number) => {
+    receipt.ledger.recoveryPhases.forEach((phase, index) => {
       phase.sequence = receipt.ledger.phases.length + index;
     });
     expect(() => validateHostActivationReceipt(receipt)).toThrow("recovery phase sequence");
@@ -3933,7 +4014,7 @@ describe("terminal contract enforcement", () => {
   });
 
   it("accepts a HOLD after the full success prefix if success receipt persistence fails", () => {
-    const receipt = structuredClone(executeFixture().receipt) as any;
+    const receipt = mutableReceipt(structuredClone(executeFixture().receipt));
     receipt.outcome = "HOLD";
     receipt.proofs = {
       ...receipt.proofs,
@@ -3954,11 +4035,13 @@ describe("terminal contract enforcement", () => {
   });
 
   it("rejects zero-duration stability evidence and mismatched predecessor build proof", () => {
-    const activated = structuredClone(executeFixture().receipt) as any;
+    const activated = mutableReceipt(structuredClone(executeFixture().receipt));
     activated.completedAt = activated.startedAt;
     expect(() => validateHostActivationReceipt(activated)).toThrow("stability window");
 
-    const preflight = structuredClone(executeFixture(fixturePlan(), {}, false).receipt) as any;
+    const preflight = mutableReceipt(
+      structuredClone(executeFixture(fixturePlan(), {}, false).receipt),
+    );
     preflight.proofs.predecessorBuild.commit = "f".repeat(40);
     expect(() => validateHostActivationReceipt(preflight)).toThrow(
       "proofs.predecessorBuild.commit",
@@ -4082,6 +4165,94 @@ describe("real process absence proof", () => {
       runtime.releaseRecoveryOwnership(ownershipPath, process.pid);
       expect(runtime.readOptionalFile(ownershipPath, "released recovery ownership")).toBeNull();
     } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reclaims a recovery owner only after positive kernel death proof", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "openclaw-recovery-stale-owner-"));
+    const ownershipPath = path.join(directory, "recovery.lock");
+    const runtime = createDefaultHostActivationRuntime();
+    try {
+      writeFileSync(ownershipPath, "2147483647\n", { mode: 0o600 });
+      runtime.acquireRecoveryOwnership(ownershipPath, process.pid);
+      expect(readFileSync(ownershipPath, "utf8")).toBe(`${process.pid}\n`);
+      runtime.releaseRecoveryOwnership(ownershipPath, process.pid);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on ambiguous recovery ownership", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "openclaw-recovery-ambiguous-owner-"));
+    const ownershipPath = path.join(directory, "recovery.lock");
+    const runtime = createDefaultHostActivationRuntime();
+    try {
+      writeFileSync(ownershipPath, "not-a-pid\n", { mode: 0o600 });
+      expect(() => runtime.acquireRecoveryOwnership(ownershipPath, process.pid)).toThrow(
+        "recovery ownership is ambiguous",
+      );
+      expect(readFileSync(ownershipPath, "utf8")).toBe("not-a-pid\n");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses wrong-owner release without deleting the live owner", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "openclaw-recovery-wrong-release-"));
+    const ownershipPath = path.join(directory, "recovery.lock");
+    const runtime = createDefaultHostActivationRuntime();
+    try {
+      runtime.acquireRecoveryOwnership(ownershipPath, process.pid);
+      expect(() => runtime.releaseRecoveryOwnership(ownershipPath, process.pid + 1)).toThrow(
+        "recovery ownership changed before release",
+      );
+      expect(readFileSync(ownershipPath, "utf8")).toBe(`${process.pid}\n`);
+      runtime.releaseRecoveryOwnership(ownershipPath, process.pid);
+      expect(runtime.readOptionalFile(ownershipPath, "released recovery ownership")).toBeNull();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when a stale owner is substituted with a live owner after death proof", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "openclaw-recovery-substitution-"));
+    const ownershipPath = path.join(directory, "recovery.lock");
+    const runtime = createDefaultHostActivationRuntime();
+    try {
+      writeFileSync(ownershipPath, "2147483647\n", { mode: 0o600 });
+      setRecoveryOwnershipTestHook((stage, targetPath) => {
+        if (stage !== "after-owner-death-proof") {
+          return;
+        }
+        unlinkSync(targetPath);
+        writeFileSync(targetPath, `${process.pid}\n`, { mode: 0o600 });
+      });
+      expect(() => runtime.acquireRecoveryOwnership(ownershipPath, process.pid)).toThrow(
+        "recovery ownership changed during verification",
+      );
+      expect(readFileSync(ownershipPath, "utf8")).toBe(`${process.pid}\n`);
+    } finally {
+      setRecoveryOwnershipTestHook();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("re-proves durable deletion when release observes ENOENT", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "openclaw-recovery-release-enoent-"));
+    const ownershipPath = path.join(directory, "recovery.lock");
+    const runtime = createDefaultHostActivationRuntime();
+    try {
+      runtime.acquireRecoveryOwnership(ownershipPath, process.pid);
+      setRecoveryOwnershipTestHook((stage, targetPath) => {
+        if (stage === "before-release-delete") {
+          unlinkSync(targetPath);
+        }
+      });
+      runtime.releaseRecoveryOwnership(ownershipPath, process.pid);
+      expect(runtime.readOptionalFile(ownershipPath, "released recovery ownership")).toBeNull();
+    } finally {
+      setRecoveryOwnershipTestHook();
       rmSync(directory, { recursive: true, force: true });
     }
   });

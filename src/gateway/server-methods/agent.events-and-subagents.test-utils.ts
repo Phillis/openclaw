@@ -110,10 +110,28 @@ describe("gateway agent handler", () => {
         "cron-media-release-rotation-complete",
       );
       const readyPayload = readyPrepare.mock.calls.at(-1)?.[1] as
-        | { status?: string; suspensionId?: string }
+        | {
+            status?: string;
+            suspensionId?: string;
+            gatewayInstanceId?: string;
+            expiresAtMs?: number;
+          }
         | undefined;
       expect(readyPayload).toMatchObject({ status: "ready" });
-      expect(resumeGatewaySuspend(readyPayload?.suspensionId ?? "missing")).toMatchObject({
+      if (
+        !readyPayload?.suspensionId ||
+        !readyPayload.gatewayInstanceId ||
+        readyPayload.expiresAtMs === undefined
+      ) {
+        throw new Error("expected complete ready suspension payload");
+      }
+      expect(
+        resumeGatewaySuspend({
+          suspensionId: readyPayload.suspensionId,
+          gatewayInstanceId: readyPayload.gatewayInstanceId,
+          resumeBeforeMs: readyPayload.expiresAtMs,
+        }),
+      ).toMatchObject({
         ok: true,
         status: "running",
       });
