@@ -38,6 +38,7 @@ export type HostActivationRuntime = {
   verifyFile(path: string, sha256: string, description: string): Buffer;
   assertSecureDirectory(path: string, description: string): void;
   assertSecureDirectoryChain(path: string, allowedRoot: string, description: string): void;
+  assertDistinctFiles(leftPath: string, rightPath: string, description: string): void;
   assertOutputAvailable(path: string, description: string): void;
   inspectDurableAtJobs(
     plan: Record<string, unknown>,
