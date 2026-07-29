@@ -1125,6 +1125,54 @@ describe("one-use host activation lifecycle", () => {
     expect(fixture.commands.some(({ args }) => args[0] === "disable")).toBe(false);
   });
 
+  it("refuses interrupted-attempt recovery without execute authority", () => {
+    const plan = fixturePlan();
+    const planBytes = canonicalJsonBytes(plan);
+    const first = createRuntime(plan, { failWritePhase: "bootout-requested" });
+    expect(() =>
+      executeHostActivation({
+        planBytes,
+        expectedPlanSha256: hash(planBytes),
+        execute: true,
+        runtime: first.runtime,
+      }),
+    ).toThrow("activation ledger phase bootout-requested could not be proven durable");
+    const globalClaim = [...first.writes.entries()].find(([filePath]) =>
+      filePath.includes("handoff-v2-lifecycle-"),
+    )!;
+    const second = createRuntime(plan, {
+      existingGlobalClaim: globalClaim[1],
+      existingLedger: ledgerEntriesFromWrites(first.writes, plan.evidence.ledgerDirectory),
+      existingFiles: first.writes,
+      initialEnabled: false,
+      initialLoaded: true,
+    });
+
+    expect(() =>
+      executeHostActivation({
+        planBytes,
+        expectedPlanSha256: hash(planBytes),
+        execute: false,
+        runtime: second.runtime,
+      }),
+    ).toThrow("read-only preflight cannot recover an existing lifecycle claim");
+
+    expect(second.commands).toHaveLength(0);
+    expect(second.writes.size).toBe(0);
+    for (const method of [
+      "ensureFileDurable",
+      "acquireRecoveryOwnership",
+      "releaseRecoveryOwnership",
+      "writeExclusive",
+      "replaceFileDurably",
+      "removeFileDurably",
+      "installFile",
+      "preserveFile",
+    ]) {
+      expect(Reflect.get(second.runtime, method)).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(["resume-pending", "resume-expired"] as const)(
     "rejects a normal activation that encounters a %s marker",
     (resumeState) => {

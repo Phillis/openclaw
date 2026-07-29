@@ -3252,6 +3252,9 @@ export function executeHostActivation(params) {
       "service-global lifecycle claim",
     );
     if (existingGlobalClaim) {
+      if (!params.execute) {
+        throw new Error("read-only preflight cannot recover an existing lifecycle claim");
+      }
       try {
         runtime.ensureFileDurable(globalClaimPath);
       } catch (error) {
