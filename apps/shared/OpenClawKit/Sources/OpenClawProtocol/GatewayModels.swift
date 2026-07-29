@@ -1555,6 +1555,28 @@ public struct GatewaySuspendBlocker: Codable, Sendable {
     }
 }
 
+public struct GatewaySuspendActiveStatusParams: Codable, Sendable {
+    public let suspensionid: String
+    public let gatewayinstanceid: String
+    public let suspendmode: GatewaySuspendMode?
+
+    public init(
+        suspensionid: String,
+        gatewayinstanceid: String,
+        suspendmode: GatewaySuspendMode? = nil)
+    {
+        self.suspensionid = suspensionid
+        self.gatewayinstanceid = gatewayinstanceid
+        self.suspendmode = suspendmode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case suspensionid = "suspensionId"
+        case gatewayinstanceid = "gatewayInstanceId"
+        case suspendmode = "suspendMode"
+    }
+}
+
 public struct GatewaySuspendPrepareParams: Codable, Sendable {
     public let requestid: String
     public let suspensionid: String?
@@ -1665,28 +1687,6 @@ public struct GatewaySuspendPrepareReadyResult: Codable, Sendable {
     }
 }
 
-public struct GatewaySuspendStatusParams: Codable, Sendable {
-    public let suspensionid: String
-    public let gatewayinstanceid: String
-    public let suspendmode: GatewaySuspendMode?
-
-    public init(
-        suspensionid: String,
-        gatewayinstanceid: String,
-        suspendmode: GatewaySuspendMode? = nil)
-    {
-        self.suspensionid = suspensionid
-        self.gatewayinstanceid = gatewayinstanceid
-        self.suspendmode = suspendmode
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case suspensionid = "suspensionId"
-        case gatewayinstanceid = "gatewayInstanceId"
-        case suspendmode = "suspendMode"
-    }
-}
-
 public struct GatewaySuspendStatusRunningResult: Codable, Sendable {
     public let status: String
     public let gatewayinstanceid: String
@@ -1735,17 +1735,85 @@ public struct GatewaySuspendStatusReadyResult: Codable, Sendable {
     }
 }
 
-public struct GatewaySuspendResumeParams: Codable, Sendable {
+public struct GatewaySuspendDurableResumeParams: Codable, Sendable {
     public let suspensionid: String
     public let gatewayinstanceid: String
     public let resumebeforems: Int
-    public let suspendmode: GatewaySuspendMode?
+    public let suspendmode: String
+    public let releaserequestid: String
+    public let releaseauthoritysha256: String
 
     public init(
         suspensionid: String,
         gatewayinstanceid: String,
         resumebeforems: Int,
-        suspendmode: GatewaySuspendMode? = nil)
+        suspendmode: String,
+        releaserequestid: String,
+        releaseauthoritysha256: String)
+    {
+        self.suspensionid = suspensionid
+        self.gatewayinstanceid = gatewayinstanceid
+        self.resumebeforems = resumebeforems
+        self.suspendmode = suspendmode
+        self.releaserequestid = releaserequestid
+        self.releaseauthoritysha256 = releaseauthoritysha256
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case suspensionid = "suspensionId"
+        case gatewayinstanceid = "gatewayInstanceId"
+        case resumebeforems = "resumeBeforeMs"
+        case suspendmode = "suspendMode"
+        case releaserequestid = "releaseRequestId"
+        case releaseauthoritysha256 = "releaseAuthoritySha256"
+    }
+}
+
+public struct GatewaySuspendDurableResumeResult: Codable, Sendable {
+    public let ok: Bool
+    public let status: String
+    public let resumed: Bool
+    public let gatewayinstanceid: String
+    public let suspendmode: String
+    public let releasereceipt: GatewaySuspendReleaseCompletedReceipt
+
+    public init(
+        ok: Bool,
+        status: String,
+        resumed: Bool,
+        gatewayinstanceid: String,
+        suspendmode: String,
+        releasereceipt: GatewaySuspendReleaseCompletedReceipt)
+    {
+        self.ok = ok
+        self.status = status
+        self.resumed = resumed
+        self.gatewayinstanceid = gatewayinstanceid
+        self.suspendmode = suspendmode
+        self.releasereceipt = releasereceipt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case status
+        case resumed
+        case gatewayinstanceid = "gatewayInstanceId"
+        case suspendmode = "suspendMode"
+        case releasereceipt = "releaseReceipt"
+    }
+}
+
+public struct GatewaySuspendLegacyResumeParams: Codable, Sendable {
+    public let suspensionid: String
+    public let gatewayinstanceid: String
+    public let resumebeforems: Int
+    public let suspendmode: String?
+
+    public init(
+        suspensionid: String,
+        gatewayinstanceid: String,
+        resumebeforems: Int,
+        suspendmode: String? = nil)
     {
         self.suspensionid = suspensionid
         self.gatewayinstanceid = gatewayinstanceid
@@ -1761,19 +1829,19 @@ public struct GatewaySuspendResumeParams: Codable, Sendable {
     }
 }
 
-public struct GatewaySuspendResumeResult: Codable, Sendable {
+public struct GatewaySuspendLegacyResumeResult: Codable, Sendable {
     public let ok: Bool
     public let status: String
     public let resumed: Bool
     public let gatewayinstanceid: String
-    public let suspendmode: GatewaySuspendMode
+    public let suspendmode: String
 
     public init(
         ok: Bool,
         status: String,
         resumed: Bool,
         gatewayinstanceid: String,
-        suspendmode: GatewaySuspendMode)
+        suspendmode: String)
     {
         self.ok = ok
         self.status = status
@@ -1787,6 +1855,202 @@ public struct GatewaySuspendResumeResult: Codable, Sendable {
         case status
         case resumed
         case gatewayinstanceid = "gatewayInstanceId"
+        case suspendmode = "suspendMode"
+    }
+}
+
+public struct GatewaySuspendReleaseCommittedReceipt: Codable, Sendable {
+    public let schema: String
+    public let releaserequestid: String
+    public let releaseauthoritysha256: String
+    public let suspendrequestid: String
+    public let suspensionid: String
+    public let gatewayinstanceid: String
+    public let gatewaypid: Int
+    public let launchdruncount: Int
+    public let suspendmode: String
+    public let resumebeforems: Int
+    public let committedatms: Int
+    public let requiredadmissionreopened: Bool
+    public let requiredschedulerreopened: Bool
+    public let nonreusable: Bool
+    public let status: String
+
+    public init(
+        schema: String,
+        releaserequestid: String,
+        releaseauthoritysha256: String,
+        suspendrequestid: String,
+        suspensionid: String,
+        gatewayinstanceid: String,
+        gatewaypid: Int,
+        launchdruncount: Int,
+        suspendmode: String,
+        resumebeforems: Int,
+        committedatms: Int,
+        requiredadmissionreopened: Bool,
+        requiredschedulerreopened: Bool,
+        nonreusable: Bool,
+        status: String)
+    {
+        self.schema = schema
+        self.releaserequestid = releaserequestid
+        self.releaseauthoritysha256 = releaseauthoritysha256
+        self.suspendrequestid = suspendrequestid
+        self.suspensionid = suspensionid
+        self.gatewayinstanceid = gatewayinstanceid
+        self.gatewaypid = gatewaypid
+        self.launchdruncount = launchdruncount
+        self.suspendmode = suspendmode
+        self.resumebeforems = resumebeforems
+        self.committedatms = committedatms
+        self.requiredadmissionreopened = requiredadmissionreopened
+        self.requiredschedulerreopened = requiredschedulerreopened
+        self.nonreusable = nonreusable
+        self.status = status
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case releaserequestid = "releaseRequestId"
+        case releaseauthoritysha256 = "releaseAuthoritySha256"
+        case suspendrequestid = "suspendRequestId"
+        case suspensionid = "suspensionId"
+        case gatewayinstanceid = "gatewayInstanceId"
+        case gatewaypid = "gatewayPid"
+        case launchdruncount = "launchdRunCount"
+        case suspendmode = "suspendMode"
+        case resumebeforems = "resumeBeforeMs"
+        case committedatms = "committedAtMs"
+        case requiredadmissionreopened = "requiredAdmissionReopened"
+        case requiredschedulerreopened = "requiredSchedulerReopened"
+        case nonreusable = "nonReusable"
+        case status
+    }
+}
+
+public struct GatewaySuspendReleaseCompletedReceipt: Codable, Sendable {
+    public let schema: String
+    public let releaserequestid: String
+    public let releaseauthoritysha256: String
+    public let suspendrequestid: String
+    public let suspensionid: String
+    public let gatewayinstanceid: String
+    public let gatewaypid: Int
+    public let launchdruncount: Int
+    public let suspendmode: String
+    public let resumebeforems: Int
+    public let committedatms: Int
+    public let requiredadmissionreopened: Bool
+    public let requiredschedulerreopened: Bool
+    public let nonreusable: Bool
+    public let status: String
+    public let completedatms: Int
+    public let admissionreopened: Bool
+    public let schedulerreopened: Bool
+
+    public init(
+        schema: String,
+        releaserequestid: String,
+        releaseauthoritysha256: String,
+        suspendrequestid: String,
+        suspensionid: String,
+        gatewayinstanceid: String,
+        gatewaypid: Int,
+        launchdruncount: Int,
+        suspendmode: String,
+        resumebeforems: Int,
+        committedatms: Int,
+        requiredadmissionreopened: Bool,
+        requiredschedulerreopened: Bool,
+        nonreusable: Bool,
+        status: String,
+        completedatms: Int,
+        admissionreopened: Bool,
+        schedulerreopened: Bool)
+    {
+        self.schema = schema
+        self.releaserequestid = releaserequestid
+        self.releaseauthoritysha256 = releaseauthoritysha256
+        self.suspendrequestid = suspendrequestid
+        self.suspensionid = suspensionid
+        self.gatewayinstanceid = gatewayinstanceid
+        self.gatewaypid = gatewaypid
+        self.launchdruncount = launchdruncount
+        self.suspendmode = suspendmode
+        self.resumebeforems = resumebeforems
+        self.committedatms = committedatms
+        self.requiredadmissionreopened = requiredadmissionreopened
+        self.requiredschedulerreopened = requiredschedulerreopened
+        self.nonreusable = nonreusable
+        self.status = status
+        self.completedatms = completedatms
+        self.admissionreopened = admissionreopened
+        self.schedulerreopened = schedulerreopened
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case releaserequestid = "releaseRequestId"
+        case releaseauthoritysha256 = "releaseAuthoritySha256"
+        case suspendrequestid = "suspendRequestId"
+        case suspensionid = "suspensionId"
+        case gatewayinstanceid = "gatewayInstanceId"
+        case gatewaypid = "gatewayPid"
+        case launchdruncount = "launchdRunCount"
+        case suspendmode = "suspendMode"
+        case resumebeforems = "resumeBeforeMs"
+        case committedatms = "committedAtMs"
+        case requiredadmissionreopened = "requiredAdmissionReopened"
+        case requiredschedulerreopened = "requiredSchedulerReopened"
+        case nonreusable = "nonReusable"
+        case status
+        case completedatms = "completedAtMs"
+        case admissionreopened = "admissionReopened"
+        case schedulerreopened = "schedulerReopened"
+    }
+}
+
+public struct GatewaySuspendReleaseRecoveryNeededResult: Codable, Sendable {
+    public let status: String
+    public let retryafterms: Int
+    public let releasereceipt: GatewaySuspendReleaseCommittedReceipt
+
+    public init(
+        status: String,
+        retryafterms: Int,
+        releasereceipt: GatewaySuspendReleaseCommittedReceipt)
+    {
+        self.status = status
+        self.retryafterms = retryafterms
+        self.releasereceipt = releasereceipt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case retryafterms = "retryAfterMs"
+        case releasereceipt = "releaseReceipt"
+    }
+}
+
+public struct GatewaySuspendReleaseStatusParams: Codable, Sendable {
+    public let releaserequestid: String
+    public let releaseauthoritysha256: String
+    public let suspendmode: String
+
+    public init(
+        releaserequestid: String,
+        releaseauthoritysha256: String,
+        suspendmode: String)
+    {
+        self.releaserequestid = releaserequestid
+        self.releaseauthoritysha256 = releaseauthoritysha256
+        self.suspendmode = suspendmode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case releaserequestid = "releaseRequestId"
+        case releaseauthoritysha256 = "releaseAuthoritySha256"
         case suspendmode = "suspendMode"
     }
 }
@@ -17102,6 +17366,9 @@ public enum GatewaySuspendPrepareResult: Codable, Sendable {
 public enum GatewaySuspendStatusResult: Codable, Sendable {
     case running(GatewaySuspendStatusRunningResult)
     case ready(GatewaySuspendStatusReadyResult)
+    case releaseCommitted(GatewaySuspendReleaseCommittedReceipt)
+    case releaseCompleted(GatewaySuspendReleaseCompletedReceipt)
+    case releaseRecoveryNeeded(GatewaySuspendReleaseRecoveryNeededResult)
 
     private enum CodingKeys: String, CodingKey {
         case discriminator = "status"
@@ -17113,6 +17380,9 @@ public enum GatewaySuspendStatusResult: Codable, Sendable {
         switch discriminator {
         case "running": self = try .running(GatewaySuspendStatusRunningResult(from: decoder))
         case "ready": self = try .ready(GatewaySuspendStatusReadyResult(from: decoder))
+        case "release_committed": self = try .releaseCommitted(GatewaySuspendReleaseCommittedReceipt(from: decoder))
+        case "release_completed": self = try .releaseCompleted(GatewaySuspendReleaseCompletedReceipt(from: decoder))
+        case "release_recovery_needed": self = try .releaseRecoveryNeeded(GatewaySuspendReleaseRecoveryNeededResult(from: decoder))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .discriminator,
@@ -17126,6 +17396,102 @@ public enum GatewaySuspendStatusResult: Codable, Sendable {
         switch self {
         case .running(let value): try value.encode(to: encoder)
         case .ready(let value): try value.encode(to: encoder)
+        case .releaseCommitted(let value): try value.encode(to: encoder)
+        case .releaseCompleted(let value): try value.encode(to: encoder)
+        case .releaseRecoveryNeeded(let value): try value.encode(to: encoder)
+        }
+    }
+}
+
+public enum GatewaySuspendResumeParams: Codable, Sendable {
+    case legacyAutoExpireV1(GatewaySuspendLegacyResumeParams)
+    case handoffDurableHoldV1(GatewaySuspendDurableResumeParams)
+
+    private enum CodingKeys: String, CodingKey {
+        case discriminator = "suspendMode"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let discriminator = try container.decode(String.self, forKey: .discriminator)
+        switch discriminator {
+        case "legacy-auto-expire/v1": self = try .legacyAutoExpireV1(GatewaySuspendLegacyResumeParams(from: decoder))
+        case "handoff-durable-hold/v1": self = try .handoffDurableHoldV1(GatewaySuspendDurableResumeParams(from: decoder))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .discriminator,
+                in: container,
+                debugDescription: "Unknown GatewaySuspendResumeParams discriminator value"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .legacyAutoExpireV1(let value): try value.encode(to: encoder)
+        case .handoffDurableHoldV1(let value): try value.encode(to: encoder)
+        }
+    }
+}
+
+public enum GatewaySuspendResumeResult: Codable, Sendable {
+    case legacyAutoExpireV1(GatewaySuspendLegacyResumeResult)
+    case handoffDurableHoldV1(GatewaySuspendDurableResumeResult)
+
+    private enum CodingKeys: String, CodingKey {
+        case discriminator = "suspendMode"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let discriminator = try container.decode(String.self, forKey: .discriminator)
+        switch discriminator {
+        case "legacy-auto-expire/v1": self = try .legacyAutoExpireV1(GatewaySuspendLegacyResumeResult(from: decoder))
+        case "handoff-durable-hold/v1": self = try .handoffDurableHoldV1(GatewaySuspendDurableResumeResult(from: decoder))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .discriminator,
+                in: container,
+                debugDescription: "Unknown GatewaySuspendResumeResult discriminator value"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .legacyAutoExpireV1(let value): try value.encode(to: encoder)
+        case .handoffDurableHoldV1(let value): try value.encode(to: encoder)
+        }
+    }
+}
+
+public enum GatewaySuspendReleaseReceipt: Codable, Sendable {
+    case releaseCommitted(GatewaySuspendReleaseCommittedReceipt)
+    case releaseCompleted(GatewaySuspendReleaseCompletedReceipt)
+
+    private enum CodingKeys: String, CodingKey {
+        case discriminator = "status"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let discriminator = try container.decode(String.self, forKey: .discriminator)
+        switch discriminator {
+        case "release_committed": self = try .releaseCommitted(GatewaySuspendReleaseCommittedReceipt(from: decoder))
+        case "release_completed": self = try .releaseCompleted(GatewaySuspendReleaseCompletedReceipt(from: decoder))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .discriminator,
+                in: container,
+                debugDescription: "Unknown GatewaySuspendReleaseReceipt discriminator value"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .releaseCommitted(let value): try value.encode(to: encoder)
+        case .releaseCompleted(let value): try value.encode(to: encoder)
         }
     }
 }
