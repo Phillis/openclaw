@@ -1,7 +1,7 @@
 import {
   clearDurableHandoff,
   createGatewaySuspendHandoff,
-  persistDurableHandoff,
+  replaceDurableHandoff,
   type GatewaySuspendHandoff,
 } from "./gateway-suspend-handoff.js";
 
@@ -16,6 +16,7 @@ export type GatewaySuspendResumeLease = {
   resumeBeforeMs: number | null;
   admissionReopened?: boolean;
   durableHandoffPath?: string;
+  durableHandoff?: GatewaySuspendHandoff;
   resumeScheduling: () => void;
   reopenAdmission: () => boolean;
   warn?: (message: string) => void;
@@ -57,10 +58,12 @@ export function persistGatewaySuspendResumeState(
   resumeBeforeMs: number | null,
 ): void {
   if (lease.durableHandoffPath) {
-    persistDurableHandoff(
-      lease.durableHandoffPath,
-      durableHandoffFor(lease, resumeState, resumeBeforeMs),
-    );
+    if (!lease.durableHandoff) {
+      throw new Error("gateway suspension lease lacks its active durable fence");
+    }
+    const replacement = durableHandoffFor(lease, resumeState, resumeBeforeMs);
+    replaceDurableHandoff(lease.durableHandoffPath, lease.durableHandoff, replacement);
+    lease.durableHandoff = replacement;
   }
   lease.resumeState = resumeState;
   lease.resumeBeforeMs = resumeBeforeMs;
@@ -74,10 +77,7 @@ function expireResumeAuthority(params: GatewaySuspendResumeAttempt): void {
     return;
   }
   try {
-    persistDurableHandoff(
-      lease.durableHandoffPath,
-      durableHandoffFor(lease, "resume-expired", lease.resumeBeforeMs),
-    );
+    persistGatewaySuspendResumeState(lease, "resume-expired", lease.resumeBeforeMs);
   } catch (err) {
     lease.warn?.(`gateway expired-resume fence persistence failed: ${String(err)}`);
     params.scheduleRetry(() => {

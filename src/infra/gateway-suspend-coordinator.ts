@@ -15,11 +15,12 @@ import {
 } from "./gateway-active-work.js";
 import {
   clearDurableHandoff,
-  GATEWAY_SUSPEND_HANDOFF_SCHEMA,
+  createGatewaySuspendHandoff,
   normalizeDurableHandoffAtStartup,
   persistDurableHandoff,
   proveDurableHandoffBytes,
   readDurableHandoff,
+  replaceDurableHandoff,
 } from "./gateway-suspend-handoff.js";
 import {
   attemptGatewaySuspendResume,
@@ -213,17 +214,15 @@ function scheduleRecoveryRetry(entry: GatewaySuspendCoordinatorEntry): void {
   });
 }
 
-function normalizeExpiredHeldSuspension(
+function normalizeHeldSuspension(
   held: HeldGatewaySuspension,
 ): GatewaySuspendCoordinatorEntry | null {
-  if (held.resumeState !== "held") {
-    return held;
+  if (held.resumeState === "held" && held.nowMs() >= held.expiresAtMs) {
+    // Expiry ends renewal authority, not the fence. Only an exact explicit
+    // resume may reopen admission after a durable suspension was prepared.
+    clearEntryTimer(held);
   }
-  if (held.nowMs() < held.expiresAtMs) {
-    return held;
-  }
-  resumeAndReopen(held);
-  return COORDINATOR_STATE.current;
+  return held;
 }
 
 function armSchedulerRecovery(
@@ -262,16 +261,8 @@ function resumeSchedulingBeforeReopen(params: {
   return true;
 }
 
-function armExpiry(held: Omit<HeldGatewaySuspension, "kind">): HeldGatewaySuspension {
-  const entry: HeldGatewaySuspension = { kind: "held", ...held };
-  if (entry.resumeState === "held") {
-    scheduleEntry(entry, Math.max(0, entry.expiresAtMs - entry.nowMs()), () => {
-      if (COORDINATOR_STATE.current === entry) {
-        resumeAndReopen(entry);
-      }
-    });
-  }
-  return entry;
+function createHeldSuspension(held: Omit<HeldGatewaySuspension, "kind">): HeldGatewaySuspension {
+  return { kind: "held", ...held };
 }
 
 function renewHeldSuspension(
@@ -284,18 +275,22 @@ function renewHeldSuspension(
   } = held,
 ): void {
   const expiresAtMs = nowMs + GATEWAY_SUSPEND_TTL_MS;
+  const replacement = createGatewaySuspendHandoff({
+    requestId: held.requestId,
+    suspensionId: held.suspensionId,
+    gatewayInstanceId: identity.gatewayInstanceId,
+    gatewayPid: identity.gatewayPid,
+    launchdRunCount: identity.launchdRunCount,
+    expiresAtMs,
+    resumeState: "held",
+    resumeBeforeMs: null,
+  });
   if (held.durableHandoffPath) {
-    persistDurableHandoff(held.durableHandoffPath, {
-      schema: GATEWAY_SUSPEND_HANDOFF_SCHEMA,
-      requestId: held.requestId,
-      suspensionId: held.suspensionId,
-      gatewayInstanceId: identity.gatewayInstanceId,
-      gatewayPid: identity.gatewayPid,
-      launchdRunCount: identity.launchdRunCount,
-      expiresAtMs,
-      resumeState: "held",
-      resumeBeforeMs: null,
-    });
+    if (!held.durableHandoff) {
+      throw new Error("gateway suspension lease lacks its active durable fence");
+    }
+    replaceDurableHandoff(held.durableHandoffPath, held.durableHandoff, replacement);
+    held.durableHandoff = replacement;
   }
   held.expiresAtMs = expiresAtMs;
   held.gatewayInstanceId = identity.gatewayInstanceId;
@@ -303,11 +298,6 @@ function renewHeldSuspension(
   held.launchdRunCount = identity.launchdRunCount;
   held.resumeState = "held";
   held.resumeBeforeMs = null;
-  scheduleEntry(held, GATEWAY_SUSPEND_TTL_MS, () => {
-    if (COORDINATOR_STATE.current === held) {
-      resumeAndReopen(held);
-    }
-  });
 }
 
 /** Acquire, inspect, and either roll back immediately or hold an idle fence. */
@@ -344,7 +334,7 @@ export function prepareGatewaySuspend(params: {
   if (current?.kind === "held" && isGatewaySuspendCleanupState(current.resumeState)) {
     return schedulerRecoveryResult();
   }
-  const existing = current ? normalizeExpiredHeldSuspension(current) : null;
+  const existing = current ? normalizeHeldSuspension(current) : null;
   if (existing?.kind === "recovering") {
     return schedulerRecoveryResult();
   }
@@ -360,10 +350,9 @@ export function prepareGatewaySuspend(params: {
     if (existing.requestId !== params.requestId) {
       return { status: "conflict", expiresAtMs: existing.expiresAtMs };
     }
-    if (
-      (existing.adoptedAtStartup || existing.resumeState !== "held") &&
-      params.suspensionId !== existing.suspensionId
-    ) {
+    const exactRenewalRequired =
+      existing.adoptedAtStartup || existing.resumeState !== "held" || nowMs >= existing.expiresAtMs;
+    if (exactRenewalRequired && params.suspensionId !== existing.suspensionId) {
       return { status: "conflict", expiresAtMs: existing.expiresAtMs };
     }
     if (existing.adoptedAtStartup || existing.resumeState !== "held") {
@@ -457,7 +446,19 @@ export function prepareGatewaySuspend(params: {
     admissionCommitted = true;
     const suspensionId = (params.createSuspensionId ?? randomUUID)();
     const expiresAtMs = nowMs + GATEWAY_SUSPEND_TTL_MS;
-    const held = armExpiry({
+    const durableHandoff = params.durableHandoffPath
+      ? createGatewaySuspendHandoff({
+          requestId: params.requestId,
+          suspensionId,
+          gatewayInstanceId: currentGatewayInstanceId,
+          gatewayPid: params.gatewayPid,
+          launchdRunCount: params.launchdRunCount,
+          expiresAtMs,
+          resumeState: "held",
+          resumeBeforeMs: null,
+        })
+      : undefined;
+    const held = createHeldSuspension({
       owner,
       requestId: params.requestId,
       suspensionId,
@@ -473,20 +474,11 @@ export function prepareGatewaySuspend(params: {
       resumeBeforeMs: null,
       warn: params.warn,
       durableHandoffPath: params.durableHandoffPath,
+      durableHandoff,
     });
-    if (held.durableHandoffPath) {
+    if (held.durableHandoffPath && durableHandoff) {
       durableHandoffPersistenceStarted = true;
-      persistDurableHandoff(held.durableHandoffPath, {
-        schema: GATEWAY_SUSPEND_HANDOFF_SCHEMA,
-        requestId: params.requestId,
-        suspensionId,
-        gatewayInstanceId: currentGatewayInstanceId,
-        gatewayPid: params.gatewayPid,
-        launchdRunCount: params.launchdRunCount,
-        expiresAtMs,
-        resumeState: "held",
-        resumeBeforeMs: null,
-      });
+      persistDurableHandoff(held.durableHandoffPath, durableHandoff);
       durableHandoffPersistenceStarted = false;
     }
     COORDINATOR_STATE.current = held;
@@ -574,7 +566,7 @@ export function adoptGatewaySuspendHandoffAtStartup(
   if (!admission || !admission.commit()) {
     throw new Error("gateway suspension handoff could not close successor admission");
   }
-  COORDINATOR_STATE.current = armExpiry({
+  COORDINATOR_STATE.current = createHeldSuspension({
     owner: {},
     requestId: handoff.requestId,
     suspensionId: handoff.suspensionId,
@@ -590,6 +582,7 @@ export function adoptGatewaySuspendHandoffAtStartup(
     resumeBeforeMs: handoff.resumeBeforeMs,
     warn: params.warn,
     durableHandoffPath: path,
+    durableHandoff: handoff,
     adoptedAtStartup: true,
   });
   return true;
@@ -606,7 +599,7 @@ export function getGatewaySuspendStatus(
   if (current?.kind === "recovering") {
     return schedulerRecoveryResult();
   }
-  const held = current ? normalizeExpiredHeldSuspension(current) : null;
+  const held = current ? normalizeHeldSuspension(current) : null;
   if (held?.kind === "recovering") {
     return schedulerRecoveryResult();
   }
@@ -641,7 +634,7 @@ export function resumeGatewaySuspend(
   if (current?.kind === "recovering") {
     return resumeSchedulerRecoveryResult();
   }
-  const held = current ? normalizeExpiredHeldSuspension(current) : null;
+  const held = current ? normalizeHeldSuspension(current) : null;
   if (held?.kind === "recovering") {
     return resumeSchedulerRecoveryResult();
   }
