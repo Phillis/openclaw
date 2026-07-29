@@ -226,6 +226,7 @@ describe("CronService interval/cron jobs fire on time", () => {
       ).toEqual({
         status: "running",
         gatewayInstanceId: "gateway-cron-resume-retry",
+        suspendMode: "legacy-auto-expire/v1",
       });
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
 
