@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import type { GatewaySuspendMode } from "../../packages/gateway-protocol/src/index.js";
+import { GATEWAY_SUSPEND_MODE_DURABLE } from "../../packages/gateway-protocol/src/index.js";
 import {
   getGatewaySuspendStatus as getGatewaySuspendStatusWithIdentity,
   prepareGatewaySuspend as prepareGatewaySuspendWithIdentity,
@@ -56,11 +58,23 @@ export function resumeTestGatewaySuspend(suspensionId: string, suspendMode?: Gat
     gatewayInstanceId,
   );
   const resumeBeforeMs = "expiresAtMs" in status ? status.expiresAtMs : Number.MAX_SAFE_INTEGER;
+  const params =
+    suspendMode === GATEWAY_SUSPEND_MODE_DURABLE
+      ? (() => {
+          const releaseAuthoritySha256 = createHash("sha256")
+            .update(`test-release:${suspensionId}`, "utf8")
+            .digest("hex");
+          return {
+            suspensionId,
+            gatewayInstanceId,
+            resumeBeforeMs,
+            suspendMode,
+            releaseRequestId: `handoff-v2-release:${releaseAuthoritySha256.slice(0, 32)}`,
+            releaseAuthoritySha256,
+          };
+        })()
+      : { suspensionId, gatewayInstanceId, resumeBeforeMs, suspendMode };
   return omitGatewayInstance(
-    resumeGatewaySuspendWithIdentity(
-      { suspensionId, gatewayInstanceId, resumeBeforeMs, suspendMode },
-      gatewayInstanceId,
-      () => resumeBeforeMs - 1,
-    ),
+    resumeGatewaySuspendWithIdentity(params, gatewayInstanceId, () => resumeBeforeMs - 1),
   );
 }

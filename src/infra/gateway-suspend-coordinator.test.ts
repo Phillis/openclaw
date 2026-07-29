@@ -17,7 +17,7 @@ const durableDeletionFault = vi.hoisted(() => ({
   mutateAfterPostFailureProof: false,
   adoptionProofSyncsRemaining: 0,
   adoptionProofSyncCount: 0,
-  observeUnlink: undefined as (() => void) | undefined,
+  observeUnlink: undefined as ((path: import("node:fs").PathLike) => void) | undefined,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -25,7 +25,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return {
     ...actual,
     unlinkSync: (path: import("node:fs").PathLike) => {
-      durableDeletionFault.observeUnlink?.();
+      durableDeletionFault.observeUnlink?.(path);
       actual.unlinkSync(path);
       if (
         durableDeletionFault.failParentSyncAfterUnlink &&
@@ -41,6 +41,15 @@ vi.mock("node:fs", async (importOriginal) => {
         String(newPath) === durableDeletionFault.pathAfterRename
       ) {
         durableDeletionFault.renameProofSyncsRemaining = 2;
+      }
+    },
+    linkSync: (oldPath: import("node:fs").PathLike, newPath: import("node:fs").PathLike) => {
+      actual.linkSync(oldPath, newPath);
+      if (
+        durableDeletionFault.failParentSyncAfterRename &&
+        String(newPath) === durableDeletionFault.pathAfterRename
+      ) {
+        durableDeletionFault.renameProofSyncsRemaining = 1;
       }
     },
     fsyncSync: (descriptor: number) => {
@@ -165,7 +174,7 @@ afterEach(() => {
 });
 
 describe("gateway suspend coordinator", () => {
-  it("accepts initial handoff creation only after an exposed rename is freshly re-proven", () => {
+  it("accepts initial handoff creation only after an exposed hardlink is freshly re-proven", () => {
     const directory = mkdtempSync(join(tmpdir(), "openclaw-suspend-rename-retry-"));
     const durableHandoffPath = join(directory, "gateway-suspend-handoff.json");
     try {
@@ -296,17 +305,20 @@ describe("gateway suspend coordinator", () => {
 
       durableDeletionFault.path = durableHandoffPath;
       durableDeletionFault.failParentSyncAfterUnlink = true;
-      durableDeletionFault.observeUnlink = () => {
-        expect(isGatewayWorkAdmissionClosed()).toBe(false);
+      durableDeletionFault.observeUnlink = (path) => {
+        if (String(path) === durableHandoffPath) {
+          expect(isGatewayWorkAdmissionClosed()).toBe(false);
+        }
       };
       expect(resumeGatewaySuspend("suspension-unlink-retry")).toEqual({
-        ok: false,
-        reason: "scheduler-resume-failed",
-        retryAfterMs: 1_000,
+        ok: true,
+        status: "running",
+        resumed: true,
+        suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,
       });
-      vi.advanceTimersByTime(1_000);
-
       expect(durableDeletionFault.retryParentSyncCount).toBe(1);
+      expect(isGatewayWorkAdmissionClosed()).toBe(false);
+      expect(() => readFileSync(durableHandoffPath)).toThrow();
       expect(getGatewaySuspendStatus("suspension-unlink-retry")).toEqual({
         status: "running",
         suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,

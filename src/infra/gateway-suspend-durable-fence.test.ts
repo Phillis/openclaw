@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,14 @@ import {
 import { getTestGatewaySuspendStatus } from "./gateway-suspend-coordinator.test-support.js";
 
 const SUSPEND_TTL_MS = 2 * 60_000;
+
+function releaseAuthority(seed: string) {
+  const releaseAuthoritySha256 = createHash("sha256").update(seed, "utf8").digest("hex");
+  return {
+    releaseRequestId: `handoff-v2-release:${releaseAuthoritySha256.slice(0, 32)}`,
+    releaseAuthoritySha256,
+  };
+}
 
 const idleInspectors: GatewayActiveWorkInspectors = {
   getQueueSize: () => 0,
@@ -185,6 +194,7 @@ describe("gateway durable suspension fence", () => {
             gatewayInstanceId: prepared.gatewayInstanceId,
             resumeBeforeMs: prepared.expiresAtMs,
             suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("expired-held-before-renewal"),
           },
           prepared.gatewayInstanceId,
           () => nowMs,
@@ -222,6 +232,7 @@ describe("gateway durable suspension fence", () => {
             gatewayInstanceId: renewed.gatewayInstanceId,
             resumeBeforeMs: renewed.expiresAtMs,
             suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("expired-held-after-renewal"),
           },
           renewed.gatewayInstanceId,
           () => nowMs + 1,
@@ -328,6 +339,7 @@ describe("gateway durable suspension fence", () => {
             gatewayInstanceId: "successor-instance",
             resumeBeforeMs: prepared.expiresAtMs,
             suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("crash-restart-before-rebind"),
           },
           "successor-instance",
           () => nowMs,
@@ -361,6 +373,7 @@ describe("gateway durable suspension fence", () => {
             gatewayInstanceId: rebound.gatewayInstanceId,
             resumeBeforeMs: rebound.expiresAtMs,
             suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("crash-restart-after-rebind"),
           },
           rebound.gatewayInstanceId,
           () => nowMs + 1,
@@ -410,6 +423,7 @@ describe("gateway durable suspension fence", () => {
             gatewayInstanceId: prepared.gatewayInstanceId,
             resumeBeforeMs: prepared.expiresAtMs,
             suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("durable-drift"),
           },
           prepared.gatewayInstanceId,
           () => nowMs,
@@ -459,6 +473,7 @@ describe("gateway durable suspension fence", () => {
             gatewayInstanceId: first.gatewayInstanceId,
             resumeBeforeMs: first.expiresAtMs,
             suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("stale-resume-first"),
           },
           first.gatewayInstanceId,
           () => nowMs,
@@ -481,6 +496,7 @@ describe("gateway durable suspension fence", () => {
             gatewayInstanceId: first.gatewayInstanceId,
             resumeBeforeMs: first.expiresAtMs,
             suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("stale-resume-first"),
           },
           first.gatewayInstanceId,
           () => nowMs,
@@ -494,6 +510,7 @@ describe("gateway durable suspension fence", () => {
             gatewayInstanceId: second.gatewayInstanceId,
             resumeBeforeMs: second.expiresAtMs,
             suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,
+            ...releaseAuthority("stale-resume-second"),
           },
           second.gatewayInstanceId,
           () => nowMs,

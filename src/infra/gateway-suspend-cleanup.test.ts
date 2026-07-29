@@ -229,9 +229,8 @@ describe("gateway suspend durable cleanup", () => {
       resetGatewayWorkAdmission();
 
       durableFault.failParentSyncAfterUnlink = true;
-      expect(() => adoptGatewaySuspendHandoffAtStartup({ durableHandoffPath })).toThrow(
-        "injected parent fsync failure",
-      );
+      expect(adoptGatewaySuspendHandoffAtStartup({ durableHandoffPath })).toBe(false);
+      expect(isGatewayWorkAdmissionClosed()).toBe(false);
       durableFault.fsyncCount = 0;
       expect(adoptGatewaySuspendHandoffAtStartup({ durableHandoffPath })).toBe(false);
       expect(durableFault.fsyncCount).toBeGreaterThan(0);

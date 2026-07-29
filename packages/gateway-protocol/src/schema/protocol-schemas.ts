@@ -330,7 +330,12 @@ import {
 } from "./frames.js";
 import { FsDirEntrySchema, FsListDirParamsSchema, FsListDirResultSchema } from "./fs.js";
 import {
+  GatewaySuspendActiveStatusParamsSchema,
   GatewaySuspendBlockerSchema,
+  GatewaySuspendDurableResumeParamsSchema,
+  GatewaySuspendDurableResumeResultSchema,
+  GatewaySuspendLegacyResumeParamsSchema,
+  GatewaySuspendLegacyResumeResultSchema,
   GatewaySuspendModeSchema,
   GatewaySuspendPrepareBusyResultSchema,
   GatewaySuspendPrepareParamsSchema,
@@ -338,6 +343,11 @@ import {
   GatewaySuspendPrepareResultSchema,
   GatewaySuspendResumeParamsSchema,
   GatewaySuspendResumeResultSchema,
+  GatewaySuspendReleaseCommittedReceiptSchema,
+  GatewaySuspendReleaseCompletedReceiptSchema,
+  GatewaySuspendReleaseReceiptSchema,
+  GatewaySuspendReleaseRecoveryNeededResultSchema,
+  GatewaySuspendReleaseStatusParamsSchema,
   GatewaySuspendStatusReadyResultSchema,
   GatewaySuspendStatusRunningResultSchema,
   GatewaySuspendStatusParamsSchema,
@@ -703,6 +713,7 @@ export const ProtocolSchemas = {
   GatewaySuspendTaskBlocker: GatewaySuspendTaskBlockerSchema,
   GatewaySuspendBlocker: GatewaySuspendBlockerSchema,
   GatewaySuspendMode: GatewaySuspendModeSchema,
+  GatewaySuspendActiveStatusParams: GatewaySuspendActiveStatusParamsSchema,
   GatewaySuspendPrepareParams: GatewaySuspendPrepareParamsSchema,
   GatewaySuspendPrepareBusyResult: GatewaySuspendPrepareBusyResultSchema,
   GatewaySuspendPrepareReadyResult: GatewaySuspendPrepareReadyResultSchema,
@@ -713,6 +724,15 @@ export const ProtocolSchemas = {
   GatewaySuspendStatusResult: GatewaySuspendStatusResultSchema,
   GatewaySuspendResumeParams: GatewaySuspendResumeParamsSchema,
   GatewaySuspendResumeResult: GatewaySuspendResumeResultSchema,
+  GatewaySuspendDurableResumeParams: GatewaySuspendDurableResumeParamsSchema,
+  GatewaySuspendDurableResumeResult: GatewaySuspendDurableResumeResultSchema,
+  GatewaySuspendLegacyResumeParams: GatewaySuspendLegacyResumeParamsSchema,
+  GatewaySuspendLegacyResumeResult: GatewaySuspendLegacyResumeResultSchema,
+  GatewaySuspendReleaseCommittedReceipt: GatewaySuspendReleaseCommittedReceiptSchema,
+  GatewaySuspendReleaseCompletedReceipt: GatewaySuspendReleaseCompletedReceiptSchema,
+  GatewaySuspendReleaseReceipt: GatewaySuspendReleaseReceiptSchema,
+  GatewaySuspendReleaseRecoveryNeededResult: GatewaySuspendReleaseRecoveryNeededResultSchema,
+  GatewaySuspendReleaseStatusParams: GatewaySuspendReleaseStatusParamsSchema,
 
   // Environment and agent-facing control RPC payloads.
   EnvironmentStatus: EnvironmentStatusSchema,
