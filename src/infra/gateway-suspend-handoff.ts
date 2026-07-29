@@ -38,6 +38,10 @@ export function createGatewaySuspendHandoff(
   return { schema: GATEWAY_SUSPEND_HANDOFF_SCHEMA, ...value };
 }
 
+function gatewaySuspendHandoffBytes(handoff: GatewaySuspendHandoff): Buffer {
+  return Buffer.from(`${JSON.stringify(handoff)}\n`, "utf8");
+}
+
 function syncDirectory(path: string): void {
   const descriptor = openSync(path, constants.O_RDONLY);
   try {
@@ -119,7 +123,7 @@ export function proveDurableHandoffBytes(path: string, expectedBytes: Buffer): v
 }
 
 export function persistDurableHandoff(path: string, handoff: GatewaySuspendHandoff): void {
-  const bytes = Buffer.from(`${JSON.stringify(handoff)}\n`, "utf8");
+  const bytes = gatewaySuspendHandoffBytes(handoff);
   const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
   const descriptor = openSync(
     temporaryPath,
@@ -147,6 +151,24 @@ export function persistDurableHandoff(path: string, handoff: GatewaySuspendHando
       throw error;
     }
   }
+}
+
+export function replaceDurableHandoff(
+  path: string,
+  expected: GatewaySuspendHandoff,
+  replacement: GatewaySuspendHandoff,
+): void {
+  const persisted = readDurableHandoff(path);
+  const expectedBytes = gatewaySuspendHandoffBytes(expected);
+  if (!persisted || !persisted.bytes.equals(expectedBytes)) {
+    throw new Error("gateway suspension handoff does not match the active durable fence");
+  }
+  proveDurableHandoffBytes(path, expectedBytes);
+  const proven = readDurableHandoff(path);
+  if (!proven || !proven.bytes.equals(expectedBytes)) {
+    throw new Error("gateway suspension handoff changed before its durable replacement");
+  }
+  persistDurableHandoff(path, replacement);
 }
 
 export function clearDurableHandoff(path: string): void {
@@ -186,10 +208,6 @@ export function normalizeDurableHandoffAtStartup(
     const expired = { ...handoff, resumeState: "resume-expired" as const };
     persistDurableHandoff(path, expired);
     return expired;
-  }
-  if (handoff.resumeState === "held" && handoff.expiresAtMs <= nowMs) {
-    clearDurableHandoff(path);
-    return null;
   }
   return handoff;
 }
