@@ -10,6 +10,7 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   unlinkSync,
@@ -401,7 +402,7 @@ export function validateHostActivationPlan(value, options = {}) {
   const uid = requiredInteger(value.host.uid, "plan.host.uid", 1);
   const homePath = requiredAbsolutePath(value.host.homePath, "plan.host.homePath");
   const stateDir = requiredPathWithin(value.host.stateDir, homePath, "plan.host.stateDir");
-  const stagingRoot = requiredAbsolutePath(value.host.stagingRoot, "plan.host.stagingRoot");
+  const stagingRoot = requiredPathWithin(value.host.stagingRoot, stateDir, "plan.host.stagingRoot");
   const evidenceRoot = requiredPathWithin(
     value.host.evidenceRoot,
     homePath,
@@ -740,6 +741,36 @@ function assertSecureDirectoryChain(path, allowedRoot, description) {
   }
 }
 
+function fileIdentity(path, description) {
+  const canonicalPath = realpathSync(path);
+  let descriptor;
+  try {
+    descriptor = openSync(canonicalPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stat = fstatSync(descriptor);
+    assertSecureFileStat(stat, description);
+    return {
+      canonicalPath,
+      dev: stat.dev,
+      ino: stat.ino,
+    };
+  } finally {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+    }
+  }
+}
+
+function assertDistinctFiles(leftPath, rightPath, description) {
+  const left = fileIdentity(leftPath, `${description} predecessor`);
+  const right = fileIdentity(rightPath, `${description} successor`);
+  if (
+    left.canonicalPath === right.canonicalPath ||
+    (left.dev === right.dev && left.ino === right.ino)
+  ) {
+    throw new Error(`${description} must be distinct physical files`);
+  }
+}
+
 function assertOutputAvailable(path, description) {
   assertSecureDirectory(dirname(path), `${description} parent`);
   try {
@@ -812,14 +843,14 @@ function verifyPlistTransition(plan, runtime, predecessorPlistBytes, successorPl
     plan.predecessor.wrapperPath,
     plan.predecessor.environmentFilePath,
     plan.predecessor.runtimePath,
-    plan.predecessor.cliPath,
+    plan.predecessor.gatewayEntrypointPath,
   ];
   const successorExpectedPrefix = [
     "/bin/sh",
     plan.successor.wrapperPath,
     plan.successor.environmentFilePath,
     plan.successor.runtimePath,
-    plan.successor.cliPath,
+    plan.successor.gatewayEntrypointPath,
   ];
   if (
     JSON.stringify(predecessor.ProgramArguments.slice(0, 5)) !==
@@ -828,7 +859,7 @@ function verifyPlistTransition(plan, runtime, predecessorPlistBytes, successorPl
       JSON.stringify(successorExpectedPrefix)
   ) {
     throw new Error(
-      "LaunchAgent wrapper, environment file, runtime, or CLI identity does not match the plan",
+      "LaunchAgent wrapper, environment file, runtime, or Gateway entrypoint identity does not match the plan",
     );
   }
   if (
@@ -3003,6 +3034,7 @@ export function createDefaultHostActivationRuntime() {
     verifyFile,
     assertSecureDirectory,
     assertSecureDirectoryChain,
+    assertDistinctFiles,
     assertOutputAvailable,
     inspectDurableAtJobs,
     readOptionalFile: readOptionalSecureFile,
@@ -3829,7 +3861,7 @@ export function executeHostActivation(params) {
     ]) {
       runtime.assertSecureDirectoryChain(
         dirname(stagedPath),
-        plan.host.stagingRoot,
+        plan.host.stateDir,
         "successor staging chain",
       );
     }
@@ -3843,6 +3875,11 @@ export function executeHostActivation(params) {
     runtime.verifyFile(plan.predecessor.configPath, plan.predecessor.configSha256, "configuration");
     verifyActiveGuard(plan, runtime);
     verifyBuildIdentity(plan, "successor", runtime);
+    runtime.assertDistinctFiles(
+      plan.predecessor.runtimePath,
+      plan.successor.runtimePath,
+      "predecessor and successor Node runtimes",
+    );
     const successorPlistBytes = runtime.verifyFile(
       plan.successor.stagedServicePlistPath,
       plan.successor.stagedServicePlistSha256,
@@ -3992,6 +4029,11 @@ export function executeHostActivation(params) {
     verifySupervisorLease(plan, runtime);
     verifyActiveGuard(plan, runtime);
     verifyBuildIdentity(plan, "successor", runtime);
+    runtime.assertDistinctFiles(
+      plan.predecessor.runtimePath,
+      plan.successor.runtimePath,
+      "predecessor and successor Node runtimes",
+    );
     runtime.verifyFile(plan.predecessor.configPath, plan.predecessor.configSha256, "configuration");
     const predecessorPlistBeforeInstall = runtime.verifyFile(
       plan.predecessor.servicePlistPath,
