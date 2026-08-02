@@ -103,7 +103,16 @@ export function startGatewayMaintenanceTimers(params: {
 
   // Keep cached health warm without request-time live channel probes. Explicit
   // status/doctor probe paths still pass probe=true when the operator asks.
+  // Delta-gate the periodic refresh: only recompute when health-relevant state
+  // changed (getHealthVersion), which avoids re-traversing all sessions/channels
+  // every 60s while idle.
+  let lastPeriodicHealthVersion = params.getHealthVersion();
   const healthInterval = setInterval(() => {
+    const currentVersion = params.getHealthVersion();
+    if (currentVersion === lastPeriodicHealthVersion) {
+      return;
+    }
+    lastPeriodicHealthVersion = currentVersion;
     void params
       .refreshGatewayHealthSnapshot({ probe: false })
       .catch((err: unknown) => params.logHealth.error(`refresh failed: ${formatError(err)}`));

@@ -48,6 +48,34 @@ function evictThreadStarterCache(): void {
   pruneMapToMaxSize(THREAD_STARTER_CACHE, THREAD_STARTER_CACHE_MAX);
 }
 
+type SlackThreadHistoryCacheEntry = {
+  expiresAt: number;
+  messages: SlackThreadMessage[];
+};
+const THREAD_HISTORY_CACHE = new Map<string, SlackThreadHistoryCacheEntry>();
+const THREAD_HISTORY_CACHE_TTL_MS = 10_000;
+const THREAD_HISTORY_CACHE_MAX = 500;
+
+function readThreadHistoryCache(key: string): SlackThreadMessage[] | undefined {
+  const entry = THREAD_HISTORY_CACHE.get(key);
+  if (!entry) {
+    return undefined;
+  }
+  if (entry.expiresAt <= Date.now()) {
+    THREAD_HISTORY_CACHE.delete(key);
+    return undefined;
+  }
+  return entry.messages;
+}
+
+function writeThreadHistoryCache(key: string, messages: SlackThreadMessage[]): void {
+  pruneMapToMaxSize(THREAD_HISTORY_CACHE, THREAD_HISTORY_CACHE_MAX);
+  THREAD_HISTORY_CACHE.set(key, {
+    expiresAt: Date.now() + THREAD_HISTORY_CACHE_TTL_MS,
+    messages,
+  });
+}
+
 function formatSlackFilePlaceholder(files: SlackFile[] | undefined): string {
   return `[attached: ${formatSlackFileReferenceList(files)}]`;
 }
@@ -250,6 +278,12 @@ export async function resolveSlackThreadHistory(params: {
   let cursor: string | undefined;
   let pagesFetched = 0;
 
+  const cacheKey = `${params.channelId}\u0000${params.threadTs}\u0000${params.limit ?? ""}\u0000${params.currentMessageTs ?? ""}`;
+  const cached = readThreadHistoryCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   try {
     do {
       pagesFetched += 1;
@@ -289,7 +323,7 @@ export async function resolveSlackThreadHistory(params: {
       return [];
     }
 
-    return retained.map((msg) => ({
+    const mapped = retained.map((msg) => ({
       // For file-only messages, create a placeholder showing attached filenames.
       text: resolveSlackMessageText(msg) ?? formatSlackFilePlaceholder(msg.files),
       userId: msg.user,
@@ -297,6 +331,8 @@ export async function resolveSlackThreadHistory(params: {
       ts: msg.ts,
       files: msg.files,
     }));
+    writeThreadHistoryCache(cacheKey, mapped);
+    return mapped;
   } catch (err) {
     logVerbose(
       `slack thread history fetch failed channel=${params.channelId} ts=${params.threadTs}: ${formatErrorMessage(err)}`,
