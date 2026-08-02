@@ -62,7 +62,6 @@ import type {
 } from "./run-session-state.js";
 import { syncCronSessionLiveSelection } from "./run-session-state.js";
 import { resolveEffectiveAgentRuntime, resolveThinkingDefault } from "./run.runtime.js";
-import { resolveFallbackCronSourceDeliveryPlan } from "./source-delivery-fallback.js";
 import { createCronSourcePromptHash } from "./source-prompt-hash.js";
 import { isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 
@@ -280,14 +279,7 @@ function createCronPromptExecutor(params: {
   // Compute once from the stored payload before any cron, delivery, or retry
   // wrapper is applied. Every embedded fallback and continuation shares it.
   const sourcePromptHash = createCronSourcePromptHash(params.agentPayload?.message);
-  if (!params.sourceDelivery) {
-    logWarn(
-      `[cron:${params.job.id}] sourceDelivery is undefined; using fallback — possible build artifact mismatch`,
-    );
-  }
-  const sourceDelivery =
-    params.sourceDelivery ??
-    resolveFallbackCronSourceDeliveryPlan(params.job, params.resolvedDelivery);
+  const { sourceDelivery } = params;
   const sourceReplyDeliveryMode = sourceDelivery.sourceReplyDeliveryMode;
   const messageChannel = sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
   // Cron prompts may intentionally have nothing to report; both runners must agree on silence.
