@@ -448,21 +448,30 @@ export function updateCronRuntimeRows(
   storeKey: string,
   store: CronStoreFile,
 ): void {
-  for (const job of store.jobs) {
-    executeSqliteQuerySync(
-      db,
-      getCronStoreKysely(db)
-        .updateTable("cron_jobs")
-        .set({
-          ...bindStateColumns(job.state ?? {}),
-          state_json: JSON.stringify(job.state ?? {}),
-          runtime_updated_at_ms: job.updatedAtMs,
-          schedule_identity: tryCronScheduleIdentity(job as unknown as Record<string, unknown>),
-        })
-        .where("store_key", "=", storeKey)
-        .where("job_id", "=", job.id),
-    );
+  // Batch the per-job runtime UPDATEs into one transaction instead of a
+  // synchronous commit per row (N+1). Roll back on the first failure.
+  db.exec("BEGIN");
+  try {
+    for (const job of store.jobs) {
+      executeSqliteQuerySync(
+        db,
+        getCronStoreKysely(db)
+          .updateTable("cron_jobs")
+          .set({
+            ...bindStateColumns(job.state ?? {}),
+            state_json: JSON.stringify(job.state ?? {}),
+            runtime_updated_at_ms: job.updatedAtMs,
+            schedule_identity: tryCronScheduleIdentity(job as unknown as Record<string, unknown>),
+          })
+          .where("store_key", "=", storeKey)
+          .where("job_id", "=", job.id),
+      );
+    }
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   }
+  db.exec("COMMIT");
 }
 
 /** Reconstructs loaded cron store data and config-runtime sidecars from SQLite rows. */
