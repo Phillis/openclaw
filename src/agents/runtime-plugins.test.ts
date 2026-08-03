@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const hoisted = vi.hoisted(() => ({
   getCurrentPluginMetadataSnapshot: vi.fn(),
+  getActivePluginRegistry: vi.fn(),
   loadPluginRegistryHandle: vi.fn(),
   resolveAgentRuntimePluginLoadPlan: vi.fn(),
 }));
@@ -15,6 +16,10 @@ vi.mock("../plugins/loader.js", () => ({
   loadPluginRegistryHandle: hoisted.loadPluginRegistryHandle,
 }));
 
+vi.mock("../plugins/runtime.js", () => ({
+  getActivePluginRegistry: hoisted.getActivePluginRegistry,
+}));
+
 vi.mock("./harness/runtime-plugin-load-plan.js", () => ({
   resolveAgentRuntimePluginLoadPlan: hoisted.resolveAgentRuntimePluginLoadPlan,
 }));
@@ -24,7 +29,11 @@ import { loadAgentRuntimePluginRegistryHandle } from "./runtime-plugins.js";
 describe("agent runtime plugin registries", () => {
   beforeEach(() => {
     hoisted.getCurrentPluginMetadataSnapshot.mockReset().mockReturnValue(undefined);
-    hoisted.loadPluginRegistryHandle.mockReset().mockReturnValue({ handle: true });
+    hoisted.getActivePluginRegistry.mockReset().mockReturnValue(undefined);
+    hoisted.loadPluginRegistryHandle.mockReset().mockReturnValue({
+      handle: true,
+      contextEngines: new Map(),
+    });
     hoisted.resolveAgentRuntimePluginLoadPlan.mockReset().mockImplementation(({ config }) => ({
       config,
       pluginIds: ["codex", "memory-core"],
@@ -44,7 +53,7 @@ describe("agent runtime plugin registries", () => {
         allowGatewaySubagentBinding: true,
         selections,
       }),
-    ).toEqual({ handle: true });
+    ).toEqual({ handle: true, contextEngines: new Map() });
     expect(hoisted.getCurrentPluginMetadataSnapshot).toHaveBeenCalledWith({
       config,
       env,
@@ -70,7 +79,10 @@ describe("agent runtime plugin registries", () => {
       config: { plugins: { enabled: false } } as never,
       workspaceDir: "/tmp/workspace",
     };
-    expect(loadAgentRuntimePluginRegistryHandle(params)).toEqual({ handle: true });
+    expect(loadAgentRuntimePluginRegistryHandle(params)).toEqual({
+      handle: true,
+      contextEngines: new Map(),
+    });
     expect(hoisted.resolveAgentRuntimePluginLoadPlan).not.toHaveBeenCalled();
     expect(hoisted.loadPluginRegistryHandle).toHaveBeenCalledWith({
       activate: false,
@@ -101,5 +113,45 @@ describe("agent runtime plugin registries", () => {
         channelPluginLoadIntent: "full",
       }),
     );
+  });
+
+  it("binds the selected gateway-owned runtime context engine into the prepared handle", () => {
+    const runtimeRegistration = {
+      owner: "plugin:lossless-claw",
+      lifecycle: "runtime",
+      factory: vi.fn(),
+    };
+    hoisted.getActivePluginRegistry.mockReturnValue({
+      contextEngines: new Map([["lossless-claw", runtimeRegistration]]),
+    });
+
+    const registry = loadAgentRuntimePluginRegistryHandle({
+      config: {
+        plugins: { slots: { contextEngine: "lossless-claw" } },
+      } as never,
+      workspaceDir: "/tmp/workspace",
+    });
+
+    expect(registry.contextEngines.get("lossless-claw")).toBe(runtimeRegistration);
+  });
+
+  it("does not promote a discovery-only context engine registration", () => {
+    const discoveryRegistration = {
+      owner: "plugin:lossless-claw",
+      lifecycle: "readOnlyDiscovery",
+      factory: vi.fn(),
+    };
+    hoisted.getActivePluginRegistry.mockReturnValue({
+      contextEngines: new Map([["lossless-claw", discoveryRegistration]]),
+    });
+
+    const registry = loadAgentRuntimePluginRegistryHandle({
+      config: {
+        plugins: { slots: { contextEngine: "lossless-claw" } },
+      } as never,
+      workspaceDir: "/tmp/workspace",
+    });
+
+    expect(registry.contextEngines.has("lossless-claw")).toBe(false);
   });
 });

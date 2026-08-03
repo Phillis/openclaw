@@ -3,6 +3,7 @@ import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { loadPluginRegistryHandle } from "../plugins/loader.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
+import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { resolveUserPath } from "../utils.js";
 import { collectConfiguredAgentHarnessRuntimes } from "./harness-runtimes.js";
 import {
@@ -104,5 +105,20 @@ export function loadAgentRuntimePluginRegistryHandle(
   params: AgentRuntimePluginRegistryParams,
 ): PluginRegistry {
   const load = resolveAgentRuntimePluginRegistryLoad(params);
-  return loadPluginRegistryHandle({ ...load.loadOptions, activate: false });
+  const registry = loadPluginRegistryHandle({ ...load.loadOptions, activate: false });
+  const selectedContextEngine = params.config?.plugins?.slots?.contextEngine?.trim();
+  if (!selectedContextEngine) {
+    return registry;
+  }
+
+  // Prepared-runtime registries are deliberately loaded as non-activating handles, so their
+  // plugin registrations are discovery-only. The gateway composition root already owns the
+  // activated context-engine factory; preserve that runtime registration in the run-scoped
+  // handle instead of shadowing it with the discovery closure and silently falling back to
+  // legacy for every agent turn.
+  const activeRegistration = getActivePluginRegistry()?.contextEngines.get(selectedContextEngine);
+  if (activeRegistration?.lifecycle === "runtime") {
+    registry.contextEngines.set(selectedContextEngine, activeRegistration);
+  }
+  return registry;
 }
