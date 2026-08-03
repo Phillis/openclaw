@@ -81,6 +81,7 @@ export async function bootstrapHarnessContextEngine(params: {
   contextEngine?: HarnessContextEngine;
   sessionId: string;
   sessionKey?: string;
+  messages?: AgentMessage[];
   sessionTarget?: ContextEngineSessionTarget;
   sessionFile: string;
   sessionManager?: unknown;
@@ -111,6 +112,7 @@ export async function bootstrapHarnessContextEngine(params: {
       await params.contextEngine.bootstrap({
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
+        messages: params.messages,
         sessionTarget: params.sessionTarget,
         sessionFile: params.sessionFile,
         runtimeSettings,

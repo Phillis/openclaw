@@ -137,6 +137,7 @@ export async function prepareEmbeddedAttemptSessionManager(input: {
       contextEngine: input.activeContextEngine,
       sessionId: attempt.sessionId,
       sessionKey: attempt.sessionKey,
+      messages: sessionManager.buildSessionContext().messages,
       sessionTarget: attempt.sessionTarget,
       sessionFile: attempt.sessionFile,
       sessionManager,

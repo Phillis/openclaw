@@ -213,6 +213,7 @@ describe("harness context engine lifecycle", () => {
       transcriptStorage: { kind: "sqlite" as const },
       sessionTarget,
     };
+    const bootstrapMessages = [textMessage("user", "persisted history", 0)];
     const engine = createContextEngine({
       info: {
         id: engineId,
@@ -220,6 +221,7 @@ describe("harness context engine lifecycle", () => {
         acceptedHostParams: ["runtimeSettings", "runtimeContext", "sessionTarget"],
       },
       bootstrap: vi.fn(async (params) => {
+        expect(params.messages).toEqual(bootstrapMessages);
         captured.push({
           hook: "bootstrap",
           runtimeContext: params.runtimeContext,
@@ -266,6 +268,7 @@ describe("harness context engine lifecycle", () => {
       contextEngine: configuredEngine,
       sessionId: sessionParams.sessionId,
       sessionKey: sessionParams.sessionKey,
+      messages: bootstrapMessages,
       sessionTarget,
       sessionFile: sessionParams.sessionFile,
       providerId: "openai",
