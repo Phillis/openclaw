@@ -8,6 +8,7 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
+import { resolveCompactionReserveTokensFromThreshold } from "../../agents/agent-settings.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
@@ -713,7 +714,13 @@ export async function runPreflightCompactionIfNeeded(params: {
     agentCfgContextTokens: params.agentCfgContextTokens,
   });
   const memoryFlushPlan = resolveMemoryFlushPlan({ cfg: params.cfg });
-  const reserveTokensFloor = memoryFlushPlan?.reserveTokensFloor ?? 20_000;
+  const reserveTokensFloor =
+    resolveCompactionReserveTokensFromThreshold({
+      cfg: params.cfg,
+      contextWindowTokens: contextWindowTokens,
+    }) ??
+    memoryFlushPlan?.reserveTokensFloor ??
+    20_000;
   const softThresholdTokens = memoryFlushPlan?.softThresholdTokens ?? 4_000;
   const freshPersistedTokens = resolveFreshSessionTotalTokens(entry);
   const persistedTotalTokens = entry.totalTokens;
@@ -1071,8 +1078,13 @@ export async function runMemoryFlushIfNeeded(params: {
   const hasFreshPersistedPromptTokens =
     typeof persistedPromptTokens === "number" && entry?.totalTokensFresh === true;
 
+  const effectiveReserveTokensFloor =
+    resolveCompactionReserveTokensFromThreshold({
+      cfg: params.cfg,
+      contextWindowTokens: contextWindowTokens,
+    }) ?? memoryFlushPlan.reserveTokensFloor;
   const flushThreshold =
-    contextWindowTokens - memoryFlushPlan.reserveTokensFloor - memoryFlushPlan.softThresholdTokens;
+    contextWindowTokens - effectiveReserveTokensFloor - memoryFlushPlan.softThresholdTokens;
 
   // When totals are stale/unknown, derive prompt + last output from transcript so memory
   // flush can still be evaluated against projected next-input size.
@@ -1210,7 +1222,7 @@ export async function runMemoryFlushIfNeeded(params: {
         entry,
         tokenCount: tokenCountForFlush,
         contextWindowTokens,
-        reserveTokensFloor: memoryFlushPlan.reserveTokensFloor,
+        reserveTokensFloor: effectiveReserveTokensFloor,
         softThresholdTokens: memoryFlushPlan.softThresholdTokens,
       })) ||
     (shouldForceFlushByTranscriptSize &&

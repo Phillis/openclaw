@@ -16,6 +16,7 @@ type AgentSettingsManagerLike = {
     compaction: {
       reserveTokens?: number;
       keepRecentTokens?: number;
+      contextUsageThreshold?: number;
     };
   }) => void;
   setCompactionEnabled?: (enabled: boolean) => void;
@@ -26,6 +27,39 @@ function toPositiveInt(value: unknown): number | undefined {
     return undefined;
   }
   return Math.floor(value);
+}
+
+/** Returns a configured context-usage fraction (0 < x < 1) or undefined when unset/invalid. */
+export function resolveConfiguredContextUsageThreshold(cfg?: OpenClawConfig): number | undefined {
+  const value = cfg?.agents?.defaults?.compaction?.contextUsageThreshold;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value >= 1) {
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * Resolve the compaction reserve tokens that correspond to a configured
+ * context-usage fraction. `shouldCompact()` fires when context usage passes
+ * `contextWindow - reserveTokens`, so a threshold of `x` (0 < x < 1) means
+ * "compact once usage reaches x% of the context window" because the reserve
+ * becomes `contextWindow * (1 - x)`.
+ *
+ * When no threshold is configured, falls back to applying the default reserve
+ * floor so existing small-context models keep the documented floor behavior.
+ */
+export function resolveCompactionReserveTokensFromThreshold(params: {
+  cfg?: OpenClawConfig;
+  contextWindowTokens?: number;
+}): number | undefined {
+  const threshold = resolveConfiguredContextUsageThreshold(params.cfg);
+  const contextWindowTokens = toPositiveInt(params.contextWindowTokens);
+  if (threshold === undefined || contextWindowTokens === undefined) {
+    return undefined;
+  }
+  const reserveFromThreshold = Math.max(1, Math.floor(contextWindowTokens * (1 - threshold)));
+  // Keep the floor for tiny contexts so the whole window is never consumed.
+  return Math.max(DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR, reserveFromThreshold);
 }
 
 /** Applies configured compaction reserve/keep-recent settings to an agent settings manager. */
@@ -72,12 +106,23 @@ export function applyAgentCompactionSettingsFromConfig(params: {
   }
   const targetKeepRecentTokens = configuredKeepRecentTokens ?? currentKeepRecentTokens;
 
-  const overrides: { reserveTokens?: number; keepRecentTokens?: number } = {};
+  const overrides: {
+    reserveTokens?: number;
+    keepRecentTokens?: number;
+    contextUsageThreshold?: number;
+  } = {};
   if (targetReserveTokens !== currentReserveTokens) {
     overrides.reserveTokens = targetReserveTokens;
   }
   if (targetKeepRecentTokens !== currentKeepRecentTokens) {
     overrides.keepRecentTokens = targetKeepRecentTokens;
+  }
+  const configuredThreshold = resolveConfiguredContextUsageThreshold(params.cfg);
+  if (configuredThreshold !== undefined) {
+    // `shouldCompact()` consumes this fraction directly to trigger compaction
+    // once context usage reaches it. reserveTokens stays at its floored value so
+    // summarization reserve never inflates together with the proactive trigger.
+    overrides.contextUsageThreshold = configuredThreshold;
   }
 
   const shouldApplyEnabled =

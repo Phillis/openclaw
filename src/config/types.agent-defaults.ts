@@ -400,6 +400,15 @@ export type AgentCompactionConfig = {
    * When set, compaction uses this model instead of the agent's primary model.
    * Falls back to the primary model when unset. */
   model?: string;
+  /**
+   * Proactive auto-compaction threshold expressed as a fraction of the active
+   * model context window (0 < x < 1). When set, embedded and preflight
+   * auto-compaction triggers as soon as assessed context usage reaches x of
+   * the window instead of waiting for the window-minus-reserve boundary.
+   * Example: 0.8 compacts once context usage reaches 80% of the context
+   * window. Leave unset for the default window-minus-reserve behavior.
+   */
+  contextUsageThreshold?: number;
   /** Maximum time in seconds for a single compaction operation (default: 180). */
   timeoutSeconds?: number;
   /**

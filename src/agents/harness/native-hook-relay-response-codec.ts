@@ -1,4 +1,4 @@
-import type { NativeHookRelayProcessResponse } from "./native-hook-relay-types.js";
+import type { JsonValue, NativeHookRelayProcessResponse } from "./native-hook-relay-types.js";
 
 /** Render the native Codex hook responses shared by server and cold client paths. */
 export const codexNativeHookRelayResponseCodec = {
@@ -21,6 +21,21 @@ export const codexNativeHookRelayResponseCodec = {
       stderr: "",
       exitCode: 0,
       ...(failureDisposition ? { failureDisposition } : {}),
+    };
+  },
+  renderPreToolUseRewriteResponse(
+    updatedInput: Record<string, JsonValue>,
+  ): NativeHookRelayProcessResponse {
+    return {
+      stdout: `${JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          updatedInput,
+        },
+      })}\n`,
+      stderr: "",
+      exitCode: 0,
     };
   },
   renderPermissionDecisionResponse(
