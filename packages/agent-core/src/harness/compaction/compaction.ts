@@ -150,6 +150,12 @@ export interface CompactionSettings {
   reserveTokens: number;
   /** Approximate recent-context tokens to keep after compaction. */
   keepRecentTokens: number;
+  /**
+   * Optional proactive context-usage fraction (0 < x < 1). When set, compaction
+   * triggers once context usage reaches x of the context window (for example
+   * 0.8 = 80%) instead of only at the window-minus-reserve boundary.
+   */
+  contextUsageThreshold?: number;
 }
 
 /** Default compaction settings used by the harness. */
@@ -261,6 +267,15 @@ export function shouldCompact(
 ): boolean {
   if (!settings.enabled) {
     return false;
+  }
+  if (
+    typeof settings.contextUsageThreshold === "number" &&
+    Number.isFinite(settings.contextUsageThreshold) &&
+    settings.contextUsageThreshold > 0 &&
+    settings.contextUsageThreshold < 1
+  ) {
+    // Proactive threshold: compact once usage reaches x% of the window.
+    return contextTokens > contextWindow * settings.contextUsageThreshold;
   }
   return contextTokens > contextWindow - settings.reserveTokens;
 }

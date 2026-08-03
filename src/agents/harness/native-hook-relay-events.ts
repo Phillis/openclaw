@@ -169,10 +169,11 @@ async function runNativeHookRelayPreToolUse(params: {
     return params.adapter.renderNoopResponse(params.invocation.event);
   }
   if (nativeHookRelayParamsWereRewritten(originalToolInputFingerprint, outcome.params)) {
-    // Codex app-server may continue with the original params when updatedInput
-    // is unsupported, so rewrites must fail closed here.
+    if (toolName === "exec" && typeof outcome.params.command === "string") {
+      return params.adapter.renderPreToolUseRewriteResponse({ command: outcome.params.command });
+    }
     return params.adapter.renderPreToolUseBlockResponse(
-      "OpenClaw tool policy rewrote Codex app-server approval params; refusing original request.",
+      "OpenClaw tool policy rewrote unsupported Codex hook input; refusing original request.",
     );
   }
   return params.adapter.renderNoopResponse(params.invocation.event);

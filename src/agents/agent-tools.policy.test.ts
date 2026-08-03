@@ -261,6 +261,56 @@ describe("resolveGroupToolPolicy group context validation", () => {
     expect(isToolAllowedByPolicyName("exec", policy)).toBe(false);
   });
 
+  it("keeps the tool surface when a configured non-default account has no resolvable channel", () => {
+    // Slack DM thread sessions have no group/channel scope, so `channel` is not
+    // derivable. A scheduled run owned by a STILL-CONFIGURED account (oscar)
+    // must keep its normal tools instead of deny-alling everything.
+    const configuredCfg = {
+      ...cfg,
+      channels: {
+        ...cfg.channels,
+        slack: {
+          accounts: {
+            oscar: { botToken: "configured" },
+            default: {},
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    const policy = resolveGroupToolPolicy({
+      config: configuredCfg,
+      sessionKey: "agent:oscar:slack:direct:u0b4khg0mkr:thread:1785672863.015809",
+      accountId: "oscar",
+      requireConfiguredAccount: true,
+    });
+    expect(policy).toBeUndefined();
+    expect(isToolAllowedByPolicyName("read", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("exec", policy)).toBe(true);
+  });
+
+  it("still fails closed for a removed non-default account with a resolvable channel", () => {
+    const configuredCfg = {
+      ...cfg,
+      channels: {
+        ...cfg.channels,
+        whatsapp: {
+          ...cfg.channels?.whatsapp,
+          accounts: { work: {} },
+        },
+      },
+    } as OpenClawConfig;
+
+    const policy = resolveGroupToolPolicy({
+      config: configuredCfg,
+      sessionKey: "agent:main:whatsapp:group:safe-room",
+      accountId: "removed",
+      requireConfiguredAccount: true,
+    });
+    expect(policy).toEqual({ allow: [], deny: ["*"] });
+    expect(isToolAllowedByPolicyName("exec", policy)).toBe(false);
+  });
+
   it("resolves scheduled group policy for a still-configured named account", () => {
     const accountCfg = {
       ...cfg,

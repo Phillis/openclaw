@@ -474,6 +474,33 @@ function denyAllToolPolicy(): SandboxToolPolicy {
   return { allow: [], deny: ["*"] };
 }
 
+/**
+ * True when a named account id is still configured for at least one channel
+ * in the runtime config. Used by the scheduled-authority guard when no channel
+ * can be derived (for example a DM thread): deny-all is only correct for
+ * accounts that were genuinely removed, not for a still-configured creator
+ * account whose conversation simply happens to be a non-group (DM) scope.
+ */
+function isConfiguredChannelAccount(config: OpenClawConfig, accountId: string): boolean {
+  const normalized = normalizeAccountId(accountId);
+  const channels = config.channels as
+    | Record<string, { accounts?: Record<string, unknown> } | undefined>
+    | undefined;
+  if (!channels) {
+    return false;
+  }
+  for (const channelConfig of Object.values(channels)) {
+    const accounts = channelConfig?.accounts;
+    if (!accounts || typeof accounts !== "object") {
+      continue;
+    }
+    if (Object.keys(accounts).some((candidate) => normalizeAccountId(candidate) === normalized)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Resolve group-scoped tool policy after validating session provenance. */
 export function resolveGroupToolPolicy(params: {
   config?: OpenClawConfig;
@@ -513,8 +540,14 @@ export function resolveGroupToolPolicy(params: {
   const channel = normalizeMessageChannel(channelRaw);
   const accountId = normalizeAccountId(params.accountId);
   if (!channel) {
+    // Fail closed only when the scheduled authority names an account that is no
+    // longer configured anywhere. A configured account whose conversation is a
+    // non-group scope (Slack DM thread, etc.) must keep its normal tool surface
+    // instead of losing every tool because no group/channel could be derived.
     return params.requireConfiguredAccount && accountId !== DEFAULT_ACCOUNT_ID
-      ? denyAllToolPolicy()
+      ? isConfiguredChannelAccount(params.config, accountId)
+        ? undefined
+        : denyAllToolPolicy()
       : undefined;
   }
   let plugin;
