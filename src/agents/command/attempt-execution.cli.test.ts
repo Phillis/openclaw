@@ -4240,6 +4240,10 @@ describe("embedded attempt harness pinning", () => {
       sessionId: "mixed-provider-session",
       updatedAt: Date.now(),
       agentHarnessId: "codex",
+      agentHarnessLaneEpochs: {
+        openclaw: "openclaw-epoch",
+        codex: "codex-epoch",
+      },
       modelSelectionLocked: true,
       pluginExtensions: {
         codex: {
@@ -4296,6 +4300,10 @@ describe("embedded attempt harness pinning", () => {
       provider: "anthropic",
       model: "claude-opus-4-7",
       agentHarnessId: "codex",
+      agentHarnessLaneEpochs: {
+        openclaw: "openclaw-epoch",
+        codex: "codex-epoch",
+      },
       agentHarnessRuntimeOverride: "codex",
       modelSelectionLocked: true,
     });
