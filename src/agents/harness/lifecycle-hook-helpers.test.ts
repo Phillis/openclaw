@@ -54,6 +54,29 @@ describe("agent harness lifecycle hook helpers", () => {
     expect(hookRunner.hasHooks).toHaveBeenCalledWith("llm_output");
   });
 
+  it("forwards the active harness lane and epoch to lifecycle hooks", async () => {
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "llm_output"),
+      runLlmOutput: vi.fn(async () => undefined),
+    };
+
+    await runAgentHarnessLlmOutputHook({
+      ctx: {
+        runId: "run-1",
+        sessionKey: "agent:main:session-1",
+        agentHarnessId: "codex",
+        agentHarnessEpoch: "epoch-1",
+      },
+      event: EVENT,
+      hookRunner: hookRunner as never,
+    });
+
+    expect(hookRunner.runLlmOutput).toHaveBeenCalledWith(
+      EVENT,
+      expect.objectContaining({ agentHarnessId: "codex", agentHarnessEpoch: "epoch-1" }),
+    );
+  });
+
   it("ignores legacy hook runners that advertise agent_end without a runner method", () => {
     const hookRunner = createLegacyHookRunner();
     runAgentHarnessAgentEndHook({

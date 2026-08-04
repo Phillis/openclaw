@@ -4523,7 +4523,7 @@ describe("persistSessionUsageUpdate", () => {
       updatedAt: 1,
     });
     const recordHarness = async (agentHarnessId: string) => {
-      await persistSessionUsageUpdate({
+      const persisted = await persistSessionUsageUpdate({
         storePath,
         sessionKey,
         usage: { input: 10, output: 1, total: 11 },
@@ -4531,7 +4531,8 @@ describe("persistSessionUsageUpdate", () => {
         providerUsed: agentHarnessId === "codex" ? "openai" : "minimax",
         modelUsed: agentHarnessId === "codex" ? "gpt-test" : "m3-test",
       });
-      return readSessionStoreFast(storePath)[sessionKey];
+      expect(persisted).toEqual(readSessionStoreFast(storePath)[sessionKey]);
+      return persisted;
     };
 
     const codexFirst = await recordHarness("codex");

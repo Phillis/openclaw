@@ -662,6 +662,8 @@ export async function runPreparedCliAgent(
     agentId: params.agentId,
     sessionKey: params.sessionKey,
     sessionId: params.sessionId,
+    ...(params.agentHarnessId ? { agentHarnessId: params.agentHarnessId } : {}),
+    ...(params.agentHarnessEpoch ? { agentHarnessEpoch: params.agentHarnessEpoch } : {}),
     workspaceDir: params.workspaceDir,
     trigger: params.trigger,
     ...(params.config ? { config: params.config } : {}),

@@ -121,7 +121,7 @@ export async function persistSessionUsageUpdate(params: {
   preserveRuntimeModel?: boolean;
   preserveUserFacingSessionModelState?: boolean;
   logLabel?: string;
-}): Promise<void> {
+}): Promise<SessionEntry | undefined> {
   const { storePath, sessionKey } = params;
   if (!storePath || !sessionKey) {
     return;
@@ -145,7 +145,7 @@ export async function persistSessionUsageUpdate(params: {
 
   if (hasUsage || hasFreshContextSnapshot || hasCompactionSnapshot) {
     try {
-      await updateSessionEntry(
+      const updatedEntry = await updateSessionEntry(
         {
           storePath,
           sessionKey,
@@ -280,6 +280,7 @@ export async function persistSessionUsageUpdate(params: {
           takeCacheOwnership: true,
         },
       );
+      return updatedEntry ?? undefined;
     } catch (err) {
       logVerbose(`failed to persist ${label}usage update: ${String(err)}`);
     }
@@ -288,7 +289,7 @@ export async function persistSessionUsageUpdate(params: {
 
   if (params.modelUsed || params.contextTokensUsed) {
     try {
-      await updateSessionEntry(
+      const updatedEntry = await updateSessionEntry(
         {
           storePath,
           sessionKey,
@@ -361,6 +362,7 @@ export async function persistSessionUsageUpdate(params: {
           takeCacheOwnership: true,
         },
       );
+      return updatedEntry ?? undefined;
     } catch (err) {
       logVerbose(`failed to persist ${label}model/context update: ${String(err)}`);
     }

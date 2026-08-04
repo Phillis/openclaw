@@ -354,6 +354,8 @@ async function runEmbeddedAgentInternal(
             agentId: workspaceResolution.agentId,
             sessionKey: resolvedSessionKey,
             sessionId: params.sessionId,
+            ...(params.agentHarnessId ? { agentHarnessId: params.agentHarnessId } : {}),
+            ...(params.agentHarnessEpoch ? { agentHarnessEpoch: params.agentHarnessEpoch } : {}),
             ...buildAgentHookContextLineageFields({
               sessionKey: resolvedSessionKey,
               sessionId: params.sessionId,

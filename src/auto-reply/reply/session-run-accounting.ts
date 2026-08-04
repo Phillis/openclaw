@@ -25,8 +25,8 @@ function resolveNonNegativeTokenCount(value: number | undefined): number | undef
 }
 
 /** Persists usage accounting for a completed reply run. */
-export async function persistRunSessionUsage(params: PersistRunSessionUsageParams): Promise<void> {
-  await persistSessionUsageUpdate(params);
+export async function persistRunSessionUsage(params: PersistRunSessionUsageParams) {
+  return await persistSessionUsageUpdate(params);
 }
 
 /** Increments compaction count and records the best known post-compaction token total. */

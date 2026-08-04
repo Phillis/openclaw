@@ -23,6 +23,8 @@ export type AgentHarnessHookContext = {
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;
+  agentHarnessId?: string;
+  agentHarnessEpoch?: string;
   workspaceDir?: string;
   modelProviderId?: string;
   modelId?: string;
@@ -48,6 +50,8 @@ export function buildAgentHookContext(params: AgentHarnessHookContext): PluginHo
     ...(params.agentId ? { agentId: params.agentId } : {}),
     ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
     ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+    ...(params.agentHarnessId ? { agentHarnessId: params.agentHarnessId } : {}),
+    ...(params.agentHarnessEpoch ? { agentHarnessEpoch: params.agentHarnessEpoch } : {}),
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     ...(params.modelProviderId ? { modelProviderId: params.modelProviderId } : {}),
     ...(params.modelId ? { modelId: params.modelId } : {}),
