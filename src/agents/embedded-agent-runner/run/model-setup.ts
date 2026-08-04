@@ -40,6 +40,11 @@ export async function resolveEmbeddedRunModelSetup(params: {
     requestedModel: runParams.requestedModel,
     fallbackUsed: runParams.fallbackUsed,
     modelSelectionLocked: runParams.modelSelectionLocked,
+    boundHarnessRuntime:
+      runParams.modelSelectionLocked && runParams.agentHarnessEpoch?.trim()
+        ? (runParams.agentHarnessId ?? runParams.agentHarnessRuntimeOverride)
+        : undefined,
+    config: runParams.config,
     hookRunner: params.hookRunner,
     hookContext: params.hookContext,
   });

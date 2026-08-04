@@ -48,6 +48,7 @@ type AttemptRuntime = {
   fallbackActive: boolean;
   fallbackReason: FailoverReason | null;
   agentHarnessId: string;
+  agentHarnessEpoch?: string;
   expectedRuntimeArtifact?: AgentHarnessRuntimeArtifactBinding;
   runtimePlan: AgentRuntimePlan;
   model: EmbeddedRunAttemptParams["model"];
@@ -293,6 +294,7 @@ export async function dispatchEmbeddedRunAttempt(input: {
     }),
     isFinalFallbackAttempt: params.isFinalFallbackAttempt,
     agentHarnessId: runtime.agentHarnessId,
+    agentHarnessEpoch: runtime.agentHarnessEpoch,
     agentHarnessRuntimeOverride: runtime.agentHarnessId,
     modelSelectionLocked: params.modelSelectionLocked,
     ...(runtime.captureRuntimeArtifact ? { captureRuntimeArtifact: true } : {}),

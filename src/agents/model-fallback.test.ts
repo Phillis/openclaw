@@ -1897,6 +1897,39 @@ describe("runWithModelFallback", () => {
     );
   });
 
+  it("never attempts a cross-harness candidate for a sticky session epoch", async () => {
+    registerFallbackHarness("codex");
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("primary failed"))
+      .mockResolvedValueOnce("ok");
+    const result = await runWithModelFallback({
+      cfg: makeCfg(),
+      provider: "openai",
+      model: "gpt-5.5",
+      fallbacksOverride: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4"],
+      requiredAgentHarnessId: "codex",
+      resolveAgentHarnessRuntimeOverride: (provider) =>
+        provider === "openai" ? "codex" : "openclaw",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run.mock.calls).toEqual([
+      ["openai", "gpt-5.5", { isFinalFallbackAttempt: false }],
+      ["openai", "gpt-5.4", { isFinalFallbackAttempt: true }],
+    ]);
+    expect(result.attempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          reason: "unknown",
+        }),
+      ]),
+    );
+  });
+
   it("preserves a different runtime's host-policy denial", async () => {
     registerFallbackHarness("codex");
     const preflightError = createHarnessScopedPreflightError("codex");

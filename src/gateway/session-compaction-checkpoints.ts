@@ -40,6 +40,7 @@ const MAX_COMPACTION_CHECKPOINT_RETAINED_BYTES_PER_SESSION = 128 * 1024 * 1024;
 
 export type CapturedCompactionCheckpointSnapshot = {
   sessionId: string;
+  agentHarnessId?: string;
   sessionFile?: string;
   leafId: string;
   entryId?: string;
@@ -757,6 +758,32 @@ async function persistSessionCompactionCheckpoint(
       if (!existing.sessionId) {
         return null;
       }
+      if (existing.agentHarnessMigration) {
+        log.warn("skipping compaction checkpoint persist: harness migration in progress", {
+          sessionKey: params.sessionKey,
+        });
+        return null;
+      }
+      const activeHarnessId = params.agentHarnessId?.trim() ?? existing.agentHarnessId?.trim();
+      if (
+        existing.modelSelectionLocked === true &&
+        activeHarnessId &&
+        existing.agentHarnessId?.trim() !== activeHarnessId
+      ) {
+        log.warn("skipping compaction checkpoint persist: locked harness owner changed", {
+          sessionKey: params.sessionKey,
+        });
+        return null;
+      }
+      const activeHarnessEpoch = activeHarnessId
+        ? (existing.agentHarnessLaneEpochs?.[activeHarnessId] ??
+          (existing.agentHarnessId?.trim() === activeHarnessId
+            ? existing.agentHarnessEpoch
+            : undefined))
+        : undefined;
+      checkpoint.agentHarnessId = activeHarnessId;
+      checkpoint.agentHarnessEpoch = activeHarnessEpoch;
+      const nextLaneEpoch = activeHarnessId ? randomUUID() : undefined;
       const checkpoints = sessionStoreCheckpoints(existing);
       checkpoints.push(checkpoint);
       const snapshotBytesByPath = await statCheckpointSnapshotBytes(checkpoints);
@@ -765,6 +792,15 @@ async function persistSessionCompactionCheckpoint(
       return {
         updatedAt: Math.max(existing.updatedAt ?? 0, createdAt),
         compactionCheckpoints: trimmedCheckpoints.kept,
+        ...(activeHarnessId && nextLaneEpoch
+          ? {
+              agentHarnessEpoch: nextLaneEpoch,
+              agentHarnessLaneEpochs: {
+                ...existing.agentHarnessLaneEpochs,
+                [activeHarnessId]: nextLaneEpoch,
+              },
+            }
+          : {}),
       };
     },
   );

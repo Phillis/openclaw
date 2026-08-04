@@ -232,6 +232,10 @@ export type RunEmbeddedAgentParams = {
   modelFallbacksOverride?: string[];
   /** Session-pinned embedded harness id. Prevents runtime hot-switching. */
   agentHarnessId?: string;
+  /** Host-owned sticky harness generation captured at work admission. */
+  agentHarnessEpoch?: string;
+  /** Stable context generation keyed by normalized harness id. */
+  agentHarnessLaneEpochs?: Record<string, string>;
   /** True when the pinned non-default harness owns model selection for this session. */
   modelSelectionLocked?: boolean;
   /** Explicit runtime override selected for this turn. Unlike agentHarnessId, this may force OpenClaw. */

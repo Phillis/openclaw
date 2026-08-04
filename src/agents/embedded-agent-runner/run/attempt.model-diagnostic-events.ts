@@ -44,6 +44,8 @@ type ModelCallDiagnosticContext = {
   runId: string;
   sessionKey?: string;
   sessionId?: string;
+  agentHarnessId?: string;
+  agentHarnessEpoch?: string;
   provider: string;
   model: string;
   requestedProvider?: string;
@@ -67,7 +69,10 @@ type ModelCallDiagnosticContext = {
 type ModelCallEventBase = Omit<
   Extract<DiagnosticEventInput, { type: "model.call.started" }>,
   "type"
->;
+> & {
+  agentHarnessId?: string;
+  agentHarnessEpoch?: string;
+};
 type ModelCallErrorFields = Pick<
   Extract<DiagnosticEventInput, { type: "model.call.error" }>,
   "errorCategory" | "failureKind" | "memory" | "upstreamRequestIdHash"
@@ -400,6 +405,8 @@ function baseModelCallEvent(
     callId,
     ...(ctx.sessionKey && { sessionKey: ctx.sessionKey }),
     ...(ctx.sessionId && { sessionId: ctx.sessionId }),
+    ...(ctx.agentHarnessId && { agentHarnessId: ctx.agentHarnessId }),
+    ...(ctx.agentHarnessEpoch && { agentHarnessEpoch: ctx.agentHarnessEpoch }),
     provider: ctx.provider,
     model: ctx.model,
     ...(ctx.requestedProvider ? { requestedProvider: ctx.requestedProvider } : {}),
@@ -506,6 +513,8 @@ function modelCallHookEventBase(eventBase: ModelCallEventBase): PluginHookModelC
     callId: eventBase.callId,
     ...(eventBase.sessionKey ? { sessionKey: eventBase.sessionKey } : {}),
     ...(eventBase.sessionId ? { sessionId: eventBase.sessionId } : {}),
+    ...(eventBase.agentHarnessId ? { agentHarnessId: eventBase.agentHarnessId } : {}),
+    ...(eventBase.agentHarnessEpoch ? { agentHarnessEpoch: eventBase.agentHarnessEpoch } : {}),
     provider: eventBase.provider,
     model: eventBase.model,
     ...(eventBase.requestedProvider ? { requestedProvider: eventBase.requestedProvider } : {}),
@@ -534,6 +543,8 @@ function modelCallHookContext(eventBase: ModelCallEventBase): PluginHookAgentCon
     trace: eventBase.trace,
     ...(eventBase.sessionKey ? { sessionKey: eventBase.sessionKey } : {}),
     ...(eventBase.sessionId ? { sessionId: eventBase.sessionId } : {}),
+    ...(eventBase.agentHarnessId ? { agentHarnessId: eventBase.agentHarnessId } : {}),
+    ...(eventBase.agentHarnessEpoch ? { agentHarnessEpoch: eventBase.agentHarnessEpoch } : {}),
     modelProviderId: eventBase.provider,
     modelId: eventBase.model,
     ...(eventBase.contextTokenBudget ? { contextTokenBudget: eventBase.contextTokenBudget } : {}),

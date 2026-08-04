@@ -124,6 +124,7 @@ export async function prepareEmbeddedAttemptSessionManager(input: {
   attempt.promptCacheKey = resolveSessionBoundaryPromptCacheKey({
     api: attempt.model.api,
     boundaryCount: sessionManager.getBoundaryCount(),
+    agentHarnessEpoch: attempt.agentHarnessEpoch,
     promptCacheKey: attempt.promptCacheKey,
     sessionId: attempt.sessionId,
   });

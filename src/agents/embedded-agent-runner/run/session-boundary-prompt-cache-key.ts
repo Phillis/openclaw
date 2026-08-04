@@ -3,6 +3,7 @@ import { clampOpenAIPromptCacheKey } from "@openclaw/ai/providers";
 export function resolveSessionBoundaryPromptCacheKey(params: {
   api: string;
   boundaryCount: number;
+  agentHarnessEpoch?: string;
   promptCacheKey?: string;
   sessionId: string;
 }): string | undefined {
@@ -20,5 +21,10 @@ export function resolveSessionBoundaryPromptCacheKey(params: {
   // Clamp at derivation, not only in provider param builders: proxy runtimes
   // serialize this key verbatim, and long internal-effects session ids
   // (companion/btw) otherwise exceed OpenAI's 64-char prompt_cache_key limit.
-  return clampOpenAIPromptCacheKey(`${params.sessionId}:${params.boundaryCount}`);
+  const laneEpoch = params.agentHarnessEpoch?.trim();
+  return clampOpenAIPromptCacheKey(
+    laneEpoch
+      ? `${params.sessionId}:lane:${laneEpoch}`
+      : `${params.sessionId}:${params.boundaryCount}`,
+  );
 }

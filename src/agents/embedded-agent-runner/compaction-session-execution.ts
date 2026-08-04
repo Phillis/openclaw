@@ -457,6 +457,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           const activeSessionFile = formatSqliteSessionFileMarker({
             ...sessionTarget,
             sessionId: activeSessionId,
+            agentHarnessId: params.agentHarnessId,
           });
           const activePostLeafId = postCompactionLeafId;
           await runPostCompactionSideEffects({

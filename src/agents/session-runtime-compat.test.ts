@@ -60,4 +60,17 @@ describe("resolveSessionRuntimeOverrideForProvider", () => {
       }),
     ).toBeUndefined();
   });
+
+  it("keeps ordinary per-harness lane epochs non-exclusive", () => {
+    expect(
+      resolveSessionRuntimeOverrideForProvider({
+        provider: "openai",
+        entry: {
+          agentHarnessId: "codex",
+          agentHarnessEpoch: "epoch-1",
+          modelSelectionLocked: false,
+        },
+      }),
+    ).toBeUndefined();
+  });
 });

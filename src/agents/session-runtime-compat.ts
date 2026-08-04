@@ -12,11 +12,11 @@ import { isCliRuntimeAliasForProvider } from "./model-runtime-aliases.js";
 /** Persisted runtime fields used to recover session runtime compatibility. */
 type SessionRuntimeCompatEntry = Pick<
   SessionEntry,
-  "agentHarnessId" | "agentRuntimeOverride" | "modelSelectionLocked"
+  "agentHarnessEpoch" | "agentHarnessId" | "agentRuntimeOverride" | "modelSelectionLocked"
 >;
 type SessionRuntimeOverrideEntry = Pick<
   SessionEntry,
-  "agentHarnessId" | "agentRuntimeOverride" | "modelSelectionLocked"
+  "agentHarnessEpoch" | "agentHarnessId" | "agentRuntimeOverride" | "modelSelectionLocked"
 >;
 
 /** Resolves the persisted runtime id, preserving locked transcript ownership. */
@@ -69,11 +69,8 @@ export function resolveSessionRuntimeOverrideForProvider(params: {
     lockedHarness &&
     !isDefaultAgentRuntimeId(lockedHarness)
   ) {
-    // A locked transcript stays with its creating harness; provider metadata on
-    // internal turns must not reinterpret that runtime as a CLI backend.
     return lockedHarness;
   }
-
   // agentHarnessId records the runtime that produced the existing transcript;
   // it must not override the runtime selected for the next turn.
   return resolveCompatibleAgentRuntimeForProvider({

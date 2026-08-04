@@ -321,6 +321,10 @@ export type PluginHookAgentContext = {
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;
+  /** Host-owned sticky harness lane for this session generation. */
+  agentHarnessId?: string;
+  /** Opaque host-owned lane epoch; changes only after explicit migration/reset. */
+  agentHarnessEpoch?: string;
   /** Versioned host contract for trusted session ancestry and internal handoffs. */
   lineageContractVersion?: 1;
   /** Host-owned lineage facts. Raw prompt provenance never populates this field. */
@@ -396,6 +400,10 @@ type PluginHookModelCallBaseEvent = {
   callId: string;
   sessionKey?: string;
   sessionId?: string;
+  /** Host-owned sticky harness lane effective for this call. */
+  agentHarnessId?: string;
+  /** Opaque host-owned lane epoch for this session generation. */
+  agentHarnessEpoch?: string;
   provider: string;
   model: string;
   /** Original primary provider requested before fallback selection. */

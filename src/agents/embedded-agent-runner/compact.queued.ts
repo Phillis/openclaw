@@ -713,6 +713,7 @@ async function compactResolvedContextEngine(
             config: params.config,
             sessionKey: params.sessionKey,
             sessionId: postCompactionSessionId,
+            agentHarnessId: params.agentHarnessId,
             trigger: params.trigger,
             snapshot: checkpointSnapshot,
             summary: result.result?.summary,

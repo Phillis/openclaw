@@ -125,7 +125,10 @@ async function executeAgentTurnInternalWithRetryState(
           config: runtimeConfig,
         };
   let liveModelSwitchRuntimeEntry:
-    | Pick<SessionEntry, "agentHarnessId" | "agentRuntimeOverride" | "modelSelectionLocked">
+    | Pick<
+        SessionEntry,
+        "agentHarnessEpoch" | "agentHarnessId" | "agentRuntimeOverride" | "modelSelectionLocked"
+      >
     | undefined;
   const applyLiveModelSwitchToRun = (
     run: FollowupRun["run"],

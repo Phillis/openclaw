@@ -257,6 +257,8 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     preserveUserFacingSessionModelState: preserveUserFacingSessionState,
     modelUsed,
     providerUsed,
+    agentHarnessId: runResult.meta?.agentMeta?.agentHarnessId,
+    expectedAgentHarnessEpoch: followupRun.run.agentHarnessEpoch,
     contextTokensUsed,
     systemPromptReport: runResult.meta?.systemPromptReport,
     cliSessionId,

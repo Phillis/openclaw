@@ -1,4 +1,5 @@
 /** Persists usage, cost, model, and CLI session metadata after reply runs. */
+import { randomUUID } from "node:crypto";
 import {
   clearCliSession,
   setCliSessionBinding,
@@ -105,6 +106,8 @@ export async function persistSessionUsageUpdate(params: {
   lastCallUsage?: NormalizedUsage;
   modelUsed?: string;
   providerUsed?: string;
+  agentHarnessId?: string;
+  expectedAgentHarnessEpoch?: string;
   contextTokensUsed?: number;
   promptTokens?: number;
   usageIsContextSnapshot?: boolean;
@@ -149,11 +152,32 @@ export async function persistSessionUsageUpdate(params: {
         },
         async (entry) => {
           const updatedAt = Date.now();
+          const candidateHarnessId = params.agentHarnessId?.trim();
+          const currentHarnessEpoch = entry.agentHarnessEpoch?.trim();
+          const expectedHarnessEpoch = params.expectedAgentHarnessEpoch?.trim();
+          const epochIsExclusive = entry.modelSelectionLocked === true;
+          const staleHarnessEpoch = Boolean(
+            epochIsExclusive &&
+            currentHarnessEpoch &&
+            expectedHarnessEpoch &&
+            currentHarnessEpoch !== expectedHarnessEpoch,
+          );
+          const conflictingHarnessOwner = Boolean(
+            epochIsExclusive &&
+            currentHarnessEpoch &&
+            candidateHarnessId &&
+            entry.agentHarnessId?.trim() !== candidateHarnessId,
+          );
           const preserveSessionModelState =
             params.isHeartbeat === true ||
             params.preserveRuntimeModel === true ||
-            params.preserveUserFacingSessionModelState === true;
-          const preserveUserFacingRunState = params.preserveUserFacingSessionModelState === true;
+            params.preserveUserFacingSessionModelState === true ||
+            staleHarnessEpoch ||
+            conflictingHarnessOwner;
+          const preserveUserFacingRunState =
+            params.preserveUserFacingSessionModelState === true ||
+            staleHarnessEpoch ||
+            conflictingHarnessOwner;
           const resolvedContextTokens = preserveSessionModelState
             ? entry.contextTokens
             : (params.contextTokensUsed ?? entry.contextTokens);
@@ -202,6 +226,15 @@ export async function persistSessionUsageUpdate(params: {
               : (params.systemPromptReport ?? entry.systemPromptReport),
             updatedAt,
           };
+          if (!preserveSessionModelState && candidateHarnessId) {
+            const laneEpoch = entry.agentHarnessLaneEpochs?.[candidateHarnessId] ?? randomUUID();
+            patch.agentHarnessId = candidateHarnessId;
+            patch.agentHarnessEpoch = laneEpoch;
+            patch.agentHarnessLaneEpochs = {
+              ...entry.agentHarnessLaneEpochs,
+              [candidateHarnessId]: laneEpoch,
+            };
+          }
           if (hasUsage && !preserveUserFacingRunState) {
             patch.inputTokens = params.usage?.input ?? 0;
             patch.outputTokens = params.usage?.output ?? 0;
@@ -261,11 +294,32 @@ export async function persistSessionUsageUpdate(params: {
           sessionKey,
         },
         async (entry) => {
+          const candidateHarnessId = params.agentHarnessId?.trim();
+          const currentHarnessEpoch = entry.agentHarnessEpoch?.trim();
+          const expectedHarnessEpoch = params.expectedAgentHarnessEpoch?.trim();
+          const epochIsExclusive = entry.modelSelectionLocked === true;
+          const staleHarnessEpoch = Boolean(
+            epochIsExclusive &&
+            currentHarnessEpoch &&
+            expectedHarnessEpoch &&
+            currentHarnessEpoch !== expectedHarnessEpoch,
+          );
+          const conflictingHarnessOwner = Boolean(
+            epochIsExclusive &&
+            currentHarnessEpoch &&
+            candidateHarnessId &&
+            entry.agentHarnessId?.trim() !== candidateHarnessId,
+          );
           const preserveSessionModelState =
             params.isHeartbeat === true ||
             params.preserveRuntimeModel === true ||
-            params.preserveUserFacingSessionModelState === true;
-          const preserveUserFacingRunState = params.preserveUserFacingSessionModelState === true;
+            params.preserveUserFacingSessionModelState === true ||
+            staleHarnessEpoch ||
+            conflictingHarnessOwner;
+          const preserveUserFacingRunState =
+            params.preserveUserFacingSessionModelState === true ||
+            staleHarnessEpoch ||
+            conflictingHarnessOwner;
           const contextTokens = preserveSessionModelState
             ? entry.contextTokens
             : (params.contextTokensUsed ?? entry.contextTokens);
@@ -280,6 +334,15 @@ export async function persistSessionUsageUpdate(params: {
               : (params.systemPromptReport ?? entry.systemPromptReport),
             updatedAt: Date.now(),
           };
+          if (!preserveSessionModelState && candidateHarnessId) {
+            const laneEpoch = entry.agentHarnessLaneEpochs?.[candidateHarnessId] ?? randomUUID();
+            patch.agentHarnessId = candidateHarnessId;
+            patch.agentHarnessEpoch = laneEpoch;
+            patch.agentHarnessLaneEpochs = {
+              ...entry.agentHarnessLaneEpochs,
+              [candidateHarnessId]: laneEpoch,
+            };
+          }
           if (
             !preserveUserFacingRunState &&
             (params.preserveFreshTotalTokensOnStaleUsage !== true ||

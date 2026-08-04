@@ -308,6 +308,8 @@ async function runEmbeddedAgentInternal(
             log,
             runId: params.runId,
             sessionId: params.sessionId,
+            ...(params.agentHarnessId ? { agentHarnessId: params.agentHarnessId } : {}),
+            ...(params.agentHarnessEpoch ? { agentHarnessEpoch: params.agentHarnessEpoch } : {}),
             tracker: startupStages,
           });
           params.onExecutionStarted?.({ lifecycleGeneration });

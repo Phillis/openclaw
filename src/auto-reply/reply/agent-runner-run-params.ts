@@ -38,6 +38,10 @@ export function resolveModelFallbackOptions(
     agentId: run.agentId,
     sessionKey: run.runtimePolicySessionKey ?? run.sessionKey,
     fallbacksOverride,
+    requiredAgentHarnessId:
+      run.modelSelectionLocked && run.agentHarnessEpoch?.trim() && run.agentHarnessId?.trim()
+        ? run.agentHarnessId.trim()
+        : undefined,
   };
 }
 
@@ -113,6 +117,8 @@ export function buildEmbeddedRunBaseParams(params: {
     provider: params.provider,
     model: params.model,
     modelSelectionLocked: params.run.modelSelectionLocked,
+    agentHarnessEpoch: params.run.agentHarnessEpoch,
+    agentHarnessLaneEpochs: params.run.agentHarnessLaneEpochs,
     modelFallbacksOverride,
     ...params.authProfile,
     thinkLevel: params.run.thinkLevel,

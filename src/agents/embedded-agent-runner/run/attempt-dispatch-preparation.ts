@@ -223,6 +223,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
         Boolean(input.resolveRuntimeFallbackReason()),
       fallbackReason: input.resolveRuntimeFallbackReason(),
       agentHarnessId: runtime.agentHarness.id,
+      agentHarnessEpoch: params.agentHarnessLaneEpochs?.[runtime.agentHarness.id],
       expectedRuntimeArtifact: expectedHarnessArtifact?.artifact,
       runtimePlan,
       model: runtime.effectiveModel,

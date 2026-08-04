@@ -85,6 +85,7 @@ type ModelFallbackRuntimeContext = {
     model: string;
     agentHarnessRuntimeOverride?: string;
   }) => Promise<void> | void;
+  requiredAgentHarnessId?: string;
 };
 
 export type ModelFallbackRunFn<T> = (
@@ -407,13 +408,23 @@ function isCliAgentRuntime(runtime: string | undefined, cfg: OpenClawConfig | un
 
 export async function resolveModelFallbackCandidateHarnessAuthPrecheck(
   params: ModelFallbackRuntimeContext & ModelCandidate,
-): Promise<{ skipsProviderAuthCooldown: boolean; agentHarnessRuntimeOverride?: string }> {
+): Promise<{
+  skipsProviderAuthCooldown: boolean;
+  agentHarnessRuntimeOverride?: string;
+  runtime?: string;
+  laneEligible: boolean;
+}> {
   const { agentHarnessRuntimeOverride, explicitAgentRuntime, runtime, runtimeSource } =
     resolveModelFallbackCandidateAgentRuntime(params);
   const result = (skipsProviderAuthCooldown: boolean) => ({
     skipsProviderAuthCooldown,
     agentHarnessRuntimeOverride,
+    runtime,
+    laneEligible: !params.requiredAgentHarnessId || runtime === params.requiredAgentHarnessId,
   });
+  if (params.requiredAgentHarnessId && runtime !== params.requiredAgentHarnessId) {
+    return result(false);
+  }
   if (!params.cfg) {
     return result(false);
   }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * Updates persisted session metadata after agent command runs.
  */
@@ -172,9 +173,19 @@ export async function updateSessionStoreAfterAgentRun(params: {
   if (!preserveUserFacingRunState) {
     if (!preserveRuntimeModel) {
       if (agentHarnessId) {
-        next.agentHarnessId = agentHarnessId;
+        if (!entry.modelSelectionLocked || entry.agentHarnessId === agentHarnessId) {
+          const laneEpoch = entry.agentHarnessLaneEpochs?.[agentHarnessId] ?? randomUUID();
+          next.agentHarnessId = agentHarnessId;
+          next.agentHarnessEpoch = laneEpoch;
+          next.agentHarnessLaneEpochs = {
+            ...entry.agentHarnessLaneEpochs,
+            [agentHarnessId]: laneEpoch,
+          };
+        }
       } else if (result.meta.executionTrace?.runner === "cli") {
-        next.agentHarnessId = undefined;
+        if (!entry.agentHarnessEpoch) {
+          next.agentHarnessId = undefined;
+        }
       }
     }
     if (!preserveRuntimeModel && isCliProvider(providerUsed, cfg)) {

@@ -64,6 +64,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
         requestedRouteResolution: selection.requestedRouteResolution,
         agentDir: selection.agentDir,
         fallbacksOverride: selection.fallbacksOverride,
+        requiredAgentHarnessId: selection.requiredAgentHarnessId,
       },
       identity: {
         runId: params.runId,

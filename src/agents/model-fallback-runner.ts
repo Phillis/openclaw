@@ -121,6 +121,8 @@ type RunWithModelFallbackParams<T> = {
   mergeExhaustedResult?: (params: { latestResult: T; preferredResult: T }) => T;
   skipAuthProfileRuntime?: boolean;
   abortSignal?: AbortSignal;
+  /** Sticky session lane. Candidates owned by another harness are never attempted. */
+  requiredAgentHarnessId?: string;
 } & ModelManifestNormalizationContext;
 
 type DeferredSessionSuspensionState = {
@@ -258,6 +260,7 @@ async function runWithModelFallbackInternal<T>(
       sessionKey: params.sessionKey,
       resolveAgentHarnessRuntimeOverride: params.resolveAgentHarnessRuntimeOverride,
       prepareAgentHarnessRuntime: params.prepareAgentHarnessRuntime,
+      requiredAgentHarnessId: params.requiredAgentHarnessId,
       ...candidate,
     });
     const isPrimary = candidate.routeOrigin === "requested";
@@ -288,6 +291,13 @@ async function runWithModelFallbackInternal<T>(
         reason,
         ...auth,
       });
+
+    if (!candidateHarnessAuth.laneEligible) {
+      const error = `Skipping ${candidate.provider}/${candidate.model}: agent harness ${candidateHarnessAuth.runtime ?? "unresolved"} does not match sticky lane ${params.requiredAgentHarnessId}`;
+      pushAttempt(error, "unknown");
+      await observeCandidateDecision("skip_candidate", { reason: "unknown", error });
+      continue;
+    }
 
     // Skip-known-bad cache: when a previous turn in this session failed this
     // candidate with `auth` / `auth_permanent` (e.g. missing or expired

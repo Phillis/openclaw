@@ -165,6 +165,22 @@ export type SessionCompactionCheckpoint = {
   firstKeptEntryId?: string;
   preCompaction: SessionCompactionTranscriptReference;
   postCompaction: SessionCompactionTranscriptReference;
+  /** Harness ownership generation that produced this checkpoint. */
+  agentHarnessEpoch?: string;
+  /** Harness that owned canonical context when this checkpoint was created. */
+  agentHarnessId?: string;
+};
+
+export type SessionAgentHarnessMigration = {
+  schemaVersion: 1;
+  migrationId: string;
+  fromHarnessId: string;
+  fromEpoch: string;
+  toHarnessId: string;
+  toEpoch: string;
+  checkpointId: string;
+  startedAt: number;
+  state: "preparing" | "adopting" | "rolling-back";
 };
 
 type SessionContextBudgetStatusRoute =
@@ -558,6 +574,16 @@ type SessionEntryCore = SessionRestartRecoveryState &
      * incompatible runtime harnesses.
      */
     agentHarnessId?: string;
+    /**
+     * Host-owned sticky harness generation for an ordinary logical session.
+     * The id survives physical session rotation and changes only after an
+     * explicit fenced migration or reset.
+     */
+    agentHarnessEpoch?: string;
+    /** Stable per-harness context lanes; switching harnesses does not discard a warm lane. */
+    agentHarnessLaneEpochs?: Record<string, string>;
+    /** Durable admission fence for an explicit cross-harness migration saga. */
+    agentHarnessMigration?: SessionAgentHarnessMigration;
     fallbackNotice?: FallbackNoticeState;
     contextTokens?: number;
     contextBudgetStatus?: SessionContextBudgetStatus;

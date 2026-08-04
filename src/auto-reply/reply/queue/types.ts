@@ -166,6 +166,11 @@ export type FollowupRun = {
     requestedRouteResolution?: ModelFallbackRouteResolution;
     /** Prevents the queued run from selecting configured fallback models. */
     modelSelectionLocked?: boolean;
+    /** Sticky host-owned harness generation captured at turn admission. */
+    agentHarnessEpoch?: string;
+    /** Harness that owns agentHarnessEpoch. */
+    agentHarnessId?: string;
+    agentHarnessLaneEpochs?: Record<string, string>;
     hasSessionModelOverride?: boolean;
     modelOverrideSource?: "auto" | "user";
     hasAutoFallbackProvenance?: boolean;

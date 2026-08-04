@@ -82,6 +82,7 @@ type EmbeddedAgentRunEntryParams<T extends EmbeddedAgentRunResult> = {
     requestedRouteResolution?: ModelFallbackRouteResolution;
     fallbacksOverride?: string[];
     agentDir?: string;
+    requiredAgentHarnessId?: string;
   } & ModelManifestNormalizationContext;
   identity: {
     runId: string;
@@ -234,6 +235,7 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
       ...params.selection,
       ...params.identity,
       abortSignal: params.abortSignal,
+      requiredAgentHarnessId: params.selection.requiredAgentHarnessId,
       resolveAgentHarnessRuntimeOverride: params.harness.resolveRuntimeOverride,
       prepareAgentHarnessRuntime: async ({ provider, model, agentHarnessRuntimeOverride }) => {
         const prepare = () =>

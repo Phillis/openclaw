@@ -35,6 +35,7 @@ import {
 } from "../../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { FailoverError } from "../../failover-error.js";
+import { resolveAgentHarnessPolicy } from "../../harness/policy.js";
 import { log } from "../logger.js";
 import { readAgentModelContextTokens } from "../model-context-tokens.js";
 
@@ -107,6 +108,8 @@ export async function resolveHookModelSelection(params: {
   requestedModel?: string;
   fallbackUsed?: boolean;
   modelSelectionLocked?: boolean;
+  boundHarnessRuntime?: string;
+  config?: OpenClawConfig;
   hookRunner?: HookRunnerLike | null;
   hookContext: PluginHookAgentContext;
 }) {
@@ -152,6 +155,26 @@ export async function resolveHookModelSelection(params: {
     typeof modelResolveOverride?.fastModeOverride === "boolean"
       ? modelResolveOverride.fastModeOverride
       : undefined;
+
+  const boundHarnessRuntime = normalizeOptionalAgentRuntimeId(params.boundHarnessRuntime);
+  if (boundHarnessRuntime && (provider !== params.provider || modelId !== params.modelId)) {
+    const selectedRuntime = resolveAgentHarnessPolicy({
+      provider,
+      modelId,
+      config: params.config,
+      agentId: params.hookContext.agentId,
+      sessionKey: params.hookContext.sessionKey,
+    }).runtime;
+    const effectiveSelectedRuntime =
+      selectedRuntime === "auto" ? OPENCLAW_AGENT_RUNTIME_ID : selectedRuntime;
+    if (effectiveSelectedRuntime !== boundHarnessRuntime) {
+      log.info(
+        `[hooks] ignored cross-harness model override ${provider}/${modelId}; session lane remains ${boundHarnessRuntime}`,
+      );
+      provider = params.provider;
+      modelId = params.modelId;
+    }
+  }
 
   return {
     provider,
