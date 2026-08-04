@@ -305,16 +305,18 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     sessionId: string;
     sessionFile: string;
   } => {
-    // Working-set exact key first; disk alias resolve only when storePath known.
-    // No whole-map scan — that encodes the store layout the accessor hides.
+    // Accessor cache first so post-run accounting fields (including harness lane epochs)
+    // supersede an older request-local working-set snapshot. This remains an exact-key
+    // lookup; the accessor owns cache validation and avoids exposing store layout here.
     const latestSessionEntry =
       sessionStore && sessionKey
-        ? (sessionStore[sessionKey] ??
-          (storePath
-            ? loadSessionEntry({ storePath, sessionKey, readConsistency: "latest" })
-            : undefined) ??
+        ? ((storePath ? loadSessionEntry({ storePath, sessionKey }) : undefined) ??
+          sessionStore[sessionKey] ??
           sessionEntry)
         : sessionEntry;
+    if (sessionStore && sessionKey && latestSessionEntry) {
+      sessionStore[sessionKey] = latestSessionEntry;
+    }
     const latestSessionId = latestSessionEntry?.sessionId ?? sessionIdFinal;
     opts?.onSessionPrepared?.({ sessionKey, sessionId: latestSessionId, storePath });
     const sessionFile = storePath
