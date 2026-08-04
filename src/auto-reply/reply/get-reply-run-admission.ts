@@ -308,12 +308,12 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     // Accessor cache first so post-run accounting fields (including harness lane epochs)
     // supersede an older request-local working-set snapshot. This remains an exact-key
     // lookup; the accessor owns cache validation and avoids exposing store layout here.
+    const persistedSessionEntry =
+      storePath && sessionKey ? loadSessionEntry({ storePath, sessionKey }) : undefined;
     const latestSessionEntry =
-      sessionStore && sessionKey
-        ? ((storePath ? loadSessionEntry({ storePath, sessionKey }) : undefined) ??
-          sessionStore[sessionKey] ??
-          sessionEntry)
-        : sessionEntry;
+      persistedSessionEntry ??
+      (sessionStore && sessionKey ? sessionStore[sessionKey] : undefined) ??
+      sessionEntry;
     if (sessionStore && sessionKey && latestSessionEntry) {
       sessionStore[sessionKey] = latestSessionEntry;
     }
