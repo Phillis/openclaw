@@ -4104,6 +4104,7 @@ describe("CLI attempt execution", () => {
     const sessionEntry: SessionEntry = {
       sessionId: "openclaw-session-cleanup-cli",
       updatedAt: Date.now(),
+      agentHarnessLaneEpochs: { "claude-cli": "claude-cli-epoch" },
     };
     const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
     await writeSessionStoreSeed(sessionStore);
@@ -4145,6 +4146,8 @@ describe("CLI attempt execution", () => {
     expectMockArgFields(runCliAgentMock, {
       cleanupBundleMcpOnRunEnd: true,
       cleanupCliLiveSessionOnRunEnd: true,
+      agentHarnessId: "claude-cli",
+      agentHarnessEpoch: "claude-cli-epoch",
     });
     expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
   });

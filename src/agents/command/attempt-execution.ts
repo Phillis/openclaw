@@ -948,6 +948,8 @@ export function runAgentAttempt(params: {
             transcriptPrompt: cliTranscriptPrompt,
             modelProvider: params.providerOverride,
             provider: cliExecutionProvider,
+            agentHarnessId: cliExecutionProvider,
+            agentHarnessEpoch: params.sessionEntry?.agentHarnessLaneEpochs?.[cliExecutionProvider],
             model: params.modelOverride,
             thinkLevel: params.resolvedThinkLevel,
             timeoutMs: params.timeoutMs,

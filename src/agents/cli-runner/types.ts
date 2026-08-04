@@ -109,6 +109,10 @@ export type RunCliAgentParams = {
   inputProvenance?: InputProvenance;
   /** Selected model provider used for tool policy; distinct from a CLI runtime id. */
   modelProvider?: string;
+  /** Effective harness lane for lifecycle hooks and cache-generation telemetry. */
+  agentHarnessId?: string;
+  /** Persisted generation for the effective harness lane. */
+  agentHarnessEpoch?: string;
   provider: string;
   model?: string;
   thinkLevel?: ThinkLevel;
