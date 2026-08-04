@@ -4532,6 +4532,9 @@ describe("persistSessionUsageUpdate", () => {
         modelUsed: agentHarnessId === "codex" ? "gpt-test" : "m3-test",
       });
       expect(persisted).toEqual(readSessionStoreFast(storePath)[sessionKey]);
+      expect(loadSessionEntry({ storePath, sessionKey, readConsistency: "latest" })).toEqual(
+        persisted,
+      );
       return persisted;
     };
 
