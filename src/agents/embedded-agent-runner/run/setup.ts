@@ -12,6 +12,7 @@ import type {
   PluginHookBeforeModelResolveEvent,
   PluginHookBeforeModelResolveOverrideName,
   PluginHookBeforeModelResolveResult,
+  PluginHookAgentContext,
 } from "../../../plugins/types.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -37,23 +38,11 @@ import { FailoverError } from "../../failover-error.js";
 import { log } from "../logger.js";
 import { readAgentModelContextTokens } from "../model-context-tokens.js";
 
-type HookContext = {
-  runId?: string;
-  sourcePromptHash?: `sha256:${string}`;
-  agentId?: string;
-  sessionKey?: string;
-  sessionId: string;
-  workspaceDir: string;
-  messageProvider?: string;
-  trigger?: string;
-  channelId?: string;
-};
-
 type HookRunnerLike = {
   hasHooks(hookName: string): boolean;
   runBeforeModelResolve(
     input: PluginHookBeforeModelResolveEvent,
-    context: HookContext,
+    context: PluginHookAgentContext,
   ): Promise<PluginHookBeforeModelResolveResult | undefined>;
 };
 
@@ -119,7 +108,7 @@ export async function resolveHookModelSelection(params: {
   fallbackUsed?: boolean;
   modelSelectionLocked?: boolean;
   hookRunner?: HookRunnerLike | null;
-  hookContext: HookContext;
+  hookContext: PluginHookAgentContext;
 }) {
   let provider = params.provider;
   let modelId = params.modelId;

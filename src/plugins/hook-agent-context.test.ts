@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentHookContextChannelFields,
   buildAgentHookContextIdentityFields,
+  buildAgentHookContextLineageFields,
 } from "./hook-agent-context.js";
 
 describe("buildAgentHookContextChannelFields", () => {
@@ -80,6 +81,49 @@ describe("buildAgentHookContextIdentityFields", () => {
         trigger: "cron",
         senderId: "open-id-1",
         chatId: "chat-1",
+      }),
+    ).toEqual({});
+  });
+});
+
+describe("buildAgentHookContextLineageFields", () => {
+  const trustedHandoff = {
+    kind: "subagent-completion" as const,
+    sourceSessionKey: "agent:parent:source",
+    sourceSessionId: "source-id",
+    targetSessionKey: "agent:parent:target",
+    targetSessionId: "target-id",
+    provider: "openai",
+    model: "gpt-5.6-sol",
+  };
+
+  it("exposes persisted ancestry and an exact trusted completion handoff", () => {
+    expect(
+      buildAgentHookContextLineageFields({
+        sessionKey: "agent:parent:target",
+        sessionId: "target-id",
+        spawnedBy: "agent:root:main",
+        trustedInternalHandoff: trustedHandoff,
+      }),
+    ).toEqual({
+      lineageContractVersion: 1,
+      sessionLineage: {
+        spawnedBySessionKey: "agent:root:main",
+        internalHandoff: {
+          kind: "subagent-completion",
+          sourceSessionKey: "agent:parent:source",
+          sourceSessionId: "source-id",
+        },
+      },
+    });
+  });
+
+  it("fails closed when the trusted handoff target does not match the active session", () => {
+    expect(
+      buildAgentHookContextLineageFields({
+        sessionKey: "agent:parent:different",
+        sessionId: "target-id",
+        trustedInternalHandoff: trustedHandoff,
       }),
     ).toEqual({});
   });

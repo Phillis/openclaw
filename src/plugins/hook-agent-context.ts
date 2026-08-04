@@ -1,10 +1,45 @@
 /** Builds plugin hook agent context snapshots from active session and model state. */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { TrustedSubagentCompletionHandoff } from "../agents/subagent-announce-handoff.js";
 import { parseRawSessionConversationRef } from "../sessions/session-key-utils.js";
 import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 import type { PluginHookAgentContext } from "./hook-types.js";
 
 const TARGET_PREFIXES = new Set(["channel", "chat", "direct", "dm", "group", "thread", "user"]);
+
+/** Builds the versioned, host-attested lineage visible to agent hooks. */
+export function buildAgentHookContextLineageFields(params: {
+  sessionKey?: string | null;
+  sessionId?: string | null;
+  spawnedBy?: string | null;
+  trustedInternalHandoff?: TrustedSubagentCompletionHandoff;
+}): Pick<PluginHookAgentContext, "lineageContractVersion" | "sessionLineage"> {
+  const spawnedBySessionKey = normalizeOptionalString(params.spawnedBy);
+  const sessionKey = normalizeOptionalString(params.sessionKey);
+  const sessionId = normalizeOptionalString(params.sessionId);
+  const trustedHandoff = params.trustedInternalHandoff;
+  const internalHandoff =
+    trustedHandoff?.kind === "subagent-completion" &&
+    trustedHandoff.targetSessionKey === sessionKey &&
+    trustedHandoff.targetSessionId === sessionId
+      ? {
+          kind: trustedHandoff.kind,
+          sourceSessionKey: trustedHandoff.sourceSessionKey,
+          ...(trustedHandoff.sourceSessionId
+            ? { sourceSessionId: trustedHandoff.sourceSessionId }
+            : {}),
+        }
+      : undefined;
+  const sessionLineage =
+    spawnedBySessionKey || internalHandoff
+      ? {
+          ...(spawnedBySessionKey ? { spawnedBySessionKey } : {}),
+          ...(internalHandoff ? { internalHandoff } : {}),
+        }
+      : undefined;
+
+  return sessionLineage ? { lineageContractVersion: 1, sessionLineage } : {};
+}
 
 function normalizeKey(value: string | undefined): string {
   return (value ?? "").trim().toLowerCase();

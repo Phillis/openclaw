@@ -321,6 +321,17 @@ export type PluginHookAgentContext = {
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;
+  /** Versioned host contract for trusted session ancestry and internal handoffs. */
+  lineageContractVersion?: 1;
+  /** Host-owned lineage facts. Raw prompt provenance never populates this field. */
+  sessionLineage?: {
+    spawnedBySessionKey?: string;
+    internalHandoff?: {
+      kind: "subagent-completion";
+      sourceSessionKey: string;
+      sourceSessionId?: string;
+    };
+  };
   workspaceDir?: string;
   /** Run-prepared repository identities; empty when the turn is outside a repository. */
   activeProjectKeys?: string[];

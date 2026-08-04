@@ -18,6 +18,7 @@ import {
 import {
   buildAgentHookContextChannelFields,
   buildAgentHookContextIdentityFields,
+  buildAgentHookContextLineageFields,
 } from "../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
@@ -351,6 +352,12 @@ async function runEmbeddedAgentInternal(
             agentId: workspaceResolution.agentId,
             sessionKey: resolvedSessionKey,
             sessionId: params.sessionId,
+            ...buildAgentHookContextLineageFields({
+              sessionKey: resolvedSessionKey,
+              sessionId: params.sessionId,
+              spawnedBy: params.spawnedBy,
+              trustedInternalHandoff: params.trustedInternalHandoff,
+            }),
             workspaceDir: resolvedWorkspace,
             activeProjectKeys: [...activeProjectKeys],
             modelProviderId: provider,

@@ -647,6 +647,16 @@ buildChannelInboundEventContext({
 These fields are optional and absent for system-originated runs (heartbeat,
 cron, exec-event).
 
+When the host has verified session ancestry, agent hook contexts may also
+include `ctx.lineageContractVersion: 1` and `ctx.sessionLineage`. The lineage
+object can contain `spawnedBySessionKey` from persisted child-session state or
+an `internalHandoff` describing an exact, host-attested subagent-completion
+delivery. Plugins may use this contract to carry bounded policy requirements
+across a continuation or completion handoff. Raw prompt text, user-supplied
+provenance, and unverified internal-event fields never populate this contract;
+plugins should fail closed when the version or expected lineage fields are
+absent.
+
 `ctx.senderExternalId` remains as a deprecated source-compatibility field for
 older plugins. Core does not populate it; new channel-specific sender
 identities should live under `ctx.channelContext.sender` through module
