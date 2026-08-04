@@ -20,7 +20,10 @@ import {
 } from "../../auto-reply/reply/source-turn-id.js";
 import { messageToolOwnsVisibleReply } from "../../auto-reply/source-reply-delivery-mode.js";
 import type { ThinkLevel, VerboseLevel } from "../../auto-reply/thinking.js";
-import { persistSessionTranscriptTurn } from "../../config/sessions/session-accessor.js";
+import {
+  loadSessionEntry,
+  persistSessionTranscriptTurn,
+} from "../../config/sessions/session-accessor.js";
 import { acquireOwnedSessionTranscriptWriteLock } from "../../config/sessions/transcript-write-context.js";
 import { readTailAssistantTextFromSessionTranscript } from "../../config/sessions/transcript.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
@@ -815,6 +818,13 @@ export function runAgentAttempt(params: {
     (agentHarnessPolicy.runtime === "openclaw" && agentHarnessPolicy.runtimeSource !== "implicit"
       ? "openclaw"
       : undefined);
+  // Model-selection projections may replace the attempt-local entry. Recover
+  // canonical lane state at the final runtime boundary when it was omitted.
+  const harnessSessionEntry =
+    params.sessionEntry?.agentHarnessLaneEpochs || !params.storePath || !params.sessionKey
+      ? params.sessionEntry
+      : (loadSessionEntry({ storePath: params.storePath, sessionKey: params.sessionKey }) ??
+        params.sessionEntry);
   if (!isRawModelRun && isCliExecutionProvider) {
     const cliSessionBinding = getCliSessionBinding(params.sessionEntry, cliExecutionProvider);
     const cliProcessCwd = params.cwd ? resolveUserPath(params.cwd) : params.workspaceDir;
@@ -949,7 +959,7 @@ export function runAgentAttempt(params: {
             modelProvider: params.providerOverride,
             provider: cliExecutionProvider,
             agentHarnessId: cliExecutionProvider,
-            agentHarnessEpoch: params.sessionEntry?.agentHarnessLaneEpochs?.[cliExecutionProvider],
+            agentHarnessEpoch: harnessSessionEntry?.agentHarnessLaneEpochs?.[cliExecutionProvider],
             model: params.modelOverride,
             thinkLevel: params.resolvedThinkLevel,
             timeoutMs: params.timeoutMs,
@@ -1167,12 +1177,12 @@ export function runAgentAttempt(params: {
     config: params.cfg,
     agentHarnessId: embeddedAgentHarnessOverride,
     agentHarnessEpoch: embeddedAgentHarnessOverride
-      ? (params.sessionEntry?.agentHarnessLaneEpochs?.[embeddedAgentHarnessOverride] ??
-        (params.sessionEntry?.agentHarnessId === embeddedAgentHarnessOverride
-          ? params.sessionEntry.agentHarnessEpoch
+      ? (harnessSessionEntry?.agentHarnessLaneEpochs?.[embeddedAgentHarnessOverride] ??
+        (harnessSessionEntry?.agentHarnessId === embeddedAgentHarnessOverride
+          ? harnessSessionEntry.agentHarnessEpoch
           : undefined))
       : undefined,
-    agentHarnessLaneEpochs: params.sessionEntry?.agentHarnessLaneEpochs,
+    agentHarnessLaneEpochs: harnessSessionEntry?.agentHarnessLaneEpochs,
     modelSelectionLocked: !isRawModelRun && params.sessionEntry?.modelSelectionLocked === true,
     agentHarnessRuntimeOverride: embeddedAgentHarnessOverride,
     skillsSnapshot: params.skillsSnapshot,
