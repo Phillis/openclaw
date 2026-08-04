@@ -4303,6 +4303,7 @@ describe("embedded attempt harness pinning", () => {
       provider: "anthropic",
       model: "claude-opus-4-7",
       agentHarnessId: "codex",
+      agentHarnessEpoch: "codex-epoch",
       agentHarnessLaneEpochs: {
         openclaw: "openclaw-epoch",
         codex: "codex-epoch",

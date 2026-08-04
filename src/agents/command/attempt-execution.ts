@@ -1166,6 +1166,12 @@ export function runAgentAttempt(params: {
     cwd: params.cwd,
     config: params.cfg,
     agentHarnessId: embeddedAgentHarnessOverride,
+    agentHarnessEpoch: embeddedAgentHarnessOverride
+      ? (params.sessionEntry?.agentHarnessLaneEpochs?.[embeddedAgentHarnessOverride] ??
+        (params.sessionEntry?.agentHarnessId === embeddedAgentHarnessOverride
+          ? params.sessionEntry.agentHarnessEpoch
+          : undefined))
+      : undefined,
     agentHarnessLaneEpochs: params.sessionEntry?.agentHarnessLaneEpochs,
     modelSelectionLocked: !isRawModelRun && params.sessionEntry?.modelSelectionLocked === true,
     agentHarnessRuntimeOverride: embeddedAgentHarnessOverride,
