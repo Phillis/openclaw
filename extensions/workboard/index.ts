@@ -31,7 +31,9 @@ export default definePluginEntry({
     });
     registerWorkboardGatewayMethods({ api, store });
     registerWorkboardCommand({ api, store });
-    api.registerService(createWorkboardChangeEventService(store, { closeOnStop: true }));
+    // Plugin reload constructs the next registry before stopping the previous services. The
+    // process-shared SQLite store must outlive that overlap; this service owns only its poller.
+    api.registerService(createWorkboardChangeEventService(store));
     api.on("subagent_ended", async (event) => {
       if (event.runId) {
         await cleanupWorkboardRunWorktree({
