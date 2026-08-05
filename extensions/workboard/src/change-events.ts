@@ -4,7 +4,10 @@ import type { WorkboardStore } from "./store.js";
 
 const WORKBOARD_EXTERNAL_CHANGE_CHECK_MS = 1000;
 
-export function createWorkboardChangeEventService(store: WorkboardStore): OpenClawPluginService {
+export function createWorkboardChangeEventService(
+  store: WorkboardStore,
+  options: { closeOnStop?: boolean } = {},
+): OpenClawPluginService {
   let unsubscribe: (() => void) | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -37,6 +40,9 @@ export function createWorkboardChangeEventService(store: WorkboardStore): OpenCl
       if (timer) {
         clearInterval(timer);
         timer = undefined;
+      }
+      if (options.closeOnStop) {
+        store.close();
       }
     },
   };

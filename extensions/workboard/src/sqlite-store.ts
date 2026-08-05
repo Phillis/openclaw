@@ -27,6 +27,7 @@ import type {
   PersistedWorkboardBoard,
   PersistedWorkboardCard,
   PersistedWorkboardNotificationSubscription,
+  WorkboardBoardAggregate,
   WorkboardKeyedStore,
 } from "./persistence-types.js";
 const WORKBOARD_DB_RELATIVE_PATH = ["plugins", "workboard", "workboard.sqlite"] as const;
@@ -1090,6 +1091,30 @@ function insertCard(db: DatabaseSync, card: WorkboardCard): void {
 
 class WorkboardSqliteCardStore implements WorkboardKeyedStore {
   constructor(private readonly db: DatabaseSync) {}
+
+  async summarizeBoards(): Promise<WorkboardBoardAggregate[]> {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            board_id,
+            status,
+            CASE WHEN archived_at IS NOT NULL AND archived_at != 0 THEN 1 ELSE 0 END AS archived,
+            COUNT(*) AS total,
+            MAX(updated_at) AS updated_at
+          FROM workboard_cards
+          GROUP BY board_id, status, archived
+        `,
+      )
+      .all() as Row[];
+    return rows.map((row) => ({
+      boardId: requiredString(row, "board_id"),
+      status: requiredString(row, "status") as WorkboardCard["status"],
+      archived: requiredNumber(row, "archived") === 1,
+      total: requiredNumber(row, "total"),
+      updatedAt: requiredNumber(row, "updated_at"),
+    }));
+  }
 
   async register(key: string, value: PersistedWorkboardCard): Promise<void> {
     if (value.version !== 1 || value.card.id !== key) {

@@ -28,6 +28,9 @@ export class WorkboardChangeTracker {
         return deleted;
       },
       entries: async () => await store.entries(),
+      ...(store.summarizeBoards
+        ? { summarizeBoards: async () => await store.summarizeBoards!() }
+        : {}),
     };
   }
 

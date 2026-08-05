@@ -31,7 +31,7 @@ export default definePluginEntry({
     });
     registerWorkboardGatewayMethods({ api, store });
     registerWorkboardCommand({ api, store });
-    api.registerService(createWorkboardChangeEventService(store));
+    api.registerService(createWorkboardChangeEventService(store, { closeOnStop: true }));
     api.on("subagent_ended", async (event) => {
       if (event.runId) {
         await cleanupWorkboardRunWorktree({

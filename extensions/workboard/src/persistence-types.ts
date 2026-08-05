@@ -27,9 +27,19 @@ export type PersistedWorkboardAttachment = {
   contentBase64: string;
 };
 
+export type WorkboardBoardAggregate = {
+  boardId: string;
+  status: WorkboardCard["status"];
+  archived: boolean;
+  total: number;
+  updatedAt: number;
+};
+
 export type WorkboardKeyedStore<T = PersistedWorkboardCard> = {
   register(key: string, value: T): Promise<void>;
   lookup(key: string): Promise<T | undefined>;
   delete(key: string): Promise<boolean>;
   entries(): Promise<Array<{ key: string; value: T }>>;
+  /** Optional persistence-native board summary that avoids hydrating full cards. */
+  summarizeBoards?: () => Promise<WorkboardBoardAggregate[]>;
 };

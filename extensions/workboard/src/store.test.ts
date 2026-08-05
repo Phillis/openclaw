@@ -52,6 +52,62 @@ function statfsFixture(type: number): ReturnType<typeof fs.statfsSync> {
 }
 
 describe("WorkboardStore", () => {
+  it("uses persistence-native board aggregates without hydrating cards", async () => {
+    const cards = createMemoryStore();
+    cards.entries = vi.fn(async () => {
+      throw new Error("full card hydration should not run");
+    });
+    cards.summarizeBoards = vi.fn(async () => [
+      { boardId: "ops", status: "ready", archived: false, total: 7, updatedAt: 500 },
+      { boardId: "ops", status: "done", archived: true, total: 2, updatedAt: 700 },
+    ]);
+    const boards = createMemoryStore<PersistedWorkboardBoard>();
+    await boards.register("ops", {
+      version: 1,
+      board: { id: "ops", name: "Operations", createdAt: 100, updatedAt: 200 },
+    });
+    const store = new WorkboardStore(cards, { boards });
+
+    await expect(store.listBoards()).resolves.toEqual({
+      boards: [
+        expect.objectContaining({ id: "default", total: 0 }),
+        expect.objectContaining({
+          id: "ops",
+          name: "Operations",
+          total: 9,
+          active: 7,
+          archived: 2,
+          byStatus: { ready: 7, done: 2 },
+          updatedAt: 700,
+        }),
+      ],
+    });
+    expect(cards.entries).not.toHaveBeenCalled();
+    expect(cards.summarizeBoards).toHaveBeenCalledOnce();
+  });
+
+  it("shares one sqlite store per database path and reopens it after close", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-workboard-shared-"));
+    const dbPath = path.join(dir, "workboard.sqlite");
+    try {
+      const first = WorkboardStore.openSqlite({ dbPath });
+      const second = WorkboardStore.openSqlite({ dbPath });
+      expect(second).toBe(first);
+      await first.create({ title: "Shared connection" });
+
+      first.close();
+      first.close();
+      const reopened = WorkboardStore.openSqlite({ dbPath });
+      expect(reopened).not.toBe(first);
+      await expect(reopened.list()).resolves.toEqual([
+        expect.objectContaining({ title: "Shared connection" }),
+      ]);
+      reopened.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("emits one monotonic change after each visible mutation", async () => {
     const store = new WorkboardStore(createMemoryStore());
     const changes = vi.fn();
