@@ -259,6 +259,8 @@ export function completeEmbeddedAttemptResult(
           agentId: input.hookAgentId,
           sessionKey: attempt.sessionKey,
           sessionId: attempt.sessionId,
+          agentHarnessId: attempt.agentHarnessId,
+          agentHarnessEpoch: attempt.agentHarnessEpoch,
           workspaceDir: attempt.workspaceDir,
           trigger: attempt.trigger,
           ...(attempt.contextWindowInfo?.tokens

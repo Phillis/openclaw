@@ -168,6 +168,8 @@ describe("attempt result projection", () => {
         total: 34,
       },
       attempt: {
+        agentHarnessId: "openclaw",
+        agentHarnessEpoch: "openclaw-epoch",
         requestedProvider: "anthropic",
         requestedModel: "claude-sonnet-4-6",
         fallbackActive: true,
@@ -195,6 +197,10 @@ describe("attempt result projection", () => {
         reasoningTokens: 2,
         total: 34,
       },
+    });
+    expect(runLlmOutput.mock.calls[0]?.[1]).toMatchObject({
+      agentHarnessId: "openclaw",
+      agentHarnessEpoch: "openclaw-epoch",
     });
   });
 

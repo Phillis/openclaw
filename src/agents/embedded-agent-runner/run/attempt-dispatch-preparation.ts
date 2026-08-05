@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { resolveStorePath } from "../../../config/sessions.js";
 import { resolveSessionTranscriptRuntimeReadTarget } from "../../../config/sessions/session-accessor.js";
 import type { resolveContextEngine } from "../../../context-engine/registry.js";
+import { ensureAgentHarnessLaneEpoch } from "../../../sessions/agent-harness-lane.js";
 import { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js";
 import type { FailoverReason } from "../../embedded-agent-helpers/types.js";
 import { agentHarnessBuildsOpenClawTools } from "../../harness/selection.js";
@@ -131,6 +132,25 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
   const resolvedSessionTarget = resolvedTranscriptTarget
     ? { ...sessionPromptState.sessionTarget, ...resolvedTranscriptTarget }
     : sessionPromptState.sessionTarget;
+  const laneClaim = await ensureAgentHarnessLaneEpoch({
+    agentId: resolvedSessionTarget?.agentId ?? workspaceResolution.agentId,
+    sessionId: sessionPromptState.sessionId,
+    sessionKey: resolvedSessionKey,
+    storePath:
+      resolvedSessionTarget?.storePath ??
+      (resolvedSessionKey
+        ? resolveStorePath(params.config?.session?.store, {
+            agentId: workspaceResolution.agentId,
+          })
+        : undefined),
+    agentHarnessId: runtime.agentHarness.id,
+    snapshotEpoch: params.agentHarnessLaneEpochs?.[runtime.agentHarness.id],
+    modelSelectionLocked: params.modelSelectionLocked === true,
+  });
+  params.agentHarnessLaneEpochs = {
+    ...params.agentHarnessLaneEpochs,
+    [runtime.agentHarness.id]: laneClaim.epoch,
+  };
   const trajectorySessionFile = resolvedSessionTarget?.sessionKey ?? sessionPromptState.sessionFile;
   if (!input.startupStagesEmitted) {
     startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
@@ -223,7 +243,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
         Boolean(input.resolveRuntimeFallbackReason()),
       fallbackReason: input.resolveRuntimeFallbackReason(),
       agentHarnessId: runtime.agentHarness.id,
-      agentHarnessEpoch: params.agentHarnessLaneEpochs?.[runtime.agentHarness.id],
+      agentHarnessEpoch: laneClaim.epoch,
       expectedRuntimeArtifact: expectedHarnessArtifact?.artifact,
       runtimePlan,
       model: runtime.effectiveModel,

@@ -21,6 +21,8 @@ export function buildEmbeddedAgentEndContext(params: {
     agentId: params.agentId,
     sessionKey: run.sessionKey,
     sessionId: run.sessionId,
+    agentHarnessId: run.agentHarnessId,
+    agentHarnessEpoch: run.agentHarnessEpoch,
     workspaceDir: run.workspaceDir,
     modelProviderId: run.provider,
     modelId: run.modelId,

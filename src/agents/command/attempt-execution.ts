@@ -38,6 +38,7 @@ import { redactSensitiveText } from "../../logging/redact.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { isSubagentSessionKey } from "../../routing/session-key.js";
+import { ensureAgentHarnessLaneEpoch } from "../../sessions/agent-harness-lane.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import {
   buildPersistedUserTurnMessage,
@@ -918,6 +919,19 @@ export function runAgentAttempt(params: {
       nextCliSessionId: string | undefined,
       activeCliSessionBinding = cliSessionBinding,
     ) => {
+      const laneClaim = await ensureAgentHarnessLaneEpoch({
+        agentId: params.sessionAgentId,
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        storePath: params.storePath,
+        agentHarnessId: cliExecutionProvider,
+        snapshotEpoch: harnessSessionEntry?.agentHarnessLaneEpochs?.[cliExecutionProvider],
+        modelSelectionLocked: params.sessionEntry?.modelSelectionLocked === true,
+      });
+      if (laneClaim.entry && params.sessionKey && params.sessionStore) {
+        params.sessionStore[params.sessionKey] = laneClaim.entry;
+        params.sessionEntry = laneClaim.entry;
+      }
       const forkCliSessionOnResume = activeCliSessionBinding?.forkNextResume === true;
       const resolvedCliBackend = resolveCliBackendConfig(cliExecutionProvider, params.cfg, {
         agentId: params.sessionAgentId,
@@ -959,7 +973,7 @@ export function runAgentAttempt(params: {
             modelProvider: params.providerOverride,
             provider: cliExecutionProvider,
             agentHarnessId: cliExecutionProvider,
-            agentHarnessEpoch: harnessSessionEntry?.agentHarnessLaneEpochs?.[cliExecutionProvider],
+            agentHarnessEpoch: laneClaim.epoch,
             model: params.modelOverride,
             thinkLevel: params.resolvedThinkLevel,
             timeoutMs: params.timeoutMs,
