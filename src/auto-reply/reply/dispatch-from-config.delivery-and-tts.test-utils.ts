@@ -35,7 +35,7 @@ import {
   globalBeforeAll0,
   describe0BeforeEach0,
 } from "./dispatch-from-config.test-harness.js";
-import { usesFullReplyRuntime, usesPublishedReplyRuntime } from "./reply-config-runtime-mode.js";
+import { usesFullReplyRuntime } from "./reply-config-runtime-mode.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
 import { buildTestCtx } from "./test-ctx.js";
 
@@ -977,12 +977,14 @@ describe("dispatchReplyFromConfig", () => {
     } as OpenClawConfig;
 
     let receivedCfg: OpenClawConfig | undefined;
+    let receivedUsePublishedModelRuntime: boolean | undefined;
     const replyResolver = async (
       _ctx: MsgContext,
-      _opts?: GetReplyOptions,
+      opts?: GetReplyOptions & { usePublishedModelRuntime?: boolean },
       cfgArg?: OpenClawConfig,
     ) => {
       receivedCfg = cfgArg;
+      receivedUsePublishedModelRuntime = opts?.usePublishedModelRuntime;
       return { text: "hi" } satisfies ReplyPayload;
     };
 
@@ -1000,6 +1002,7 @@ describe("dispatchReplyFromConfig", () => {
       agents: { defaults: { userTimezone: "America/New_York" } },
       messages: { suppressToolErrors: true },
     });
+    expect(receivedUsePublishedModelRuntime).toBe(false);
   });
 
   it("keeps the caller config exact before a runtime snapshot is published", async () => {
@@ -1021,7 +1024,6 @@ describe("dispatchReplyFromConfig", () => {
 
     expect(receivedCfg).toBe(cfg);
     expect(usesFullReplyRuntime(receivedCfg)).toBe(true);
-    expect(usesPublishedReplyRuntime(receivedCfg)).toBe(false);
   });
 
   it("marks the committed runtime snapshot for published-owner reply resolution", async () => {
@@ -1031,19 +1033,22 @@ describe("dispatchReplyFromConfig", () => {
     } as OpenClawConfig;
     setRuntimeConfigSnapshot(runtimeCfg);
     let receivedCfg: OpenClawConfig | undefined;
+    let receivedUsePublishedModelRuntime: boolean | undefined;
 
     await dispatchReplyFromConfig({
       ctx: buildTestCtx({ Provider: "discord", Surface: "discord" }),
       cfg: emptyConfig,
       dispatcher: createDispatcher(),
-      replyResolver: async (_ctx, _opts, cfgArg) => {
+      replyResolver: async (_ctx, opts, cfgArg) => {
         receivedCfg = cfgArg;
+        receivedUsePublishedModelRuntime = opts?.usePublishedModelRuntime;
         return { text: "hi" };
       },
     });
 
     expect(receivedCfg).toBe(runtimeCfg);
-    expect(usesPublishedReplyRuntime(receivedCfg)).toBe(true);
+    expect(usesFullReplyRuntime(receivedCfg)).toBe(true);
+    expect(receivedUsePublishedModelRuntime).toBe(true);
   });
 
   it("marks a channel-captured config for published-owner resolution before a snapshot exists", async () => {
@@ -1052,20 +1057,23 @@ describe("dispatchReplyFromConfig", () => {
       agents: { defaults: { userTimezone: "America/Los_Angeles" } },
     } as OpenClawConfig;
     let receivedCfg: OpenClawConfig | undefined;
+    let receivedUsePublishedModelRuntime: boolean | undefined;
 
     await dispatchReplyFromConfig({
       ctx: buildTestCtx({ Provider: "slack", Surface: "slack" }),
       cfg,
       dispatcher: createDispatcher(),
       usePublishedModelRuntime: true,
-      replyResolver: async (_ctx, _opts, cfgArg) => {
+      replyResolver: async (_ctx, opts, cfgArg) => {
         receivedCfg = cfgArg;
+        receivedUsePublishedModelRuntime = opts?.usePublishedModelRuntime;
         return { text: "hi" };
       },
     });
 
     expect(receivedCfg).toBe(cfg);
-    expect(usesPublishedReplyRuntime(receivedCfg)).toBe(true);
+    expect(usesFullReplyRuntime(receivedCfg)).toBe(true);
+    expect(receivedUsePublishedModelRuntime).toBe(true);
   });
 
   it("drops a removed Firecrawl SecretRef from Discord replies after config reload", async () => {

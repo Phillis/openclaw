@@ -76,7 +76,6 @@ import {
   sanitizePendingFinalDeliveryText,
 } from "./pending-final-delivery.js";
 import { attachProgressNarratorToReplyOptions } from "./progress-narrator.js";
-import { usesPublishedReplyRuntime } from "./reply-config-runtime-mode.js";
 import { createReplyTimingTracker } from "./reply-timing-tracker.js";
 import { initSessionState, resolveReplySessionPreprocessingState } from "./session.js";
 import { mergeSkillFilters } from "./skill-filter.js";
@@ -228,7 +227,8 @@ export async function getReplyFromConfig(
     isFastTestEnv,
     configOverride,
   });
-  const usePublishedModelRuntime = usesPublishedReplyRuntime(cfg);
+  const usePublishedModelRuntime =
+    (opts as RuntimeInternalGetReplyOptions | undefined)?.usePublishedModelRuntime === true;
   // Profiler spans stay inert unless diagnostics enable `profiler` or
   // `reply.profiler`, so normal replies do not pay per-stage Date.now/array
   // bookkeeping while we can still split resolver costs on demand.

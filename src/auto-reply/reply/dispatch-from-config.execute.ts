@@ -62,6 +62,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     sourceReplyDeliveryMode,
     trackDispatchLifecycleWork,
     typing,
+    usePublishedModelRuntime,
     waitForPendingDirectBlockReplyDelivery,
     wrapProgressCallback,
   } = state;
@@ -81,6 +82,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                 [REPLY_OPERATION_RUN_STATE]: state.replyOperationRunState,
                 sourceReplyDeliveryMode,
                 sessionPromptSourceReplyDeliveryMode: state.sessionStableSourceReplyDeliveryMode,
+                usePublishedModelRuntime,
                 ...({
                   onDeliberateSilentTerminalReply: () => {
                     deliberateSilentTerminalReply = true;

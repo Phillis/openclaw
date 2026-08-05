@@ -9,7 +9,8 @@ import {
 } from "./get-reply.test-fixtures.js";
 import { loadGetReplyModuleForTest } from "./get-reply.test-loader.js";
 import "./get-reply.test-runtime-mocks.js";
-import { usesFullReplyRuntime, usesPublishedReplyRuntime } from "./reply-config-runtime-mode.js";
+import type { InternalGetReplyOptions } from "./get-reply.types.js";
+import { markReplyConfigRuntimeMode, usesFullReplyRuntime } from "./reply-config-runtime-mode.js";
 
 const mocks = vi.hoisted(() => ({
   resolveReplyDirectives: vi.fn(),
@@ -102,7 +103,7 @@ describe("getReplyFromConfig configOverride", () => {
   });
 
   it("uses the published model owner generation for gateway runtime config", async () => {
-    const { withPublishedRuntimeReplyConfig } = await import("./get-reply-fast-path.js");
+    const { withFullRuntimeReplyConfig } = await import("./get-reply-fast-path.js");
     vi.stubEnv("OPENCLAW_TEST_FAST", "0");
     const ownerConfig = {
       channels: {
@@ -125,11 +126,12 @@ describe("getReplyFromConfig configOverride", () => {
       config: ownerConfig,
       modelCatalog: preparedModelCatalog,
     });
+    const replyOptions: InternalGetReplyOptions = { usePublishedModelRuntime: true };
 
     await getReplyFromConfig(
       buildGetReplyCtx(),
-      undefined,
-      withPublishedRuntimeReplyConfig({
+      replyOptions,
+      withFullRuntimeReplyConfig({
         agents: { defaults: { userTimezone: "UTC" } },
       } satisfies OpenClawConfig),
     );
@@ -150,7 +152,7 @@ describe("getReplyFromConfig configOverride", () => {
   });
 
   it("rejects a published model owner that crosses the admitted session agent", async () => {
-    const { withPublishedRuntimeReplyConfig } = await import("./get-reply-fast-path.js");
+    const { withFullRuntimeReplyConfig } = await import("./get-reply-fast-path.js");
     vi.stubEnv("OPENCLAW_TEST_FAST", "0");
     mocks.loadResolvedPublishedModelCatalogOwner.mockResolvedValue({
       agentId: "worker",
@@ -159,12 +161,13 @@ describe("getReplyFromConfig configOverride", () => {
       config: { agents: { list: [{ id: "worker", default: true }] } },
       modelCatalog: { entries: [], routeVariants: [] },
     });
+    const replyOptions: InternalGetReplyOptions = { usePublishedModelRuntime: true };
 
     await expect(
       getReplyFromConfig(
         buildGetReplyCtx(),
-        undefined,
-        withPublishedRuntimeReplyConfig({} satisfies OpenClawConfig),
+        replyOptions,
+        withFullRuntimeReplyConfig({} satisfies OpenClawConfig),
       ),
     ).rejects.toThrow("reply model catalog owner changed from main to worker");
   });
@@ -190,19 +193,17 @@ describe("getReplyFromConfig configOverride", () => {
   });
 
   it("isolates conflicting runtime modes for concurrent replies sharing one config", async () => {
-    const { withFullRuntimeReplyConfig, withPublishedRuntimeReplyConfig } =
-      await import("./get-reply-fast-path.js");
+    const { withFullRuntimeReplyConfig } = await import("./get-reply-fast-path.js");
     const sharedConfig = Object.freeze({
       agents: { defaults: { userTimezone: "UTC" } },
     } satisfies OpenClawConfig);
 
-    const publishedConfig = withPublishedRuntimeReplyConfig(sharedConfig);
+    const fastConfig = markReplyConfigRuntimeMode(sharedConfig, "fast");
     const fullConfig = withFullRuntimeReplyConfig(sharedConfig);
 
-    expect(publishedConfig).toBe(sharedConfig);
+    expect(fastConfig).toBe(sharedConfig);
     expect(fullConfig).not.toBe(sharedConfig);
-    expect(usesPublishedReplyRuntime(publishedConfig)).toBe(true);
+    expect(usesFullReplyRuntime(fastConfig)).toBe(false);
     expect(usesFullReplyRuntime(fullConfig)).toBe(true);
-    expect(usesPublishedReplyRuntime(fullConfig)).toBe(false);
   });
 });

@@ -17,10 +17,7 @@ import type { ReplyPayload } from "../reply-payload.js";
 import type { ChooseDispatchRouteReadyState } from "./dispatch-from-config.choose-route.js";
 import { extendPreparedDispatchState } from "./dispatch-from-config.phase-state.js";
 import { loadGetReplyFromConfigRuntime } from "./dispatch-from-config.runtime-loaders.js";
-import {
-  withFullRuntimeReplyConfig,
-  withPublishedRuntimeReplyConfig,
-} from "./get-reply-fast-path.js";
+import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
 import { shouldBridgeCliPreambleEvents } from "./get-reply.types.js";
 import { waitForReplyDispatcherIdle } from "./reply-dispatcher.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
@@ -411,13 +408,14 @@ export async function prepareDispatchExecution(state: ChooseDispatchRouteReadySt
   // committed model owner; an explicit per-turn projection stays exact to its caller config.
   const publishedRuntimeReplyConfig = getRuntimeConfigSnapshot();
   const runtimeReplyConfig = publishedRuntimeReplyConfig ?? cfg;
+  const usePublishedModelRuntime =
+    params.configOverride === undefined &&
+    (params.usePublishedModelRuntime === true || publishedRuntimeReplyConfig !== undefined);
   const replyConfig = params.configOverride
     ? withFullRuntimeReplyConfig(
         applyMergePatch(runtimeReplyConfig, params.configOverride) as OpenClawConfig,
       )
-    : params.usePublishedModelRuntime || publishedRuntimeReplyConfig
-      ? withPublishedRuntimeReplyConfig(runtimeReplyConfig)
-      : withFullRuntimeReplyConfig(cfg);
+    : withFullRuntimeReplyConfig(runtimeReplyConfig);
   state.recordAgentDispatchStarted();
   const nextState = extendPreparedDispatchState(state, {
     sendPlanUpdate,
@@ -443,6 +441,7 @@ export async function prepareDispatchExecution(state: ChooseDispatchRouteReadySt
     onItemEvent,
     replyResolver,
     replyConfig,
+    usePublishedModelRuntime,
     progressState,
   });
   return { status: "ready" as const, state: nextState };
