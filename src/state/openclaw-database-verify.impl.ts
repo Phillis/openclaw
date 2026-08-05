@@ -21,6 +21,27 @@ import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 
 export const OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS = 5 * 60_000;
 export const OPENCLAW_DATABASE_VERIFY_INTERVAL_MS = 24 * 60 * 60_000;
+const OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_ENV = "OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS";
+
+/**
+ * Let large installations defer the full integrity scan until the gateway has
+ * remained stable. The daily cadence is unchanged, and the override is bounded
+ * so startup verification cannot be silently disabled.
+ */
+export function resolveOpenClawDatabaseVerifyInitialDelayMs(env: NodeJS.ProcessEnv): number {
+  const raw = env[OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_ENV]?.trim();
+  if (!raw) {
+    return OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS;
+  }
+  return Math.min(
+    OPENCLAW_DATABASE_VERIFY_INTERVAL_MS,
+    Math.max(OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS, Math.round(parsed)),
+  );
+}
 
 const log = createSubsystemLogger("state/database-verify");
 const DATABASE_VERIFY_CHILD_ARG = "--openclaw-database-verify-child";

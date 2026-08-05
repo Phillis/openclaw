@@ -3,11 +3,11 @@
  * Default maximum number of cron jobs allowed to run at once.
  *
  * Scheduled turns can each spawn a full agent harness (and, for Codex-backed
- * work, a separate app-server tree). Keeping this aligned with the default
- * top-level agent concurrency avoids an eight-run cron burst doubling the
- * normal process and CPU budget.
+ * work, a separate app-server tree). Keeping this below top-level interactive
+ * agent concurrency prevents scheduled work from
+ * consuming every admission slot while Slack or WhatsApp is waiting.
  */
-export const DEFAULT_CRON_MAX_CONCURRENT_RUNS = 4;
+export const DEFAULT_CRON_MAX_CONCURRENT_RUNS = 2;
 const DEFAULT_CRON_TRIGGER_MIN_INTERVAL_MS = 30_000;
 
 /** Resolves cron concurrency config, flooring finite values and clamping to at least one. */

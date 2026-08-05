@@ -19,6 +19,7 @@ import { isNonRecoverableSlackAuthError } from "./reconnect-policy.js";
 const SLACK_INGRESS_PAYLOAD_VERSION = 1;
 const SLACK_INGRESS_POLL_INTERVAL_MS = 1_000;
 const SLACK_BOLT_AUTHORIZATION_ERROR = "slack_bolt_authorization_error";
+const PREPARED_MODEL_RUNTIME_OWNER_NOT_PUBLISHED = "prepared_model_runtime_owner_not_published";
 
 const SLACK_INGRESS_LIFECYCLE_CONTEXT_KEY = "openclawIngressLifecycle";
 
@@ -178,7 +179,7 @@ function inspectSlackIngress(raw: SlackIngressRawEvent): { eventId: string; lane
   return { eventId, laneKey: resolveSlackIngressLane(raw.body, eventId) };
 }
 
-function resolveSlackIngressNonRetryableFailure(error: unknown) {
+export function resolveSlackIngressNonRetryableFailure(error: unknown) {
   for (const candidate of collectErrorGraphCandidates(error, (current) => [
     current.cause,
     current.error,
@@ -192,6 +193,12 @@ function resolveSlackIngressNonRetryableFailure(error: unknown) {
       isNonRecoverableSlackAuthError(candidate)
     ) {
       return { reason: "slack-auth", message: formatErrorMessage(candidate) };
+    }
+    if (extractErrorCode(candidate) === PREPARED_MODEL_RUNTIME_OWNER_NOT_PUBLISHED) {
+      return {
+        reason: "runtime-owner-unavailable",
+        message: formatErrorMessage(candidate),
+      };
     }
   }
   return null;

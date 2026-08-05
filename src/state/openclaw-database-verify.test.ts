@@ -15,6 +15,9 @@ import {
 } from "./openclaw-agent-db.js";
 import {
   applyOpenClawDatabaseVerificationResults,
+  OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS,
+  OPENCLAW_DATABASE_VERIFY_INTERVAL_MS,
+  resolveOpenClawDatabaseVerifyInitialDelayMs,
   runDatabaseVerifyWorker,
 } from "./openclaw-database-verify.impl.js";
 import {
@@ -45,6 +48,29 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
         cleanup();
       }
     }
+  });
+});
+
+describe("database verifier scheduling", () => {
+  it("supports a bounded startup delay without changing the daily cadence", () => {
+    expect(resolveOpenClawDatabaseVerifyInitialDelayMs({})).toBe(
+      OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS,
+    );
+    expect(
+      resolveOpenClawDatabaseVerifyInitialDelayMs({
+        OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS: String(60 * 60_000),
+      }),
+    ).toBe(60 * 60_000);
+    expect(
+      resolveOpenClawDatabaseVerifyInitialDelayMs({
+        OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS: "1",
+      }),
+    ).toBe(OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS);
+    expect(
+      resolveOpenClawDatabaseVerifyInitialDelayMs({
+        OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS: String(48 * 60 * 60_000),
+      }),
+    ).toBe(OPENCLAW_DATABASE_VERIFY_INTERVAL_MS);
   });
 });
 

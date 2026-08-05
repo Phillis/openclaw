@@ -10,7 +10,11 @@ import {
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSlackDurableIngress, resolveSlackIngressTurnLifecycle } from "./ingress.js";
+import {
+  createSlackDurableIngress,
+  resolveSlackIngressNonRetryableFailure,
+  resolveSlackIngressTurnLifecycle,
+} from "./ingress.js";
 
 type SlackIngressQueue = NonNullable<Parameters<typeof createSlackDurableIngress>[0]["queue"]>;
 type SlackIngressPayload = Parameters<SlackIngressQueue["enqueue"]>[1];
@@ -103,6 +107,17 @@ async function withQueue(
 describe("Slack durable ingress", () => {
   afterEach(() => {
     closeOpenClawStateDatabaseForTest();
+  });
+
+  it("dead-letters an unpublished prepared runtime owner instead of poisoning retries", () => {
+    const error = Object.assign(new Error("prepared model catalog owner was not published"), {
+      code: "prepared_model_runtime_owner_not_published",
+    });
+
+    expect(resolveSlackIngressNonRetryableFailure(error)).toEqual({
+      reason: "runtime-owner-unavailable",
+      message: "prepared model catalog owner was not published",
+    });
   });
 
   it("does not acknowledge when the durable append fails", async () => {
