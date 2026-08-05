@@ -464,12 +464,17 @@ describe("resolveModel", () => {
 
     const result = await resolveModelAsync("openai", "gpt-5.5", "/tmp/agent", cfg, {
       agentId: "main",
+      allowGatewaySubagentBinding: true,
       runtimeHooks: createRuntimeHooks(),
     });
 
     expectResolvedModel(result);
     expect(preparedSnapshotState.getInputs[0]).toEqual(
-      expect.objectContaining({ agentId: "main", agentDir: "/tmp/agent" }),
+      expect.objectContaining({
+        agentId: "main",
+        agentDir: "/tmp/agent",
+        allowGatewaySubagentBinding: true,
+      }),
     );
     expect(preparedSnapshotState.getInputs[0]).not.toHaveProperty("workspaceDir");
   });

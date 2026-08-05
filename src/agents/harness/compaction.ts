@@ -213,6 +213,8 @@ async function resolveHarnessCompactApiKey(params: {
       allowBundledStaticCatalogFallback: true,
       preferBundledStaticCatalogTransport: true,
       workspaceDir,
+      agentId: params.agentId,
+      ...(compactParams.allowGatewaySubagentBinding ? { allowGatewaySubagentBinding: true } : {}),
     });
   let model = callerRuntimeModel;
   if (!model) {
@@ -224,6 +226,10 @@ async function resolveHarnessCompactApiKey(params: {
             compactParams.authProfileId?.trim() ??
             undefined,
           workspaceDir,
+          agentId: params.agentId,
+          ...(compactParams.allowGatewaySubagentBinding
+            ? { allowGatewaySubagentBinding: true }
+            : {}),
         })
       ).model;
     } catch (error) {

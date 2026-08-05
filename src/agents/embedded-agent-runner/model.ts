@@ -57,6 +57,7 @@ type CommonModelResolutionOptions = {
   authProfileId?: string;
   authProfileMode?: AuthProfileCredential["type"] | "aws-sdk";
   preferredProfile?: string;
+  allowGatewaySubagentBinding?: boolean;
 };
 
 type AsyncModelResolutionOptions = CommonModelResolutionOptions & {
@@ -90,12 +91,14 @@ function resolvePreparedAgentSnapshot(
   explicitWorkspaceDir: string | undefined,
   derivedWorkspaceDir: string | undefined,
   agentId: string | undefined,
+  allowGatewaySubagentBinding: boolean | undefined,
 ): ReturnType<typeof getPreparedModelRuntimeSnapshot> {
   const base = {
     ...(agentId ? { agentId } : {}),
     agentDir: resolvedAgentDir,
     config: cfg ?? {},
     inheritedAuthDir: resolveDefaultAgentDir(cfg ?? {}),
+    ...(allowGatewaySubagentBinding ? { allowGatewaySubagentBinding: true } : {}),
   };
   const published = getPreparedModelRuntimeSnapshot({
     ...base,
@@ -131,6 +134,7 @@ export function resolveModel(
           options?.workspaceDir,
           derivedWorkspaceDir,
           options?.agentId,
+          options?.allowGatewaySubagentBinding,
         )
       : undefined;
   if ((!options?.authStorage || !options?.modelRegistry) && !preparedSnapshot) {
@@ -207,6 +211,7 @@ export async function resolveModelAsync(
           options?.workspaceDir,
           derivedWorkspaceDir,
           options?.agentId,
+          options?.allowGatewaySubagentBinding,
         )
       : undefined;
   const preparedSnapshot =
@@ -217,6 +222,7 @@ export async function resolveModelAsync(
           agentDir: resolvedAgentDir,
           config: cfg ?? {},
           inheritedAuthDir: resolveDefaultAgentDir(cfg ?? {}),
+          ...(options?.allowGatewaySubagentBinding ? { allowGatewaySubagentBinding: true } : {}),
           ...(derivedWorkspaceDir ? { workspaceDir: derivedWorkspaceDir } : {}),
         })
       : undefined);
