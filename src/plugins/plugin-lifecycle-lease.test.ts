@@ -288,4 +288,19 @@ describe("plugin lifecycle lease", () => {
       expect(events).toEqual(["outer", "inner"]);
     });
   });
+
+  it("binds nested lifecycle work to the explicit owner", async () => {
+    await withOpenClawTestState({ label: "plugin-lifecycle-owner" }, async (state) => {
+      const owner = "018f6f60-cafe-7000-8000-000000000002";
+      await withPluginLifecycleLease(
+        { env: state.env, leaseMs: 1_000, waitMs: 0, owner },
+        async (outerLease) => {
+          expect(outerLease.owner).toBe(owner);
+          await expect(
+            withPluginLifecycleLease({ owner: `${owner}-other` }, async () => undefined),
+          ).rejects.toMatchObject({ code: "OPENCLAW_STATE_LEASE_INVALID_INPUT" });
+        },
+      );
+    });
+  });
 });

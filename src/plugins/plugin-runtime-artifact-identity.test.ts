@@ -50,6 +50,26 @@ describe("fingerprintPluginRuntimeArtifact", () => {
     expect(fingerprintPluginRuntimeArtifact(record)).toBe(first);
   });
 
+  it("changes with runtime-relevant file and directory modes", () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = createPluginFixture();
+    const record = { pluginId: "fixture", origin: "global" as const, ...fixture };
+    fs.chmodSync(fixture.rootDir, 0o755);
+    fs.chmodSync(path.join(fixture.rootDir, "dist"), 0o755);
+    fs.chmodSync(fixture.source, 0o644);
+    const initial = fingerprintPluginRuntimeArtifact(record);
+
+    fs.chmodSync(fixture.source, 0o755);
+    const executable = fingerprintPluginRuntimeArtifact(record);
+    expect(executable).not.toBe(initial);
+
+    fs.chmodSync(fixture.source, 0o644);
+    fs.chmodSync(path.join(fixture.rootDir, "dist"), 0o700);
+    expect(fingerprintPluginRuntimeArtifact(record)).not.toBe(initial);
+  });
+
   it("hashes canonical dist content when the registry points at dist-runtime", () => {
     const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-plugin-artifact-"));
     tempDirs.push(packageRoot);

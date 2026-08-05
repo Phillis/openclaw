@@ -41,9 +41,14 @@ function files(version: string, marker: string) {
 }
 
 async function writeTree(root: string, entries: Record<string, string>) {
-  await fs.mkdir(root, { recursive: true });
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  await fs.chmod(root, 0o700);
   await Promise.all(
-    Object.entries(entries).map(([name, content]) => fs.writeFile(path.join(root, name), content)),
+    Object.entries(entries).map(async ([name, content]) => {
+      const filePath = path.join(root, name);
+      await fs.writeFile(filePath, content, { mode: 0o644 });
+      await fs.chmod(filePath, 0o644);
+    }),
   );
 }
 
@@ -132,6 +137,16 @@ async function reconcile(fixture: Awaited<ReturnType<typeof createFixture>>) {
 }
 
 describe("plugins replace-guarded reconcile", () => {
+  it("heals a receipt projection interrupted after monotonic anchor advancement", async () => {
+    const fixture = await interruptAt("after-anchor-advance");
+    const before = await fs.readFile(fixture.receiptPath, "utf8");
+    const receipt = await reconcile(fixture);
+    expect(receipt.outcome).toBe("ABORTED");
+    expect(await fs.readFile(fixture.receiptPath, "utf8")).not.toBe(before);
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
+    await expect(reconcile(fixture)).resolves.toEqual(receipt);
+  });
+
   it("aborts an interruption before swap without mutating target or index", async () => {
     const fixture = await interruptAt("before-swap");
     expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);

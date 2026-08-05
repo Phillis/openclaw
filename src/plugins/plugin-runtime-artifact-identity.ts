@@ -28,14 +28,19 @@ function normalizeRelativePath(filePath: string): string {
   return filePath.split(path.sep).join("/");
 }
 
-function listRuntimeArtifactFiles(rootDir: string): string[] {
+type RuntimeArtifactEntry = { kind: "directory" | "file"; relativePath: string; mode: number };
+
+function artifactMode(mode: number): number {
+  return mode & 0o7777;
+}
+
+function listRuntimeArtifactEntries(rootDir: string): RuntimeArtifactEntry[] {
   const scan = walkDirectorySync(rootDir, {
     maxDepth: MAX_RUNTIME_ARTIFACT_DEPTH,
     maxEntries: MAX_RUNTIME_ARTIFACT_ENTRIES,
     symlinks: "include",
     descend: (entry) => !EXCLUDED_RUNTIME_ARTIFACT_DIRECTORIES.has(entry.name),
-    include: (entry) =>
-      entry.kind !== "directory" && !EXCLUDED_RUNTIME_ARTIFACT_DIRECTORIES.has(entry.name),
+    include: (entry) => !EXCLUDED_RUNTIME_ARTIFACT_DIRECTORIES.has(entry.name),
   });
   if (scan.truncated) {
     throw new Error("plugin runtime artifact exceeds the bounded file scan");
@@ -45,12 +50,18 @@ function listRuntimeArtifactFiles(rootDir: string): string[] {
   }
   return scan.entries
     .map((entry) => {
-      if (entry.kind !== "file") {
+      if (entry.kind !== "file" && entry.kind !== "directory") {
         throw new Error(`plugin runtime artifact contains unsupported ${entry.kind} entry`);
       }
-      return normalizeRelativePath(entry.relativePath);
+      return {
+        kind: entry.kind,
+        relativePath: normalizeRelativePath(entry.relativePath),
+        mode: artifactMode(fs.lstatSync(entry.path).mode),
+      };
     })
-    .toSorted();
+    .toSorted((a, b) =>
+      a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : 0,
+    );
 }
 
 function sameOpenedFile(before: fs.Stats, after: fs.Stats): boolean {
@@ -104,7 +115,11 @@ function hashRuntimeArtifactFile(params: {
     if (!sameOpenedFile(opened.stat, after)) {
       throw new Error(`plugin runtime artifact file changed while reading: ${params.relativePath}`);
     }
-    return { hash: hash.digest("hex"), size: opened.stat.size, mode: opened.stat.mode };
+    return {
+      hash: hash.digest("hex"),
+      size: opened.stat.size,
+      mode: artifactMode(opened.stat.mode),
+    };
   } finally {
     fs.closeSync(opened.fd);
   }
@@ -151,7 +166,11 @@ export function fingerprintPluginRuntimeArtifact(
     throw new Error(`plugin runtime entry escapes its root: ${record.pluginId}`);
   }
 
-  const beforeFiles = listRuntimeArtifactFiles(rootRealPath);
+  const rootMode = artifactMode(fs.lstatSync(rootRealPath).mode);
+  const beforeEntries = listRuntimeArtifactEntries(rootRealPath);
+  const beforeFiles = beforeEntries
+    .filter((entry) => entry.kind === "file")
+    .map((entry) => entry.relativePath);
   if (
     sourceRelativePath !== null &&
     !beforeFiles.includes(normalizeRelativePath(sourceRelativePath))
@@ -159,17 +178,29 @@ export function fingerprintPluginRuntimeArtifact(
     throw new Error(`plugin runtime entry is unavailable: ${record.pluginId}`);
   }
   const hash = crypto.createHash("sha256");
-  hash.update("openclaw-plugin-runtime-artifact-v1\0");
+  hash.update("openclaw-plugin-runtime-artifact-v2\0");
   hash.update(sourceRelativePath ? normalizeRelativePath(sourceRelativePath) : "<no-source>");
   hash.update("\0");
+  hash.update(`root\0${rootMode}\0`);
   let totalBytes = 0;
-  for (const relativePath of beforeFiles) {
-    const file = hashRuntimeArtifactFile({ rootDir: rootRealPath, rootRealPath, relativePath });
+  for (const entry of beforeEntries) {
+    if (entry.kind === "directory") {
+      hash.update(`d\0${entry.relativePath}\0${entry.mode}\0`);
+      continue;
+    }
+    const file = hashRuntimeArtifactFile({
+      rootDir: rootRealPath,
+      rootRealPath,
+      relativePath: entry.relativePath,
+    });
+    if (file.mode !== entry.mode) {
+      throw new Error(`plugin runtime artifact changed while reading: ${entry.relativePath}`);
+    }
     totalBytes += file.size;
     if (totalBytes > MAX_RUNTIME_ARTIFACT_TOTAL_BYTES) {
       throw new Error("plugin runtime artifact exceeds the bounded content scan");
     }
-    hash.update(relativePath);
+    hash.update(`f\0${entry.relativePath}`);
     hash.update("\0");
     hash.update(String(file.mode));
     hash.update("\0");
@@ -178,10 +209,17 @@ export function fingerprintPluginRuntimeArtifact(
     hash.update(file.hash);
     hash.update("\0");
   }
-  const afterFiles = listRuntimeArtifactFiles(rootRealPath);
+  const afterRootMode = artifactMode(fs.lstatSync(rootRealPath).mode);
+  const afterEntries = listRuntimeArtifactEntries(rootRealPath);
   if (
-    beforeFiles.length !== afterFiles.length ||
-    beforeFiles.some((file, i) => file !== afterFiles[i])
+    rootMode !== afterRootMode ||
+    beforeEntries.length !== afterEntries.length ||
+    beforeEntries.some(
+      (entry, i) =>
+        entry.kind !== afterEntries[i]?.kind ||
+        entry.relativePath !== afterEntries[i]?.relativePath ||
+        entry.mode !== afterEntries[i]?.mode,
+    )
   ) {
     throw new Error("plugin runtime artifact changed while reading");
   }

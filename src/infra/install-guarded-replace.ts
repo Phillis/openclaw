@@ -9,13 +9,16 @@ import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { encodePluginInstallDirName } from "../plugins/install-paths.js";
 import { installPluginFromArchive } from "../plugins/install.js";
 import { hashJson } from "../plugins/installed-plugin-index-hash.js";
+import { normalizeInstallRecordMap } from "../plugins/installed-plugin-index-install-records.js";
 import { loadInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
 import { resolveInstalledPluginIndexStateDatabaseOptions } from "../plugins/installed-plugin-index-store-path.js";
+import { resolveInstalledPluginIndexStorePath } from "../plugins/installed-plugin-index-store-path.js";
 import {
   compareAndSwapPersistedInstalledPluginIndexInstallRecord,
   type InstalledPluginIndexWriteLease,
 } from "../plugins/installed-plugin-index-store.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
+import { runInstallPolicy } from "../security/install-policy.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -25,12 +28,17 @@ import {
   type OpenClawStateLeaseContext,
 } from "../state/openclaw-state-lease.js";
 import { resolveUserPath } from "../utils.js";
+import {
+  ensureDurableDirectory,
+  requireDirectorySync,
+  syncDirectory,
+} from "./directory-durability.js";
 import { pathExists } from "./fs-safe.js";
-import { resolveCanonicalInstallTarget } from "./install-target.js";
+import { assertCanonicalPathWithinBase, resolveSafeInstallDir } from "./install-safe-path.js";
 import { resolveOpenClawPackageRootSync } from "./openclaw-root.js";
 import { movePathWithCopyFallback, replaceFileAtomic } from "./replace-file.js";
 
-const RECEIPT_SCHEMA_VERSION = "openclaw.plugins.replace-guarded.v1" as const;
+const RECEIPT_SCHEMA_VERSION = "openclaw.plugins.replace-guarded.v2" as const;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const UUID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const TRUST_ANCHOR_PLUGIN_ID = "openclaw-core";
@@ -42,6 +50,7 @@ export const GUARDED_REPLACE_FAILURE_CODE = {
   TARGET_NOT_INSTALLED: "guarded_replace_target_not_installed",
   INSTALLED_STATE_MISMATCH: "guarded_replace_installed_state_mismatch",
   RECEIPT_RESERVATION_FAILED: "guarded_replace_receipt_reservation_failed",
+  RECEIPT_DURABILITY_FAILED: "guarded_replace_receipt_durability_failed",
   LEASE_UNAVAILABLE: "guarded_replace_lease_unavailable",
   STAGING_FAILED: "guarded_replace_staging_failed",
   GUARD_FAILED: "guarded_replace_guard_failed",
@@ -69,7 +78,7 @@ export class GuardedReplaceError extends Error {
 
 type GuardOutcome = {
   name: "manifest" | "package" | "policy" | "security_scan" | "installed_state";
-  outcome: "PASS" | "FAIL";
+  outcome: "PASS" | "FAIL" | "NOT_CONFIGURED";
   evidence: Record<string, unknown>;
 };
 
@@ -88,26 +97,13 @@ type ReceiptOutcome = "SUCCESS" | "ROLLED_BACK" | "ABORTED" | "INCOMPLETE";
 type ReceiptStatus = "RESERVED" | "ACTIVE" | "COMPLETED" | "ROLLED_BACK" | "ABORTED" | "INCOMPLETE";
 
 type GuardedReplaceTrustAnchor = {
-  schemaVersion: 1;
-  transactionId: string;
+  schemaVersion: 2;
+  revision: number;
   receiptPath: string;
-  pluginId: string;
-  leaseId: string;
-  canonicalTarget: string;
-  transactionRoot: string;
-  predecessorBackup: string;
-  predecessorPayloadSha256: string;
-  candidateArchivePath: string;
-  candidateArchiveSha256: string;
-  rollbackArchivePath: string;
-  rollbackArchiveSha256: string;
-  rollbackStagedPayload: string;
-  rollbackPayloadSha256: string | null;
+  previousReceiptSha256: string | null;
+  receipt: GuardedReplaceReceipt;
   previousRecord: PluginInstallRecord;
-  previousRecordSha256: string;
   candidateRecord: PluginInstallRecord | null;
-  candidateRecordSha256: string | null;
-  stagedPayloadSha256: string | null;
   createdAtMs: number;
 };
 
@@ -115,6 +111,10 @@ export type GuardedReplaceReceipt = {
   schemaVersion: typeof RECEIPT_SCHEMA_VERSION;
   transactionId: string;
   leaseId: string;
+  durability: {
+    fileSync: "REQUIRED";
+    directorySync: "REQUIRED" | "UNAVAILABLE_WINDOWS";
+  };
   pluginId: string;
   status: ReceiptStatus;
   canonicalTarget: {
@@ -154,6 +154,12 @@ export type GuardedReplaceReceipt = {
 };
 
 export type GuardedReplaceFault =
+  | "after-receipt-reserved"
+  | "after-anchor-advance"
+  | "receipt-directory-sync-failure"
+  | "predecessor-mode-drift"
+  | "candidate-mode-drift"
+  | "rollback-mode-drift"
   | "before-swap"
   | "after-swap"
   | "after-state-finalize"
@@ -191,6 +197,10 @@ const ReceiptSchema = z.object({
   schemaVersion: z.literal(RECEIPT_SCHEMA_VERSION),
   transactionId: z.string().regex(UUID_PATTERN),
   leaseId: z.string().regex(UUID_PATTERN),
+  durability: z.object({
+    fileSync: z.literal("REQUIRED"),
+    directorySync: z.enum(["REQUIRED", "UNAVAILABLE_WINDOWS"]),
+  }),
   pluginId: z.string().min(1),
   status: z.enum(["RESERVED", "ACTIVE", "COMPLETED", "ROLLED_BACK", "ABORTED", "INCOMPLETE"]),
   canonicalTarget: z.object({
@@ -228,7 +238,7 @@ const ReceiptSchema = z.object({
   guards: z.array(
     z.object({
       name: z.enum(["manifest", "package", "policy", "security_scan", "installed_state"]),
-      outcome: z.enum(["PASS", "FAIL"]),
+      outcome: z.enum(["PASS", "FAIL", "NOT_CONFIGURED"]),
       evidence: z.record(z.string(), z.unknown()),
     }),
   ),
@@ -243,26 +253,13 @@ const TrustAnchorInstallRecordSchema = z
   .record(z.string(), z.unknown())
   .refine((record) => typeof record.source === "string");
 const TrustAnchorSchema = z.object({
-  schemaVersion: z.literal(1),
-  transactionId: z.string().regex(UUID_PATTERN),
+  schemaVersion: z.literal(2),
+  revision: z.number().int().nonnegative(),
   receiptPath: z.string().min(1),
-  pluginId: z.string().min(1),
-  leaseId: z.string().regex(UUID_PATTERN),
-  canonicalTarget: z.string().min(1),
-  transactionRoot: z.string().min(1),
-  predecessorBackup: z.string().min(1),
-  predecessorPayloadSha256: z.string().regex(SHA256_PATTERN),
-  candidateArchivePath: z.string().min(1),
-  candidateArchiveSha256: z.string().regex(SHA256_PATTERN),
-  rollbackArchivePath: z.string().min(1),
-  rollbackArchiveSha256: z.string().regex(SHA256_PATTERN),
-  rollbackStagedPayload: z.string().min(1),
-  rollbackPayloadSha256: z.string().regex(SHA256_PATTERN).nullable(),
+  previousReceiptSha256: z.string().regex(SHA256_PATTERN).nullable(),
+  receipt: ReceiptSchema,
   previousRecord: TrustAnchorInstallRecordSchema,
-  previousRecordSha256: z.string().regex(SHA256_PATTERN),
   candidateRecord: TrustAnchorInstallRecordSchema.nullable(),
-  candidateRecordSha256: z.string().regex(SHA256_PATTERN).nullable(),
-  stagedPayloadSha256: z.string().regex(SHA256_PATTERN).nullable(),
   createdAtMs: z.number(),
 });
 
@@ -310,7 +307,10 @@ function resolveArchiveCustodySuffix(filePath: string): ".zip" | ".tgz" | ".tar.
   );
 }
 
-async function hashRegularFileDescriptor(filePath: string): Promise<string> {
+async function hashRegularFileDescriptor(
+  filePath: string,
+  options: { sealReadOnly?: boolean } = {},
+): Promise<string> {
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {
     handle = await fs.open(
@@ -326,6 +326,10 @@ async function hashRegularFileDescriptor(filePath: string): Promise<string> {
     for (;;) {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
       if (bytesRead === 0) {
+        if (options.sealReadOnly) {
+          await handle.chmod(0o400);
+          await handle.sync();
+        }
         return hash.digest("hex");
       }
       hash.update(buffer.subarray(0, bytesRead));
@@ -383,8 +387,8 @@ export async function copyGuardedArchiveToCustody(params: {
       }
     }
     assertExpectedHash(hash.digest("hex"), params.expectedSha256, params.label);
-    await custody.sync();
     await custody.chmod(0o400);
+    await custody.sync();
   } catch (error) {
     failure = error;
   } finally {
@@ -400,6 +404,71 @@ export async function copyGuardedArchiveToCustody(params: {
       GUARDED_REPLACE_FAILURE_CODE.INVALID_INPUT,
       `failed to acquire immutable ${params.label} custody`,
       failure,
+    );
+  }
+}
+
+function resolveDurableCandidateCustodyPath(params: {
+  candidateSha256: string;
+  candidateSuffix: ".zip" | ".tgz" | ".tar.gz";
+  stateDir?: string;
+  env?: NodeJS.ProcessEnv;
+}): string {
+  const databasePath = resolveInstalledPluginIndexStorePath(stateOptions(params));
+  return path.join(
+    path.dirname(databasePath),
+    "plugin-archive-custody",
+    "sha256",
+    `${params.candidateSha256}${params.candidateSuffix}`,
+  );
+}
+
+async function acquireDurableCandidateCustody(params: {
+  sourcePath: string;
+  custodyPath: string;
+  expectedSha256: string;
+  transactionId: string;
+}): Promise<void> {
+  const custodyDir = path.dirname(params.custodyPath);
+  const custodyDirectory = await ensureDurableDirectory({
+    directoryPath: custodyDir,
+    label: "plugin archive custody",
+    mode: 0o700,
+  });
+  requireDirectorySync(custodyDirectory.parentSync, "Plugin archive custody");
+  const temporaryPath = path.join(
+    custodyDir,
+    `.${params.expectedSha256}.${params.transactionId}.tmp`,
+  );
+  await copyGuardedArchiveToCustody({
+    sourcePath: params.sourcePath,
+    custodyPath: temporaryPath,
+    expectedSha256: params.expectedSha256,
+    label: "candidate archive",
+  });
+  try {
+    await fs.link(temporaryPath, params.custodyPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw guardedError(
+        GUARDED_REPLACE_FAILURE_CODE.INVALID_INPUT,
+        "failed to publish durable candidate custody",
+        error,
+      );
+    }
+    assertExpectedHash(
+      await hashRegularFileDescriptor(params.custodyPath, { sealReadOnly: true }),
+      params.expectedSha256,
+      "existing candidate custody archive",
+    );
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+  const outcome = await syncDirectory(custodyDir, { label: "plugin archive custody" });
+  if (outcome.status === "unsupported" && process.platform !== "win32") {
+    throw guardedError(
+      GUARDED_REPLACE_FAILURE_CODE.RECEIPT_DURABILITY_FAILED,
+      "candidate custody directory synchronization is unsupported",
     );
   }
 }
@@ -476,18 +545,20 @@ export async function hashGuardedPluginPayload(
 ): Promise<string> {
   const root = await resolveGuardedPayloadRoot({ rootDir, boundaryDir: options.boundaryDir });
   const hash = createHash("sha256");
+  hash.update("openclaw-guarded-plugin-payload-v2\0");
+  hash.update(`root\0${(await fs.lstat(root)).mode & 0o7777}\0`);
   const visit = async (directory: string): Promise<void> => {
     const entries = (await fs.readdir(directory, { withFileTypes: true })).toSorted((a, b) =>
-      a.name.localeCompare(b.name),
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
     for (const entry of entries) {
       const entryPath = path.join(directory, entry.name);
       const relative = path.relative(root, entryPath).split(path.sep).join("/");
       if (entry.isDirectory()) {
-        hash.update(`d\0${relative}\0`);
+        hash.update(`d\0${relative}\0${(await fs.lstat(entryPath)).mode & 0o7777}\0`);
         await visit(entryPath);
       } else if (entry.isFile()) {
-        hash.update(`f\0${relative}\0`);
+        hash.update(`f\0${relative}\0${(await fs.lstat(entryPath)).mode & 0o7777}\0`);
         hash.update(await fs.readFile(entryPath));
         hash.update("\0");
       } else if (entry.isSymbolicLink()) {
@@ -526,18 +597,54 @@ function receiptText(receipt: GuardedReplaceReceipt): string {
   return `${JSON.stringify(receipt, null, 2)}\n`;
 }
 
-async function syncDirectory(directory: string): Promise<void> {
-  const handle = await fs.open(directory, "r");
+export function receiptDurabilityForPlatform(
+  platform: NodeJS.Platform,
+): GuardedReplaceReceipt["durability"] {
+  return {
+    fileSync: "REQUIRED",
+    directorySync: platform === "win32" ? "UNAVAILABLE_WINDOWS" : "REQUIRED",
+  };
+}
+
+async function syncReceiptDirectory(params: {
+  directory: string;
+  platform: NodeJS.Platform;
+  fault?: GuardedReplaceFault;
+}): Promise<void> {
+  if (params.platform === "win32") {
+    return;
+  }
+  if (params.fault === "receipt-directory-sync-failure") {
+    throw guardedError(
+      GUARDED_REPLACE_FAILURE_CODE.RECEIPT_DURABILITY_FAILED,
+      "receipt directory synchronization failed",
+      Object.assign(new Error("receipt directory sync failure injected"), { code: "EIO" }),
+    );
+  }
   try {
-    await handle.sync();
-  } catch {
-    // Directory fsync is unavailable on some supported filesystems.
-  } finally {
-    await handle.close();
+    const outcome = await syncDirectory(params.directory, { label: "guarded replacement receipt" });
+    if (outcome.status !== "synced") {
+      throw new Error(
+        `unsupported directory synchronization${outcome.code ? ` (${outcome.code})` : ""}`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof GuardedReplaceError) {
+      throw error;
+    }
+    throw guardedError(
+      GUARDED_REPLACE_FAILURE_CODE.RECEIPT_DURABILITY_FAILED,
+      "receipt directory synchronization failed",
+      error,
+    );
   }
 }
 
-async function reserveReceipt(receiptPath: string, receipt: GuardedReplaceReceipt): Promise<void> {
+async function reserveReceipt(
+  receiptPath: string,
+  receipt: GuardedReplaceReceipt,
+  params: { platform: NodeJS.Platform; fault?: GuardedReplaceFault },
+): Promise<void> {
   const parent = path.dirname(receiptPath);
   const parentStat = await fs.stat(parent).catch(() => null);
   if (!parentStat?.isDirectory()) {
@@ -554,8 +661,11 @@ async function reserveReceipt(receiptPath: string, receipt: GuardedReplaceReceip
     } finally {
       await handle.close();
     }
-    await syncDirectory(parent);
+    await syncReceiptDirectory({ directory: parent, ...params });
   } catch (error) {
+    if (error instanceof GuardedReplaceError) {
+      throw error;
+    }
     throw guardedError(
       GUARDED_REPLACE_FAILURE_CODE.RECEIPT_RESERVATION_FAILED,
       "create-only receipt reservation failed",
@@ -564,14 +674,19 @@ async function reserveReceipt(receiptPath: string, receipt: GuardedReplaceReceip
   }
 }
 
-async function persistReceipt(receiptPath: string, receipt: GuardedReplaceReceipt): Promise<void> {
+async function persistReceipt(
+  receiptPath: string,
+  receipt: GuardedReplaceReceipt,
+  platform: NodeJS.Platform,
+): Promise<void> {
   await replaceFileAtomic({
     filePath: receiptPath,
     content: receiptText(receipt),
     mode: 0o600,
     syncTempFile: true,
-    syncParentDir: true,
+    syncParentDir: false,
   });
+  await syncReceiptDirectory({ directory: path.dirname(receiptPath), platform });
 }
 
 function appendStage(
@@ -633,7 +748,7 @@ function reserveTrustAnchor(
       .run(
         TRUST_ANCHOR_PLUGIN_ID,
         TRUST_ANCHOR_NAMESPACE,
-        anchor.transactionId,
+        anchor.receipt.transactionId,
         JSON.stringify(anchor),
         anchor.createdAtMs,
       );
@@ -647,18 +762,30 @@ function reserveTrustAnchor(
   }
 }
 
-function updateTrustAnchor(
+function advanceTrustAnchor(
   anchor: GuardedReplaceTrustAnchor,
-  expectedPreviousHash: string,
-  params: { stateDir?: string; env?: NodeJS.ProcessEnv },
-): void {
+  receipt: GuardedReplaceReceipt,
+  params: {
+    stateDir?: string;
+    env?: NodeJS.ProcessEnv;
+    candidateRecord?: PluginInstallRecord | null;
+  },
+): GuardedReplaceTrustAnchor {
+  const nextAnchor: GuardedReplaceTrustAnchor = {
+    ...anchor,
+    revision: anchor.revision + 1,
+    previousReceiptSha256: hashJson(anchor.receipt),
+    receipt: structuredClone(receipt),
+    ...(params.candidateRecord !== undefined ? { candidateRecord: params.candidateRecord } : {}),
+  };
+  const expectedPreviousHash = hashJson(anchor);
   const changed = runOpenClawStateWriteTransaction(({ db }) => {
     const row = db
       .prepare(
         `SELECT value_json FROM plugin_state_entries
          WHERE plugin_id = ? AND namespace = ? AND entry_key = ?`,
       )
-      .get(TRUST_ANCHOR_PLUGIN_ID, TRUST_ANCHOR_NAMESPACE, anchor.transactionId) as
+      .get(TRUST_ANCHOR_PLUGIN_ID, TRUST_ANCHOR_NAMESPACE, anchor.receipt.transactionId) as
       | { value_json: string }
       | undefined;
     if (!row || hashJson(parseTrustAnchor(row.value_json)) !== expectedPreviousHash) {
@@ -670,10 +797,10 @@ function updateTrustAnchor(
          WHERE plugin_id = ? AND namespace = ? AND entry_key = ?`,
       )
       .run(
-        JSON.stringify(anchor),
+        JSON.stringify(nextAnchor),
         TRUST_ANCHOR_PLUGIN_ID,
         TRUST_ANCHOR_NAMESPACE,
-        anchor.transactionId,
+        anchor.receipt.transactionId,
       );
     return Number(result.changes) === 1;
   }, stateDatabaseOptions(params));
@@ -683,12 +810,33 @@ function updateTrustAnchor(
       "guarded replacement trust anchor compare-and-swap failed",
     );
   }
+  return nextAnchor;
+}
+
+async function advanceAndProjectReceipt(params: {
+  anchor: GuardedReplaceTrustAnchor;
+  receipt: GuardedReplaceReceipt;
+  receiptPath: string;
+  stateDir?: string;
+  env?: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  fault?: GuardedReplaceFault;
+  candidateRecord?: PluginInstallRecord | null;
+}): Promise<GuardedReplaceTrustAnchor> {
+  const anchor = advanceTrustAnchor(params.anchor, params.receipt, {
+    ...(params.stateDir ? { stateDir: params.stateDir } : {}),
+    ...(params.env ? { env: params.env } : {}),
+    ...(params.candidateRecord !== undefined ? { candidateRecord: params.candidateRecord } : {}),
+  });
+  injectFault(params.fault, "after-anchor-advance");
+  await persistReceipt(params.receiptPath, params.receipt, params.platform);
+  return anchor;
 }
 
 function loadTrustAnchor(
   transactionId: string,
   params: { stateDir?: string; env?: NodeJS.ProcessEnv },
-): GuardedReplaceTrustAnchor {
+): GuardedReplaceTrustAnchor | null {
   const { db } = openOpenClawStateDatabase(stateDatabaseOptions(params));
   const row = db
     .prepare(
@@ -699,10 +847,7 @@ function loadTrustAnchor(
     | { value_json: string }
     | undefined;
   if (!row) {
-    throw guardedError(
-      GUARDED_REPLACE_FAILURE_CODE.RECOVERY_INCOMPLETE,
-      "guarded replacement trust anchor is missing",
-    );
+    return null;
   }
   return parseTrustAnchor(row.value_json);
 }
@@ -740,6 +885,7 @@ async function compareAndSwapInstallRecord(params: {
 function buildGuardedReplaceInstallRecord(params: {
   previous: PluginInstallRecord;
   candidateArchivePath: string;
+  candidateSha256: string;
   targetDir: string;
   version?: string;
   installedAt: string;
@@ -750,14 +896,24 @@ function buildGuardedReplaceInstallRecord(params: {
       "guarded replacement requires an archive install record",
     );
   }
-  return {
+  const record: PluginInstallRecord = {
     ...params.previous,
     source: "archive",
     sourcePath: params.candidateArchivePath,
+    integrity: `sha256-${Buffer.from(params.candidateSha256, "hex").toString("base64")}`,
+    shasum: undefined,
+    npmIntegrity: undefined,
+    npmShasum: undefined,
+    npmTarballName: undefined,
+    clawpackSha256: undefined,
+    clawpackSpecVersion: undefined,
+    clawpackManifestSha256: undefined,
+    clawpackSize: undefined,
     installPath: params.targetDir,
     ...(params.version ? { version: params.version } : {}),
     installedAt: params.installedAt,
   };
+  return normalizeInstallRecordMap({ candidate: record }).candidate as PluginInstallRecord;
 }
 
 function assertExpectedHash(actual: string, expected: string, label: string): void {
@@ -767,7 +923,7 @@ function assertExpectedHash(actual: string, expected: string, label: string): vo
 }
 
 async function withGuardedLifecycleLease<T>(
-  params: { stateDir?: string; env?: NodeJS.ProcessEnv },
+  params: { stateDir?: string; env?: NodeJS.ProcessEnv; owner: string },
   operation: (lease: OpenClawStateLeaseContext & InstalledPluginIndexWriteLease) => Promise<T>,
 ): Promise<T> {
   const databaseOptions = stateDatabaseOptions(params);
@@ -778,6 +934,7 @@ async function withGuardedLifecycleLease<T>(
         ...(databaseOptions.path ? { path: databaseOptions.path } : {}),
         ...(databaseOptions.database ? { database: databaseOptions.database } : {}),
         waitMs: 0,
+        owner: params.owner,
       },
       operation,
     );
@@ -841,30 +998,42 @@ async function resolveBoundTarget(params: {
       "extensions directory missing",
     );
   }
-  const target = await resolveCanonicalInstallTarget({
+  const target = resolveSafeInstallDir({
     baseDir: extensionsRealPath,
     id: params.pluginId,
     invalidNameMessage: "invalid plugin name: path traversal detected",
-    boundaryLabel: "extensions directory",
     nameEncoder: encodePluginInstallDirName,
   });
   if (!target.ok) {
     throw guardedError(GUARDED_REPLACE_FAILURE_CODE.INVALID_INPUT, target.error);
   }
-  if (!(await pathExists(target.targetDir))) {
+  try {
+    await assertCanonicalPathWithinBase({
+      baseDir: extensionsRealPath,
+      candidatePath: target.path,
+      boundaryLabel: "extensions directory",
+    });
+  } catch (error) {
+    throw guardedError(
+      GUARDED_REPLACE_FAILURE_CODE.INVALID_INPUT,
+      "plugin target is not canonical",
+      error,
+    );
+  }
+  if (!(await pathExists(target.path))) {
     throw guardedError(
       GUARDED_REPLACE_FAILURE_CODE.TARGET_NOT_INSTALLED,
       "plugin target is not installed",
     );
   }
-  const targetStat = await fs.lstat(target.targetDir);
+  const targetStat = await fs.lstat(target.path);
   if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
     throw guardedError(
       GUARDED_REPLACE_FAILURE_CODE.TARGET_NOT_INSTALLED,
       "plugin target is not a directory",
     );
   }
-  return { extensionsRealPath, targetDir: target.targetDir };
+  return { extensionsRealPath, targetDir: target.path };
 }
 
 function plannedTransactionRoot(extensionsDir: string, transactionId: string): string {
@@ -918,12 +1087,15 @@ async function restorePredecessor(
 }
 
 async function finalizeFailure(params: {
+  anchor: GuardedReplaceTrustAnchor;
   receipt: GuardedReplaceReceipt;
   receiptPath: string;
   code: GuardedReplaceFailureCode;
   now: () => number;
   incomplete: boolean;
-}): Promise<void> {
+  stateDir?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<GuardedReplaceTrustAnchor> {
   params.receipt.status = params.incomplete ? "INCOMPLETE" : "ROLLED_BACK";
   params.receipt.outcome = params.incomplete ? "INCOMPLETE" : "ROLLED_BACK";
   params.receipt.failure_code = params.code;
@@ -934,7 +1106,14 @@ async function finalizeFailure(params: {
   appendStage(params.receipt, "RECEIPT_FINALIZED", params.now, {
     outcome: params.receipt.outcome,
   });
-  await persistReceipt(params.receiptPath, params.receipt);
+  return await advanceAndProjectReceipt({
+    anchor: params.anchor,
+    receipt: params.receipt,
+    receiptPath: params.receiptPath,
+    ...(params.stateDir ? { stateDir: params.stateDir } : {}),
+    ...(params.env ? { env: params.env } : {}),
+    platform: process.platform,
+  });
 }
 
 /** Runs the bounded guarded archive replacement transaction. */
@@ -951,6 +1130,16 @@ export async function installGuardedReplace(
   const receiptPath = path.resolve(resolveUserPath(params.receiptPath));
   const candidateSuffix = resolveArchiveCustodySuffix(candidatePath);
   const rollbackSuffix = resolveArchiveCustodySuffix(rollbackPath);
+  assertExpectedHash(
+    await hashRegularFileDescriptor(candidatePath),
+    candidateSha256,
+    "candidate archive",
+  );
+  assertExpectedHash(
+    await hashRegularFileDescriptor(rollbackPath),
+    rollbackSha256,
+    "rollback archive",
+  );
 
   const { extensionsRealPath, targetDir } = await resolveBoundTarget(params);
   assertExpectedHash(
@@ -976,8 +1165,7 @@ export async function installGuardedReplace(
   }
 
   const transactionId = createId(now());
-  const leaseId = createId(now());
-  if (!UUID_PATTERN.test(transactionId) || !UUID_PATTERN.test(leaseId)) {
+  if (!UUID_PATTERN.test(transactionId)) {
     throw guardedError(
       GUARDED_REPLACE_FAILURE_CODE.INVALID_INPUT,
       "transaction ids must be UUIDv7",
@@ -991,33 +1179,18 @@ export async function installGuardedReplace(
     rollbackStagingExtensionsDir,
     encodePluginInstallDirName(params.pluginId),
   );
-  const custodyDir = path.join(transactionRoot, "custody");
-  const candidateCustodyPath = path.join(custodyDir, `candidate${candidateSuffix}`);
-  const rollbackCustodyPath = path.join(custodyDir, `rollback${rollbackSuffix}`);
-  try {
-    await fs.mkdir(transactionRoot, { mode: 0o700 });
-    await fs.mkdir(custodyDir, { mode: 0o700 });
-    await copyGuardedArchiveToCustody({
-      sourcePath: candidatePath,
-      custodyPath: candidateCustodyPath,
-      expectedSha256: candidateSha256,
-      label: "candidate archive",
-    });
-    await copyGuardedArchiveToCustody({
-      sourcePath: rollbackPath,
-      custodyPath: rollbackCustodyPath,
-      expectedSha256: rollbackSha256,
-      label: "rollback archive",
-    });
-    await syncDirectory(custodyDir);
-  } catch (error) {
-    await fs.rm(transactionRoot, { recursive: true, force: true }).catch(() => undefined);
-    throw error;
-  }
+  const transactionCustodyDir = path.join(transactionRoot, "custody");
+  const candidateCustodyPath = resolveDurableCandidateCustodyPath({
+    candidateSha256,
+    candidateSuffix,
+    ...stateOptions(params),
+  });
+  const rollbackCustodyPath = path.join(transactionCustodyDir, `rollback${rollbackSuffix}`);
   const receipt: GuardedReplaceReceipt = {
     schemaVersion: RECEIPT_SCHEMA_VERSION,
     transactionId,
-    leaseId,
+    leaseId: transactionId,
+    durability: receiptDurabilityForPlatform(process.platform),
     pluginId: params.pluginId,
     status: "RESERVED",
     canonicalTarget: {
@@ -1055,304 +1228,441 @@ export async function installGuardedReplace(
     failure_message: null,
     recovery_status: "RESUMABLE",
   };
-  let trustAnchor: GuardedReplaceTrustAnchor = {
-    schemaVersion: 1,
-    transactionId,
-    receiptPath,
-    pluginId: params.pluginId,
-    leaseId,
-    canonicalTarget: targetDir,
-    transactionRoot,
-    predecessorBackup: backupDir,
-    predecessorPayloadSha256: predecessorSha256,
-    candidateArchivePath: candidateCustodyPath,
-    candidateArchiveSha256: candidateSha256,
-    rollbackArchivePath: rollbackCustodyPath,
-    rollbackArchiveSha256: rollbackSha256,
-    rollbackStagedPayload,
-    rollbackPayloadSha256: null,
-    previousRecord,
-    previousRecordSha256: recordHash(previousRecord),
-    candidateRecord: null,
-    candidateRecordSha256: null,
-    stagedPayloadSha256: null,
-    createdAtMs: now(),
-  };
   appendStage(receipt, "IDENTITY_VERIFIED", now, {
     candidateArchiveSha256: candidateSha256,
     predecessorPayloadSha256: predecessorSha256,
     rollbackArchiveSha256: rollbackSha256,
   });
+  appendStage(receipt, "RECEIPT_RESERVED", now, {
+    createOnly: true,
+    durability: receipt.durability,
+  });
+  await reserveReceipt(receiptPath, receipt, {
+    platform: process.platform,
+    fault: params.fault,
+  });
+  injectFault(params.fault, "after-receipt-reserved");
+  let trustAnchor: GuardedReplaceTrustAnchor = {
+    schemaVersion: 2,
+    revision: 0,
+    receiptPath,
+    previousReceiptSha256: null,
+    receipt: structuredClone(receipt),
+    previousRecord,
+    candidateRecord: null,
+    createdAtMs: now(),
+  };
   reserveTrustAnchor(trustAnchor, params);
-  await reserveReceipt(receiptPath, receipt);
-  appendStage(receipt, "RECEIPT_RESERVED", now, { createOnly: true });
-  await persistReceipt(receiptPath, receipt);
 
   let leaseEntered = false;
   let stateCommitted = false;
   let receiptFinalized = false;
   let candidateRecord: PluginInstallRecord | undefined;
   try {
-    const completed = await withGuardedLifecycleLease(params, async (lease) => {
-      leaseEntered = true;
-      try {
-        receipt.status = "ACTIVE";
-        appendStage(receipt, "LEASE_HELD", now, { leaseId });
-        await persistReceipt(receiptPath, receipt);
-
-        lease.assertOwned();
-        const leasedRecords = await loadInstallRecords(params);
-        if (recordHash(leasedRecords[params.pluginId]) !== trustAnchor.previousRecordSha256) {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.INSTALLED_STATE_MISMATCH,
-            "installed plugin record changed before the lifecycle lease was acquired",
-          );
-        }
-        await fs.mkdir(stagingExtensionsDir, { recursive: true, mode: 0o700 });
-        const staged = await installPluginFromArchive({
-          archivePath: candidateCustodyPath,
-          config: params.config,
-          expectedPluginId: params.pluginId,
-          extensionsDir: stagingExtensionsDir,
-          mode: "install",
-          timeoutMs: params.timeoutMs,
-        });
-        if (!staged.ok) {
-          throw guardedError(
-            staged.code
-              ? GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED
-              : GUARDED_REPLACE_FAILURE_CODE.STAGING_FAILED,
-            staged.error,
-          );
-        }
-        const expectedStagedTarget = path.join(
-          stagingExtensionsDir,
-          encodePluginInstallDirName(params.pluginId),
-        );
-        if (path.resolve(staged.targetDir) !== path.resolve(expectedStagedTarget)) {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
-            "staged target identity drifted",
-          );
-        }
-        const stagedPayloadSha256 = await hashGuardedPluginPayload(staged.targetDir, {
-          boundaryDir: extensionsRealPath,
-        });
-        const rollbackStaged = await installPluginFromArchive({
-          archivePath: rollbackCustodyPath,
-          config: params.config,
-          expectedPluginId: params.pluginId,
-          extensionsDir: rollbackStagingExtensionsDir,
-          mode: "install",
-          timeoutMs: params.timeoutMs,
-        });
-        if (!rollbackStaged.ok) {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
-            `rollback archive validation failed: ${rollbackStaged.error}`,
-          );
-        }
-        if (path.resolve(rollbackStaged.targetDir) !== path.resolve(rollbackStagedPayload)) {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
-            "rollback staged target identity drifted",
-          );
-        }
-        const rollbackPayloadSha256 = await hashGuardedPluginPayload(rollbackStaged.targetDir, {
-          boundaryDir: extensionsRealPath,
-        });
-        assertExpectedHash(
-          rollbackPayloadSha256,
-          predecessorSha256,
-          "rollback predecessor payload",
-        );
-        receipt.candidate.stagedPayloadSha256 = stagedPayloadSha256;
-        receipt.candidate.manifest = {
-          id: staged.pluginId,
-          ...(staged.manifestName ? { name: staged.manifestName } : {}),
-          ...(staged.version ? { version: staged.version } : {}),
-        };
-        receipt.rollback.stagedPayloadSha256 = rollbackPayloadSha256;
-        candidateRecord = buildGuardedReplaceInstallRecord({
-          previous: previousRecord,
-          candidateArchivePath: candidatePath,
-          targetDir,
-          version: staged.version,
-          installedAt: new Date(now()).toISOString(),
-        });
-        receipt.installedIndex.candidateRecordSha256 = recordHash(candidateRecord);
-        const previousAnchorHash = hashJson(trustAnchor);
-        trustAnchor = {
-          ...trustAnchor,
-          candidateRecord,
-          candidateRecordSha256: receipt.installedIndex.candidateRecordSha256,
-          stagedPayloadSha256,
-          rollbackPayloadSha256,
-        };
-        // The independently persisted anchor becomes authoritative before any
-        // predecessor or target mutation can occur.
-        updateTrustAnchor(trustAnchor, previousAnchorHash, params);
-        appendStage(receipt, "STAGED", now, {
-          stagedPayloadSha256,
-          rollbackPayloadSha256,
-        });
-        receipt.guards = [
-          { name: "manifest", outcome: "PASS", evidence: { pluginId: staged.pluginId } },
-          { name: "package", outcome: "PASS", evidence: { version: staged.version ?? null } },
-          { name: "policy", outcome: "PASS", evidence: { mode: "update" } },
-          { name: "security_scan", outcome: "PASS", evidence: { source: "archive" } },
-          { name: "installed_state", outcome: "PASS", evidence: { source: "archive" } },
-        ];
-        appendStage(receipt, "GUARDS_RAN", now, { outcome: "PASS" });
-        await persistReceipt(receiptPath, receipt);
-
-        assertExpectedHash(
-          await hashRegularFileDescriptor(candidateCustodyPath),
-          candidateSha256,
-          "candidate custody archive",
-        );
-        assertExpectedHash(
-          await hashRegularFileDescriptor(rollbackCustodyPath),
-          rollbackSha256,
-          "rollback custody archive",
-        );
-        assertExpectedHash(
-          await hashGuardedPluginPayload(targetDir, { boundaryDir: extensionsRealPath }),
-          predecessorSha256,
-          "installed predecessor",
-        );
-        injectFault(params.fault, "before-swap");
-
-        lease.assertOwned();
-        await movePathWithCopyFallback({
-          from: targetDir,
-          to: backupDir,
-          sourceHardlinks: "reject",
-        }).catch((error) => {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.PREDECESSOR_CAPTURE_FAILED,
-            "failed to capture recoverable predecessor",
-            error,
-          );
-        });
-        assertExpectedHash(
-          await hashGuardedPluginPayload(backupDir, { boundaryDir: extensionsRealPath }),
-          predecessorSha256,
-          "captured predecessor",
-        );
-        receipt.predecessor.capturedAtMs = now();
-        appendStage(receipt, "PREDECESSOR_CAPTURED", now, { payloadSha256: predecessorSha256 });
-        await persistReceipt(receiptPath, receipt);
-
-        lease.assertOwned();
-        await movePathWithCopyFallback({
-          from: staged.targetDir,
-          to: targetDir,
-          sourceHardlinks: "reject",
-        }).catch((error) => {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.SWAP_FAILED,
-            "candidate swap failed",
-            error,
-          );
-        });
-        const finalInstalledSha256 = await hashGuardedPluginPayload(targetDir, {
-          boundaryDir: extensionsRealPath,
-        });
-        assertExpectedHash(finalInstalledSha256, stagedPayloadSha256, "published candidate");
-        receipt.finalInstalledSha256 = finalInstalledSha256;
-        appendStage(receipt, "SWAP_PUBLISHED", now, { finalInstalledSha256 });
-        await persistReceipt(receiptPath, receipt);
-        injectFault(params.fault, "after-swap");
-
-        await compareAndSwapInstallRecord({
-          ...params,
-          expectedRecordSha256: trustAnchor.previousRecordSha256,
-          nextRecord: candidateRecord,
-          lease,
-        }).catch((error) => {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.STATE_FINALIZE_FAILED,
-            "installed plugin index transaction failed",
-            error,
-          );
-        });
-        stateCommitted = true;
-        injectFault(params.fault, "after-state-finalize");
-
-        appendStage(receipt, "STATE_FINALIZED", now, {
-          installRecordSha256: receipt.installedIndex.candidateRecordSha256,
-        });
-        receipt.status = "COMPLETED";
-        receipt.outcome = "SUCCESS";
-        receipt.recovery_status = "FINALIZED";
-        appendStage(receipt, "RECEIPT_FINALIZED", now, { outcome: "SUCCESS" });
-        await persistReceipt(receiptPath, receipt).catch((error) => {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.RECEIPT_FINALIZE_FAILED,
-            "receipt finalization failed after state commit",
-            error,
-          );
-        });
-        receiptFinalized = true;
-        if (params.fault === "cleanup-failure") {
-          throw guardedError(
-            GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
-            "post-finalization cleanup failure injected",
-          );
-        }
-        await cleanupTransactionRoot(receipt);
-        return receipt;
-      } catch (error) {
-        const failure =
-          error instanceof GuardedReplaceError
-            ? error
-            : guardedError(
-                GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
-                "guarded replacement failed",
-                error,
-              );
-        // A durable success receipt is the transaction commit point. Cleanup
-        // errors after it must never enter rollback compensation.
-        if (receiptFinalized) {
-          throw failure;
-        }
-        // Fault injection models abrupt process loss: leave the receipt and
-        // planned recovery artifacts exactly at that boundary for reconciliation.
-        if (
-          failure.code === GUARDED_REPLACE_FAILURE_CODE.FAULT_INJECTED ||
-          (stateCommitted && failure.code === GUARDED_REPLACE_FAILURE_CODE.RECEIPT_FINALIZE_FAILED)
-        ) {
-          throw failure;
-        }
-        let incomplete = false;
+    const completed = await withGuardedLifecycleLease(
+      { ...stateOptions(params), owner: transactionId },
+      async (lease) => {
+        leaseEntered = true;
         try {
+          if (lease.owner !== receipt.leaseId) {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.LEASE_UNAVAILABLE,
+              "lifecycle lease owner does not match the durable transaction owner",
+            );
+          }
+          receipt.status = "ACTIVE";
+          appendStage(receipt, "LEASE_HELD", now, { leaseId: lease.owner });
+          trustAnchor = await advanceAndProjectReceipt({
+            anchor: trustAnchor,
+            receipt,
+            receiptPath,
+            ...stateOptions(params),
+            platform: process.platform,
+            fault: params.fault,
+          });
+
           lease.assertOwned();
-          incomplete = !(await restorePredecessor(receipt, extensionsRealPath));
-          if (!incomplete && stateCommitted) {
-            await compareAndSwapInstallRecord({
-              ...params,
-              expectedRecordSha256: trustAnchor.candidateRecordSha256 ?? recordHash(undefined),
-              nextRecord: trustAnchor.previousRecord,
-              lease,
+          const leasedRecords = await loadInstallRecords(params);
+          if (
+            recordHash(leasedRecords[params.pluginId]) !==
+            trustAnchor.receipt.installedIndex.previousRecordSha256
+          ) {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.INSTALLED_STATE_MISMATCH,
+              "installed plugin record changed before the lifecycle lease was acquired",
+            );
+          }
+          await fs.mkdir(transactionRoot, { mode: 0o700 });
+          await fs.mkdir(transactionCustodyDir, { mode: 0o700 });
+          await acquireDurableCandidateCustody({
+            sourcePath: candidatePath,
+            custodyPath: candidateCustodyPath,
+            expectedSha256: candidateSha256,
+            transactionId,
+          });
+          await copyGuardedArchiveToCustody({
+            sourcePath: rollbackPath,
+            custodyPath: rollbackCustodyPath,
+            expectedSha256: rollbackSha256,
+            label: "rollback archive",
+          });
+          await syncDirectory(transactionCustodyDir);
+          await fs.mkdir(stagingExtensionsDir, { recursive: true, mode: 0o700 });
+          const staged = await installPluginFromArchive({
+            archivePath: candidateCustodyPath,
+            config: params.config,
+            expectedPluginId: params.pluginId,
+            extensionsDir: stagingExtensionsDir,
+            mode: "install",
+            timeoutMs: params.timeoutMs,
+          });
+          if (!staged.ok) {
+            throw guardedError(
+              staged.code
+                ? GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED
+                : GUARDED_REPLACE_FAILURE_CODE.STAGING_FAILED,
+              staged.error,
+            );
+          }
+          const expectedStagedTarget = path.join(
+            stagingExtensionsDir,
+            encodePluginInstallDirName(params.pluginId),
+          );
+          if (path.resolve(staged.targetDir) !== path.resolve(expectedStagedTarget)) {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
+              "staged target identity drifted",
+            );
+          }
+          const stagedPayloadSha256 = await hashGuardedPluginPayload(staged.targetDir, {
+            boundaryDir: extensionsRealPath,
+          });
+          const rollbackStaged = await installPluginFromArchive({
+            archivePath: rollbackCustodyPath,
+            config: params.config,
+            expectedPluginId: params.pluginId,
+            extensionsDir: rollbackStagingExtensionsDir,
+            mode: "install",
+            timeoutMs: params.timeoutMs,
+          });
+          if (!rollbackStaged.ok) {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
+              `rollback archive validation failed: ${rollbackStaged.error}`,
+            );
+          }
+          if (path.resolve(rollbackStaged.targetDir) !== path.resolve(rollbackStagedPayload)) {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
+              "rollback staged target identity drifted",
+            );
+          }
+          const rollbackPayloadSha256 = await hashGuardedPluginPayload(rollbackStaged.targetDir, {
+            boundaryDir: extensionsRealPath,
+          });
+          assertExpectedHash(
+            rollbackPayloadSha256,
+            predecessorSha256,
+            "rollback predecessor payload",
+          );
+          receipt.candidate.stagedPayloadSha256 = stagedPayloadSha256;
+          receipt.candidate.manifest = {
+            id: staged.pluginId,
+            ...(staged.manifestName ? { name: staged.manifestName } : {}),
+            ...(staged.version ? { version: staged.version } : {}),
+          };
+          receipt.rollback.stagedPayloadSha256 = rollbackPayloadSha256;
+          candidateRecord = buildGuardedReplaceInstallRecord({
+            previous: previousRecord,
+            candidateArchivePath: candidateCustodyPath,
+            candidateSha256,
+            targetDir,
+            version: staged.version,
+            installedAt: new Date(now()).toISOString(),
+          });
+          receipt.installedIndex.candidateRecordSha256 = recordHash(candidateRecord);
+          const policyFacts = {
+            transactionId,
+            targetPath: targetDir,
+            candidateArchiveSha256: candidateSha256,
+            candidatePayloadSha256: stagedPayloadSha256,
+            predecessorPayloadSha256: predecessorSha256,
+            rollbackArchiveSha256: rollbackSha256,
+            rollbackPayloadSha256,
+            configSha256: hashJson(params.config),
+          };
+          const policyDecision = await runInstallPolicy({
+            config: params.config,
+            env: params.env,
+            request: {
+              targetType: "plugin",
+              targetName: params.pluginId,
+              sourcePath: candidateCustodyPath,
+              sourcePathKind: "file",
+              source: {
+                kind: "archive",
+                authority: "user",
+                mutable: false,
+                network: false,
+              },
+              origin: { type: "plugin-guarded-replace", ...policyFacts },
+              request: {
+                kind: "plugin-archive",
+                mode: "update",
+                requestedSpecifier: `sha256:${candidateSha256}`,
+              },
+              plugin: {
+                pluginId: params.pluginId,
+                contentType: "package",
+                manifestId: staged.pluginId,
+                ...(staged.version ? { version: staged.version } : {}),
+                extensions: staged.extensions,
+              },
+            },
+          });
+          appendStage(receipt, "STAGED", now, {
+            stagedPayloadSha256,
+            rollbackPayloadSha256,
+          });
+          receipt.guards = [
+            { name: "manifest", outcome: "PASS", evidence: { pluginId: staged.pluginId } },
+            { name: "package", outcome: "PASS", evidence: { version: staged.version ?? null } },
+            {
+              name: "policy",
+              outcome: policyDecision?.blocked
+                ? "FAIL"
+                : policyDecision === undefined
+                  ? "NOT_CONFIGURED"
+                  : "PASS",
+              evidence: {
+                mode: "update",
+                facts: policyFacts,
+                decision: policyDecision ?? null,
+              },
+            },
+            {
+              name: "security_scan",
+              outcome: "PASS",
+              evidence: { source: "archive", stagingMode: "install" },
+            },
+            { name: "installed_state", outcome: "PASS", evidence: { source: "archive" } },
+          ];
+          appendStage(receipt, "GUARDS_RAN", now, {
+            outcome: policyDecision?.blocked ? "FAIL" : "PASS",
+          });
+          trustAnchor = await advanceAndProjectReceipt({
+            anchor: trustAnchor,
+            receipt,
+            receiptPath,
+            ...stateOptions(params),
+            platform: process.platform,
+            fault: params.fault,
+            candidateRecord,
+          });
+          if (policyDecision?.blocked) {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
+              policyDecision.blocked.reason,
+            );
+          }
+
+          assertExpectedHash(
+            await hashRegularFileDescriptor(candidateCustodyPath),
+            candidateSha256,
+            "candidate custody archive",
+          );
+          assertExpectedHash(
+            await hashRegularFileDescriptor(rollbackCustodyPath),
+            rollbackSha256,
+            "rollback custody archive",
+          );
+          if (params.fault === "predecessor-mode-drift") {
+            await fs.chmod(targetDir, 0o755);
+          }
+          assertExpectedHash(
+            await hashGuardedPluginPayload(targetDir, { boundaryDir: extensionsRealPath }),
+            predecessorSha256,
+            "installed predecessor",
+          );
+          if (params.fault === "candidate-mode-drift") {
+            await fs.chmod(staged.targetDir, 0o755);
+          }
+          if (params.fault === "rollback-mode-drift") {
+            await fs.chmod(rollbackStaged.targetDir, 0o755);
+          }
+          assertExpectedHash(
+            await hashGuardedPluginPayload(staged.targetDir, { boundaryDir: extensionsRealPath }),
+            stagedPayloadSha256,
+            "staged candidate payload",
+          );
+          assertExpectedHash(
+            await hashGuardedPluginPayload(rollbackStaged.targetDir, {
+              boundaryDir: extensionsRealPath,
+            }),
+            rollbackPayloadSha256,
+            "staged rollback payload",
+          );
+          injectFault(params.fault, "before-swap");
+
+          lease.assertOwned();
+          await movePathWithCopyFallback({
+            from: targetDir,
+            to: backupDir,
+            sourceHardlinks: "reject",
+          }).catch((error) => {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.PREDECESSOR_CAPTURE_FAILED,
+              "failed to capture recoverable predecessor",
+              error,
+            );
+          });
+          assertExpectedHash(
+            await hashGuardedPluginPayload(backupDir, { boundaryDir: extensionsRealPath }),
+            predecessorSha256,
+            "captured predecessor",
+          );
+          receipt.predecessor.capturedAtMs = now();
+          appendStage(receipt, "PREDECESSOR_CAPTURED", now, { payloadSha256: predecessorSha256 });
+          trustAnchor = await advanceAndProjectReceipt({
+            anchor: trustAnchor,
+            receipt,
+            receiptPath,
+            ...stateOptions(params),
+            platform: process.platform,
+          });
+
+          lease.assertOwned();
+          await movePathWithCopyFallback({
+            from: staged.targetDir,
+            to: targetDir,
+            sourceHardlinks: "reject",
+          }).catch((error) => {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.SWAP_FAILED,
+              "candidate swap failed",
+              error,
+            );
+          });
+          const finalInstalledSha256 = await hashGuardedPluginPayload(targetDir, {
+            boundaryDir: extensionsRealPath,
+          });
+          assertExpectedHash(finalInstalledSha256, stagedPayloadSha256, "published candidate");
+          receipt.finalInstalledSha256 = finalInstalledSha256;
+          appendStage(receipt, "SWAP_PUBLISHED", now, { finalInstalledSha256 });
+          trustAnchor = await advanceAndProjectReceipt({
+            anchor: trustAnchor,
+            receipt,
+            receiptPath,
+            ...stateOptions(params),
+            platform: process.platform,
+          });
+          injectFault(params.fault, "after-swap");
+
+          await compareAndSwapInstallRecord({
+            ...params,
+            expectedRecordSha256: trustAnchor.receipt.installedIndex.previousRecordSha256,
+            nextRecord: candidateRecord,
+            lease,
+          }).catch((error) => {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.STATE_FINALIZE_FAILED,
+              "installed plugin index transaction failed",
+              error,
+            );
+          });
+          stateCommitted = true;
+          injectFault(params.fault, "after-state-finalize");
+
+          appendStage(receipt, "STATE_FINALIZED", now, {
+            installRecordSha256: receipt.installedIndex.candidateRecordSha256,
+          });
+          receipt.status = "COMPLETED";
+          receipt.outcome = "SUCCESS";
+          receipt.recovery_status = "FINALIZED";
+          appendStage(receipt, "RECEIPT_FINALIZED", now, { outcome: "SUCCESS" });
+          try {
+            trustAnchor = await advanceAndProjectReceipt({
+              anchor: trustAnchor,
+              receipt,
+              receiptPath,
+              ...stateOptions(params),
+              platform: process.platform,
             });
+          } catch (error) {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.RECEIPT_FINALIZE_FAILED,
+              "receipt finalization failed after state commit",
+              error,
+            );
           }
-          if (!incomplete) {
-            await cleanupTransactionRoot(receipt);
+          receiptFinalized = true;
+          if (params.fault === "cleanup-failure") {
+            throw guardedError(
+              GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
+              "post-finalization cleanup failure injected",
+            );
           }
-        } catch {
-          incomplete = true;
+          await cleanupTransactionRoot(receipt);
+          return receipt;
+        } catch (error) {
+          const failure =
+            error instanceof GuardedReplaceError
+              ? error
+              : guardedError(
+                  GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED,
+                  "guarded replacement failed",
+                  error,
+                );
+          // A durable success receipt is the transaction commit point. Cleanup
+          // errors after it must never enter rollback compensation.
+          if (receiptFinalized) {
+            throw failure;
+          }
+          // Fault injection models abrupt process loss: leave the receipt and
+          // planned recovery artifacts exactly at that boundary for reconciliation.
+          if (
+            failure.code === GUARDED_REPLACE_FAILURE_CODE.FAULT_INJECTED ||
+            (stateCommitted &&
+              failure.code === GUARDED_REPLACE_FAILURE_CODE.RECEIPT_FINALIZE_FAILED)
+          ) {
+            throw failure;
+          }
+          let incomplete = false;
+          try {
+            lease.assertOwned();
+            incomplete = !(await restorePredecessor(receipt, extensionsRealPath));
+            if (!incomplete && stateCommitted) {
+              await compareAndSwapInstallRecord({
+                ...params,
+                expectedRecordSha256:
+                  trustAnchor.receipt.installedIndex.candidateRecordSha256 ?? recordHash(undefined),
+                nextRecord: trustAnchor.previousRecord,
+                lease,
+              });
+            }
+            if (!incomplete) {
+              await cleanupTransactionRoot(receipt);
+            }
+          } catch {
+            incomplete = true;
+          }
+          try {
+            trustAnchor = await finalizeFailure({
+              anchor: trustAnchor,
+              receipt,
+              receiptPath,
+              code: incomplete ? GUARDED_REPLACE_FAILURE_CODE.RECOVERY_INCOMPLETE : failure.code,
+              now,
+              incomplete,
+              ...stateOptions(params),
+            });
+          } catch {
+            // The independently persisted anchor remains the recovery authority.
+          }
+          throw failure;
         }
-        await finalizeFailure({
-          receipt,
-          receiptPath,
-          code: incomplete ? GUARDED_REPLACE_FAILURE_CODE.RECOVERY_INCOMPLETE : failure.code,
-          now,
-          incomplete,
-        }).catch(() => undefined);
-        throw failure;
-      }
-    });
+      },
+    );
     injectFault(params.fault, "after-lease-release");
     return completed;
   } catch (error) {
@@ -1376,7 +1686,13 @@ export async function installGuardedReplace(
     receipt.recovery_status = "FINALIZED";
     appendStage(receipt, "RECEIPT_FINALIZED", now, { outcome: "ABORTED" });
     await cleanupTransactionRoot(receipt).catch(() => undefined);
-    await persistReceipt(receiptPath, receipt).catch(() => undefined);
+    trustAnchor = await advanceAndProjectReceipt({
+      anchor: trustAnchor,
+      receipt,
+      receiptPath,
+      ...stateOptions(params),
+      platform: process.platform,
+    }).catch(() => trustAnchor);
     throw failure;
   }
 }
@@ -1385,9 +1701,15 @@ function assertReceiptPathsBound(
   receipt: GuardedReplaceReceipt,
   extensionsRealPath: string,
   targetDir: string,
+  params: { stateDir?: string; env?: NodeJS.ProcessEnv },
 ): void {
   const expectedRoot = plannedTransactionRoot(extensionsRealPath, receipt.transactionId);
   const expectedCustodyDir = path.join(expectedRoot, "custody");
+  const expectedCandidateCustodyPath = resolveDurableCandidateCustodyPath({
+    candidateSha256: receipt.candidate.archiveSha256,
+    candidateSuffix: resolveArchiveCustodySuffix(receipt.candidate.archivePath),
+    ...stateOptions(params),
+  });
   const expectedRollbackStagedPayload = path.join(
     expectedRoot,
     "rollback-staged",
@@ -1398,9 +1720,7 @@ function assertReceiptPathsBound(
     path.resolve(receipt.transactionRoot) !== path.resolve(expectedRoot) ||
     path.resolve(receipt.predecessor.capturedBackup) !==
       path.resolve(path.join(expectedRoot, "predecessor")) ||
-    path.resolve(path.dirname(receipt.candidate.archivePath)) !==
-      path.resolve(expectedCustodyDir) ||
-    !/^candidate\.(?:zip|tgz|tar\.gz)$/u.test(path.basename(receipt.candidate.archivePath)) ||
+    path.resolve(receipt.candidate.archivePath) !== path.resolve(expectedCandidateCustodyPath) ||
     path.resolve(path.dirname(receipt.rollback.archivePath)) !== path.resolve(expectedCustodyDir) ||
     !/^rollback\.(?:zip|tgz|tar\.gz)$/u.test(path.basename(receipt.rollback.archivePath)) ||
     path.resolve(receipt.rollback.stagedPayloadPath) !== path.resolve(expectedRollbackStagedPayload)
@@ -1412,51 +1732,42 @@ function assertReceiptPathsBound(
   }
 }
 
-function assertReceiptMatchesTrustAnchor(params: {
+function resolveAuthoritativeReceipt(params: {
   receipt: GuardedReplaceReceipt;
   receiptPath: string;
   anchor: GuardedReplaceTrustAnchor;
-}): void {
-  const { receipt, receiptPath, anchor } = params;
-  const matches =
-    anchor.schemaVersion === 1 &&
-    anchor.transactionId === receipt.transactionId &&
-    path.resolve(anchor.receiptPath) === path.resolve(receiptPath) &&
-    anchor.pluginId === receipt.pluginId &&
-    anchor.leaseId === receipt.leaseId &&
-    path.resolve(anchor.canonicalTarget) === path.resolve(receipt.canonicalTarget.realPath) &&
-    path.resolve(anchor.transactionRoot) === path.resolve(receipt.transactionRoot) &&
-    path.resolve(anchor.predecessorBackup) === path.resolve(receipt.predecessor.capturedBackup) &&
-    anchor.predecessorPayloadSha256 === receipt.predecessor.payloadSha256 &&
-    path.resolve(anchor.candidateArchivePath) === path.resolve(receipt.candidate.archivePath) &&
-    anchor.candidateArchiveSha256 === receipt.candidate.archiveSha256 &&
-    path.resolve(anchor.rollbackArchivePath) === path.resolve(receipt.rollback.archivePath) &&
-    anchor.rollbackArchiveSha256 === receipt.rollback.archiveSha256 &&
-    path.resolve(anchor.rollbackStagedPayload) ===
-      path.resolve(receipt.rollback.stagedPayloadPath) &&
-    anchor.rollbackPayloadSha256 === receipt.rollback.stagedPayloadSha256 &&
-    (anchor.rollbackPayloadSha256 === null ||
-      anchor.rollbackPayloadSha256 === anchor.predecessorPayloadSha256) &&
-    anchor.previousRecordSha256 === receipt.installedIndex.previousRecordSha256 &&
-    anchor.candidateRecordSha256 === receipt.installedIndex.candidateRecordSha256 &&
-    anchor.stagedPayloadSha256 === receipt.candidate.stagedPayloadSha256 &&
-    recordHash(anchor.previousRecord) === anchor.previousRecordSha256 &&
-    recordHash(anchor.candidateRecord ?? undefined) ===
-      (anchor.candidateRecordSha256 ?? recordHash(undefined));
-  if (!matches) {
+}): GuardedReplaceReceipt {
+  const authoritativeHash = hashJson(params.anchor.receipt);
+  const projectedHash = hashJson(params.receipt);
+  const projectionIsCurrent = projectedHash === authoritativeHash;
+  const projectionLagsOneRevision = projectedHash === params.anchor.previousReceiptSha256;
+  const anchorRecordsMatch =
+    recordHash(params.anchor.previousRecord) ===
+      params.anchor.receipt.installedIndex.previousRecordSha256 &&
+    recordHash(params.anchor.candidateRecord ?? undefined) ===
+      (params.anchor.receipt.installedIndex.candidateRecordSha256 ?? recordHash(undefined));
+  if (
+    path.resolve(params.anchor.receiptPath) !== path.resolve(params.receiptPath) ||
+    (!projectionIsCurrent && !projectionLagsOneRevision) ||
+    !anchorRecordsMatch
+  ) {
     throw guardedError(
       GUARDED_REPLACE_FAILURE_CODE.RECOVERY_INCOMPLETE,
-      "receipt does not match the independently persisted trust anchor",
+      "receipt projection does not match the current or immediately previous trust-anchor revision",
     );
   }
+  return structuredClone(params.anchor.receipt);
 }
 
 async function markReconciled(params: {
+  anchor: GuardedReplaceTrustAnchor;
   receipt: GuardedReplaceReceipt;
   receiptPath: string;
   now: () => number;
   outcome: ReceiptOutcome;
   incomplete?: boolean;
+  stateDir?: string;
+  env?: NodeJS.ProcessEnv;
 }): Promise<GuardedReplaceReceipt> {
   params.receipt.status = params.incomplete
     ? "INCOMPLETE"
@@ -1477,7 +1788,14 @@ async function markReconciled(params: {
     reconciled: true,
     outcome: params.outcome,
   });
-  await persistReceipt(params.receiptPath, params.receipt);
+  await advanceAndProjectReceipt({
+    anchor: params.anchor,
+    receipt: params.receipt,
+    receiptPath: params.receiptPath,
+    ...(params.stateDir ? { stateDir: params.stateDir } : {}),
+    ...(params.env ? { env: params.env } : {}),
+    platform: process.platform,
+  });
   return params.receipt;
 }
 
@@ -1487,126 +1805,197 @@ export async function installGuardedReplaceReconcile(
 ): Promise<GuardedReplaceReceipt> {
   const now = params.now ?? Date.now;
   const receiptPath = resolveUserPath(params.receiptPath);
-  const receipt = await readReceipt(receiptPath);
+  let receipt = await readReceipt(receiptPath);
   const trustAnchor = loadTrustAnchor(receipt.transactionId, params);
-  assertReceiptMatchesTrustAnchor({ receipt, receiptPath, anchor: trustAnchor });
-  const { extensionsRealPath, targetDir } = await resolveBoundTarget({
-    extensionsDir: params.extensionsDir,
-    pluginId: trustAnchor.pluginId,
-  }).catch(async (error) => {
-    const extensionsRealPath = await fs.realpath(params.extensionsDir);
-    const target = await resolveCanonicalInstallTarget({
+  if (trustAnchor) {
+    receipt = resolveAuthoritativeReceipt({ receipt, receiptPath, anchor: trustAnchor });
+    await persistReceipt(receiptPath, receipt, process.platform);
+  }
+  const extensionsRealPath = await fs.realpath(params.extensionsDir);
+  const target = resolveSafeInstallDir({
+    baseDir: extensionsRealPath,
+    id: receipt.pluginId,
+    invalidNameMessage: "invalid plugin name: path traversal detected",
+    nameEncoder: encodePluginInstallDirName,
+  });
+  if (!target.ok) {
+    throw guardedError(GUARDED_REPLACE_FAILURE_CODE.INVALID_INPUT, target.error);
+  }
+  try {
+    await assertCanonicalPathWithinBase({
       baseDir: extensionsRealPath,
-      id: trustAnchor.pluginId,
-      invalidNameMessage: "invalid plugin name: path traversal detected",
+      candidatePath: target.path,
       boundaryLabel: "extensions directory",
-      nameEncoder: encodePluginInstallDirName,
     });
-    if (!target.ok) {
-      throw error;
+  } catch (error) {
+    throw guardedError(
+      GUARDED_REPLACE_FAILURE_CODE.INVALID_INPUT,
+      "plugin target is not canonical",
+      error,
+    );
+  }
+  const targetDir = target.path;
+  assertReceiptPathsBound(receipt, extensionsRealPath, targetDir, params);
+
+  if (!trustAnchor) {
+    const bootstrapIsUntouched =
+      receipt.status === "RESERVED" &&
+      receipt.outcome === null &&
+      receipt.predecessor.capturedAtMs === null &&
+      receipt.candidate.stagedPayloadSha256 === null &&
+      receipt.rollback.stagedPayloadSha256 === null &&
+      !(await pathExists(receipt.transactionRoot));
+    if (!bootstrapIsUntouched) {
+      throw guardedError(
+        GUARDED_REPLACE_FAILURE_CODE.RECOVERY_INCOMPLETE,
+        "guarded replacement trust anchor is missing after setup began",
+      );
     }
-    return { extensionsRealPath, targetDir: target.targetDir };
-  });
-  assertReceiptPathsBound(receipt, extensionsRealPath, targetDir);
-
-  return await withGuardedLifecycleLease(params, async (lease) => {
-    lease.assertOwned();
-    const records = await loadInstallRecords(params);
-    const currentRecordSha256 = recordHash(records[trustAnchor.pluginId]);
-    const targetExists = await pathExists(targetDir);
-    const targetSha256 = targetExists
-      ? await hashGuardedPluginPayload(targetDir, { boundaryDir: extensionsRealPath })
-      : null;
-    const candidateRecordPresent =
-      trustAnchor.candidateRecordSha256 !== null &&
-      currentRecordSha256 === trustAnchor.candidateRecordSha256;
-    const previousRecordPresent = currentRecordSha256 === trustAnchor.previousRecordSha256;
-
-    if (
-      candidateRecordPresent &&
-      targetSha256 !== null &&
-      targetSha256 === trustAnchor.stagedPayloadSha256
-    ) {
-      receipt.finalInstalledSha256 = targetSha256;
-      if (receipt.status === "COMPLETED" && receipt.outcome === "SUCCESS") {
-        await cleanupTransactionRoot(receipt);
-        return receipt;
-      }
-      if (!receipt.stages.some((stage) => stage.name === "STATE_FINALIZED")) {
-        appendStage(receipt, "STATE_FINALIZED", now, {
-          installRecordSha256: currentRecordSha256,
+    return await withGuardedLifecycleLease(
+      { ...stateOptions(params), owner: receipt.leaseId },
+      async (lease) => {
+        lease.assertOwned();
+        const records = await loadInstallRecords(params);
+        const targetSha256 = (await pathExists(targetDir))
+          ? await hashGuardedPluginPayload(targetDir, { boundaryDir: extensionsRealPath })
+          : null;
+        if (
+          recordHash(records[receipt.pluginId]) !== receipt.installedIndex.previousRecordSha256 ||
+          targetSha256 !== receipt.predecessor.payloadSha256
+        ) {
+          throw guardedError(
+            GUARDED_REPLACE_FAILURE_CODE.RECOVERY_INCOMPLETE,
+            "bootstrap receipt cannot prove untouched predecessor state",
+          );
+        }
+        receipt.status = "ABORTED";
+        receipt.outcome = "ABORTED";
+        receipt.recovery_status = "FINALIZED";
+        appendStage(receipt, "RECEIPT_FINALIZED", now, {
           reconciled: true,
+          outcome: "ABORTED",
+          bootstrap: true,
         });
-      }
-      const completed = await markReconciled({
-        receipt,
-        receiptPath,
-        now,
-        outcome: "SUCCESS",
-      });
-      await cleanupTransactionRoot(receipt);
-      return completed;
-    }
-
-    if (previousRecordPresent) {
-      const restored = await restorePredecessor(receipt, extensionsRealPath);
-      if (!restored) {
-        return await markReconciled({
-          receipt,
-          receiptPath,
-          now,
-          outcome: "INCOMPLETE",
-          incomplete: true,
-        });
-      }
-      await cleanupTransactionRoot(receipt);
-      if (
-        (receipt.status === "ROLLED_BACK" && receipt.outcome === "ROLLED_BACK") ||
-        (receipt.status === "ABORTED" && receipt.outcome === "ABORTED")
-      ) {
+        await persistReceipt(receiptPath, receipt, process.platform);
         return receipt;
-      }
-      return await markReconciled({
-        receipt,
-        receiptPath,
-        now,
-        outcome: receipt.predecessor.capturedAtMs === null ? "ABORTED" : "ROLLED_BACK",
-      });
-    }
+      },
+    );
+  }
 
-    if (candidateRecordPresent) {
-      const restored = await restorePredecessor(receipt, extensionsRealPath);
-      if (!restored) {
-        return await markReconciled({
+  return await withGuardedLifecycleLease(
+    { ...stateOptions(params), owner: receipt.leaseId },
+    async (lease) => {
+      lease.assertOwned();
+      const records = await loadInstallRecords(params);
+      const currentRecordSha256 = recordHash(records[receipt.pluginId]);
+      const targetExists = await pathExists(targetDir);
+      const targetSha256 = targetExists
+        ? await hashGuardedPluginPayload(targetDir, { boundaryDir: extensionsRealPath })
+        : null;
+      const candidateRecordPresent =
+        receipt.installedIndex.candidateRecordSha256 !== null &&
+        currentRecordSha256 === receipt.installedIndex.candidateRecordSha256;
+      const previousRecordPresent =
+        currentRecordSha256 === receipt.installedIndex.previousRecordSha256;
+
+      if (
+        candidateRecordPresent &&
+        targetSha256 !== null &&
+        targetSha256 === receipt.candidate.stagedPayloadSha256
+      ) {
+        receipt.finalInstalledSha256 = targetSha256;
+        if (receipt.status === "COMPLETED" && receipt.outcome === "SUCCESS") {
+          await cleanupTransactionRoot(receipt);
+          return receipt;
+        }
+        if (!receipt.stages.some((stage) => stage.name === "STATE_FINALIZED")) {
+          appendStage(receipt, "STATE_FINALIZED", now, {
+            installRecordSha256: currentRecordSha256,
+            reconciled: true,
+          });
+        }
+        const completed = await markReconciled({
+          anchor: trustAnchor,
           receipt,
           receiptPath,
           now,
-          outcome: "INCOMPLETE",
-          incomplete: true,
+          outcome: "SUCCESS",
+          ...stateOptions(params),
+        });
+        await cleanupTransactionRoot(receipt);
+        return completed;
+      }
+
+      if (previousRecordPresent) {
+        const restored = await restorePredecessor(receipt, extensionsRealPath);
+        if (!restored) {
+          return await markReconciled({
+            anchor: trustAnchor,
+            receipt,
+            receiptPath,
+            now,
+            outcome: "INCOMPLETE",
+            incomplete: true,
+            ...stateOptions(params),
+          });
+        }
+        await cleanupTransactionRoot(receipt);
+        if (
+          (receipt.status === "ROLLED_BACK" && receipt.outcome === "ROLLED_BACK") ||
+          (receipt.status === "ABORTED" && receipt.outcome === "ABORTED")
+        ) {
+          return receipt;
+        }
+        return await markReconciled({
+          anchor: trustAnchor,
+          receipt,
+          receiptPath,
+          now,
+          outcome: receipt.predecessor.capturedAtMs === null ? "ABORTED" : "ROLLED_BACK",
+          ...stateOptions(params),
         });
       }
-      await compareAndSwapInstallRecord({
-        ...params,
-        pluginId: trustAnchor.pluginId,
-        expectedRecordSha256: trustAnchor.candidateRecordSha256!,
-        nextRecord: trustAnchor.previousRecord,
-        lease,
-      });
-      await cleanupTransactionRoot(receipt);
+
+      if (candidateRecordPresent) {
+        const restored = await restorePredecessor(receipt, extensionsRealPath);
+        if (!restored) {
+          return await markReconciled({
+            anchor: trustAnchor,
+            receipt,
+            receiptPath,
+            now,
+            outcome: "INCOMPLETE",
+            incomplete: true,
+            ...stateOptions(params),
+          });
+        }
+        await compareAndSwapInstallRecord({
+          ...params,
+          pluginId: receipt.pluginId,
+          expectedRecordSha256: receipt.installedIndex.candidateRecordSha256!,
+          nextRecord: trustAnchor.previousRecord,
+          lease,
+        });
+        await cleanupTransactionRoot(receipt);
+        return await markReconciled({
+          anchor: trustAnchor,
+          receipt,
+          receiptPath,
+          now,
+          outcome: "ROLLED_BACK",
+          ...stateOptions(params),
+        });
+      }
+
       return await markReconciled({
+        anchor: trustAnchor,
         receipt,
         receiptPath,
         now,
-        outcome: "ROLLED_BACK",
+        outcome: "INCOMPLETE",
+        incomplete: true,
+        ...stateOptions(params),
       });
-    }
-
-    return await markReconciled({
-      receipt,
-      receiptPath,
-      now,
-      outcome: "INCOMPLETE",
-      incomplete: true,
-    });
-  });
+    },
+  );
 }

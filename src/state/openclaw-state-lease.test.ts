@@ -20,6 +20,31 @@ afterEach(() => {
 });
 
 describe("OpenClaw state lease", () => {
+  it("uses and exposes a caller-selected durable owner", async () => {
+    await withOpenClawTestState({ label: "core-state-lease-owner" }, async (state) => {
+      await withOpenClawStateLease(
+        {
+          scope: "core:test",
+          key: "selected-owner",
+          database: { scope: "shared", options: { env: state.env } },
+          leaseMs: 1_000,
+          waitMs: 0,
+          owner: "018f6f60-cafe-7000-8000-000000000001",
+        },
+        async (lease) => {
+          expect(lease.owner).toBe("018f6f60-cafe-7000-8000-000000000001");
+          runOpenClawStateWriteTransaction(({ db }) => {
+            const row = db
+              .prepare("SELECT owner FROM state_leases WHERE scope = ? AND lease_key = ?")
+              .get("core:test", "selected-owner") as { owner?: string } | undefined;
+            expect(row?.owner).toBe(lease.owner);
+            lease.assertOwnedInTransaction(db);
+          });
+        },
+      );
+    });
+  });
+
   it("releases ownership when a CLI exits from inside the leased operation", async () => {
     await withOpenClawTestState({ label: "core-state-lease-process-exit" }, async (state) => {
       const leaseModuleUrl = pathToFileURL(path.resolve("src/state/openclaw-state-lease.ts")).href;

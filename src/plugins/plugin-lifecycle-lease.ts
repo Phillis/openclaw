@@ -30,6 +30,7 @@ type PluginLifecycleLeaseOptions = Pick<
   signal?: AbortSignal;
   leaseMs?: number;
   waitMs?: number;
+  owner?: string;
 };
 
 const activePluginLifecycleLease = new AsyncLocalStorage<ActivePluginLifecycleLease>();
@@ -60,6 +61,12 @@ export async function withPluginLifecycleLease<T>(
     options.database === undefined
   ) {
     options.signal?.throwIfAborted();
+    if (options.owner !== undefined && options.owner !== active.lease.owner) {
+      throw new OpenClawStateLeaseError(
+        "nested plugin lifecycle lease cannot switch the lease owner",
+        { code: "OPENCLAW_STATE_LEASE_INVALID_INPUT" },
+      );
+    }
     active.lease.assertOwned();
     return await run(active.lease);
   }
@@ -76,6 +83,12 @@ export async function withPluginLifecycleLease<T>(
       );
     }
     options.signal?.throwIfAborted();
+    if (options.owner !== undefined && options.owner !== active.lease.owner) {
+      throw new OpenClawStateLeaseError(
+        "nested plugin lifecycle lease cannot switch the lease owner",
+        { code: "OPENCLAW_STATE_LEASE_INVALID_INPUT" },
+      );
+    }
     active.lease.assertOwned();
     return await run(active.lease);
   }
@@ -95,12 +108,14 @@ export async function withPluginLifecycleLease<T>(
       leaseMs: options.leaseMs ?? DEFAULT_PLUGIN_LIFECYCLE_LEASE_MS,
       waitMs: options.waitMs ?? DEFAULT_PLUGIN_LIFECYCLE_WAIT_MS,
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.owner !== undefined ? { owner: options.owner } : {}),
       leaseLabel: "plugin lifecycle lease",
       operationLabel: "plugins.lifecycle.lease",
     },
     async (lease) => {
       const pluginLease: PluginLifecycleLeaseContext = {
         databasePath,
+        owner: lease.owner,
         signal: lease.signal,
         assertOwned: () => lease.assertOwned(),
         assertOwnedInTransaction: (database) => lease.assertOwnedInTransaction(database),

@@ -5,6 +5,7 @@ import path from "node:path";
 import { Command } from "commander";
 import JSZip from "jszip";
 import { afterEach, describe, expect, it } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   GUARDED_REPLACE_FAILURE_CODE,
   GuardedReplaceError,
@@ -12,11 +13,13 @@ import {
   hashGuardedPluginPayload,
   installGuardedReplace,
   installGuardedReplaceReconcile,
+  receiptDurabilityForPlatform,
 } from "../infra/install-guarded-replace.js";
 import {
   loadInstalledPluginIndexInstallRecords,
   writePersistedInstalledPluginIndexInstallRecords,
 } from "../plugins/installed-plugin-index-records.js";
+import { resolveInstalledPluginIndexStorePath } from "../plugins/installed-plugin-index-store-path.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { registerPluginsCli } from "./plugins-cli.js";
@@ -59,10 +62,58 @@ function payloadFiles(version: string, marker: string, withOpenClawPeer = false)
 }
 
 async function writePayload(root: string, files: Record<string, string>): Promise<void> {
-  await fs.mkdir(root, { recursive: true });
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  await fs.chmod(root, 0o700);
   for (const [name, content] of Object.entries(files)) {
-    await fs.writeFile(path.join(root, name), content);
+    await fs.writeFile(path.join(root, name), content, { mode: 0o644 });
+    await fs.chmod(path.join(root, name), 0o644);
   }
+}
+
+async function writeUpdatePolicy(
+  root: string,
+  decision: "allow" | "block",
+): Promise<{ config: OpenClawConfig; logPath: string }> {
+  await fs.chmod(root, 0o700);
+  const scriptPath = path.join(root, `policy-${decision}.cjs`);
+  const logPath = path.join(root, `policy-${decision}.jsonl`);
+  await fs.writeFile(
+    scriptPath,
+    `#!${process.execPath}
+const fs = require("node:fs");
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const request = JSON.parse(input);
+  fs.appendFileSync(process.env.OPENCLAW_POLICY_LOG, input + "\\n");
+  const update = request.request.mode === "update";
+  process.stdout.write(JSON.stringify(update
+    ? ${decision === "allow" ? '{ protocolVersion: 1, decision: "allow", findings: [{ ruleId: "guarded-update", severity: "info", message: "verified" }] }' : '{ protocolVersion: 1, decision: "block", reason: "guarded update blocked" }'}
+    : { protocolVersion: 1, decision: "allow" }));
+});
+`,
+    { mode: 0o700 },
+  );
+  await fs.chmod(scriptPath, 0o700);
+  return {
+    logPath,
+    config: {
+      security: {
+        installPolicy: {
+          enabled: true,
+          exec: {
+            source: "exec",
+            command: scriptPath,
+            env: { OPENCLAW_POLICY_LOG: logPath },
+            trustedDirs: [root],
+            timeoutMs: 5_000,
+            maxOutputBytes: 16 * 1024,
+          },
+        },
+      },
+    },
+  };
 }
 
 async function writeArchive(filePath: string, files: Record<string, string>): Promise<string> {
@@ -196,6 +247,30 @@ describe("plugins replace-guarded transaction", () => {
     await expect(hashGuardedPluginPayload(copy)).resolves.not.toBe(fixture.predecessorSha256);
   });
 
+  it("includes supported file and directory modes in the versioned payload identity", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = await createFixture();
+    const initial = await hashGuardedPluginPayload(fixture.targetDir);
+    await fs.chmod(path.join(fixture.targetDir, "index.js"), 0o755);
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).not.toBe(initial);
+    await fs.chmod(path.join(fixture.targetDir, "index.js"), 0o644);
+    await fs.chmod(fixture.targetDir, 0o755);
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).not.toBe(initial);
+  });
+
+  it("declares the typed weaker receipt durability only for Windows", () => {
+    expect(receiptDurabilityForPlatform("linux")).toEqual({
+      fileSync: "REQUIRED",
+      directorySync: "REQUIRED",
+    });
+    expect(receiptDurabilityForPlatform("win32")).toEqual({
+      fileSync: "REQUIRED",
+      directorySync: "UNAVAILABLE_WINDOWS",
+    });
+  });
+
   it("rejects relative payload symlinks that escape the payload root", async () => {
     const fixture = await createFixture();
     const linkPath = path.join(fixture.targetDir, "escape");
@@ -225,10 +300,12 @@ describe("plugins replace-guarded transaction", () => {
     expect(receipt.guards.map((guard) => guard.outcome)).toEqual([
       "PASS",
       "PASS",
-      "PASS",
+      "NOT_CONFIGURED",
       "PASS",
       "PASS",
     ]);
+    expect(receipt.transactionId).toBe(receipt.leaseId);
+    expect(receipt.durability).toEqual(receiptDurabilityForPlatform(process.platform));
     expect(await fs.readFile(path.join(fixture.targetDir, "index.js"), "utf8")).toContain(
       "candidate",
     );
@@ -238,10 +315,13 @@ describe("plugins replace-guarded transaction", () => {
     });
     expect(records.demo).toMatchObject({
       source: "archive",
-      sourcePath: fixture.candidateArchive,
+      sourcePath: receipt.candidate.archivePath,
+      integrity: `sha256-${Buffer.from(fixture.candidateSha256, "hex").toString("base64")}`,
       installPath: receipt.canonicalTarget.realPath,
       version: "2.0.0",
     });
+    expect(receipt.candidate.archivePath).not.toBe(fixture.candidateArchive);
+    await expect(fs.readFile(receipt.candidate.archivePath)).resolves.toBeInstanceOf(Buffer);
     expect(records.companion?.version).toBe("9.0.0");
     await expect(fs.access(receipt.transactionRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -273,6 +353,43 @@ describe("plugins replace-guarded transaction", () => {
       env: fixture.env,
     });
     expect(records.demo?.version).toBe("2.0.0");
+  });
+
+  it("fails closed when the create-only receipt directory cannot be synchronized", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = await createFixture();
+    await expect(
+      installGuardedReplace({
+        ...transactionParams(fixture),
+        fault: "receipt-directory-sync-failure",
+      }),
+    ).rejects.toMatchObject({
+      code: GUARDED_REPLACE_FAILURE_CODE.RECEIPT_DURABILITY_FAILED,
+    });
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
+    expect(await fs.readdir(fixture.extensionsDir)).toEqual(["demo"]);
+  });
+
+  it("reconciles the bootstrap receipt left before anchor reservation", async () => {
+    const fixture = await createFixture();
+    await expect(
+      installGuardedReplace({
+        ...transactionParams(fixture),
+        fault: "after-receipt-reserved",
+      }),
+    ).rejects.toMatchObject({ code: GUARDED_REPLACE_FAILURE_CODE.FAULT_INJECTED });
+
+    const reconciled = await installGuardedReplaceReconcile({
+      receiptPath: fixture.receiptPath,
+      extensionsDir: fixture.extensionsDir,
+      stateDir: fixture.stateDir,
+      env: fixture.env,
+      config: {},
+    });
+    expect(reconciled.outcome).toBe("ABORTED");
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
   });
 
   it("preserves durable success and recovery artifacts when post-finalization cleanup fails", async () => {
@@ -347,6 +464,18 @@ describe("plugins replace-guarded transaction", () => {
     await expect(fs.access(fixture.receiptPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("leaves no setup mutation when create-only receipt reservation collides", async () => {
+    const fixture = await createFixture();
+    await fs.writeFile(fixture.receiptPath, "occupied", { flag: "wx", mode: 0o600 });
+
+    await expect(installGuardedReplace(transactionParams(fixture))).rejects.toMatchObject({
+      code: GUARDED_REPLACE_FAILURE_CODE.RECEIPT_RESERVATION_FAILED,
+    });
+    await expect(fs.readFile(fixture.receiptPath, "utf8")).resolves.toBe("occupied");
+    expect(await fs.readdir(fixture.extensionsDir)).toEqual(["demo"]);
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
+  });
+
   it("rolls back a staged manifest guard failure without publishing candidate bytes", async () => {
     const fixture = await createFixture({
       candidateFiles: {
@@ -380,6 +509,122 @@ describe("plugins replace-guarded transaction", () => {
       env: fixture.env,
     });
     expect(records.demo?.version).toBe("1.0.0");
+  });
+
+  it("rejects corrupt preexisting checksum-addressed candidate custody", async () => {
+    const fixture = await createFixture();
+    const custodyPath = path.join(
+      path.dirname(
+        resolveInstalledPluginIndexStorePath({
+          stateDir: fixture.stateDir,
+          env: fixture.env,
+        }),
+      ),
+      "plugin-archive-custody",
+      "sha256",
+      `${fixture.candidateSha256}.zip`,
+    );
+    await fs.mkdir(path.dirname(custodyPath), { recursive: true, mode: 0o700 });
+    await fs.writeFile(custodyPath, "corrupt", { mode: 0o400 });
+
+    await expect(installGuardedReplace(transactionParams(fixture))).rejects.toMatchObject({
+      code: GUARDED_REPLACE_FAILURE_CODE.IDENTITY_MISMATCH,
+    });
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
+    await expect(fs.readFile(custodyPath, "utf8")).resolves.toBe("corrupt");
+  });
+
+  it.each(["predecessor-mode-drift", "candidate-mode-drift", "rollback-mode-drift"] as const)(
+    "fails before predecessor mutation on %s",
+    async (fault) => {
+      const fixture = await createFixture();
+      await expect(
+        installGuardedReplace({ ...transactionParams(fixture), fault }),
+      ).rejects.toMatchObject({ code: GUARDED_REPLACE_FAILURE_CODE.IDENTITY_MISMATCH });
+      if (fault === "predecessor-mode-drift") {
+        expect(await hashGuardedPluginPayload(fixture.targetDir)).not.toBe(
+          fixture.predecessorSha256,
+        );
+      } else {
+        expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
+      }
+      const records = await loadInstalledPluginIndexInstallRecords({
+        stateDir: fixture.stateDir,
+        env: fixture.env,
+      });
+      expect(records.demo?.version).toBe("1.0.0");
+    },
+  );
+
+  it("runs and records the actual checksum-bound update policy decision", async () => {
+    const fixture = await createFixture();
+    const policy = await writeUpdatePolicy(fixture.root, "allow");
+    const receipt = await installGuardedReplace({
+      ...transactionParams(fixture),
+      config: policy.config,
+    });
+    const requests = (await fs.readFile(policy.logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            request?: { mode?: string };
+            [key: string]: unknown;
+          },
+      );
+    const update = requests.find((request) => request.request?.mode === "update");
+    expect(update).toMatchObject({
+      targetType: "plugin",
+      targetName: "demo",
+      sourcePath: receipt.candidate.archivePath,
+      sourcePathKind: "file",
+      request: {
+        kind: "plugin-archive",
+        mode: "update",
+        requestedSpecifier: `sha256:${fixture.candidateSha256}`,
+      },
+      origin: {
+        type: "plugin-guarded-replace",
+        transactionId: receipt.transactionId,
+        targetPath: fixture.targetDir,
+        candidateArchiveSha256: fixture.candidateSha256,
+        candidatePayloadSha256: receipt.candidate.stagedPayloadSha256,
+        predecessorPayloadSha256: fixture.predecessorSha256,
+        rollbackArchiveSha256: fixture.rollbackSha256,
+        rollbackPayloadSha256: fixture.predecessorSha256,
+      },
+    });
+    const policyGuard = receipt.guards.find((guard) => guard.name === "policy");
+    expect(policyGuard).toMatchObject({
+      outcome: "PASS",
+      evidence: {
+        mode: "update",
+        decision: {
+          findings: [{ ruleId: "guarded-update", severity: "info", message: "verified" }],
+        },
+      },
+    });
+  });
+
+  it("persists and enforces a blocking update-policy decision before swap", async () => {
+    const fixture = await createFixture();
+    const policy = await writeUpdatePolicy(fixture.root, "block");
+    await expect(
+      installGuardedReplace({ ...transactionParams(fixture), config: policy.config }),
+    ).rejects.toMatchObject({ code: GUARDED_REPLACE_FAILURE_CODE.GUARD_FAILED });
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
+    const receipt = JSON.parse(await fs.readFile(fixture.receiptPath, "utf8")) as {
+      guards: Array<{ name: string; outcome: string; evidence: Record<string, unknown> }>;
+      stages: Array<{ name: string }>;
+    };
+    expect(receipt.guards.find((guard) => guard.name === "policy")).toMatchObject({
+      outcome: "FAIL",
+      evidence: {
+        decision: { blocked: { reason: "blocked by install policy: guarded update blocked" } },
+      },
+    });
+    expect(receipt.stages.some((stage) => stage.name === "SWAP_PUBLISHED")).toBe(false);
   });
 
   it("aborts without touching the target when another lifecycle mutation owns the lease", async () => {

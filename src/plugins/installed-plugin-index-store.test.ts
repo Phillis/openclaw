@@ -306,7 +306,8 @@ describe("installed plugin index persistence", () => {
     };
     const next = {
       ...previous,
-      sourcePath: "/archives/demo-new.tgz",
+      sourcePath: "/state/plugin-archive-custody/sha256/abc.tgz",
+      integrity: "sha256-YWJj",
       version: "2.0.0",
     };
     await writePersistedInstalledPluginIndex(

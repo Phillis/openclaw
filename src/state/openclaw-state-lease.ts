@@ -52,9 +52,12 @@ type OpenClawStateLeaseOptions = {
   processOwner?: OpenClawStateLeaseProcessOwner;
   /** Propagate an exhausted release retry instead of silently relying on expiry. */
   strictRelease?: boolean;
+  /** Caller-selected owner when a durable transaction must name the lease owner before acquisition. */
+  owner?: string;
 };
 
 export type OpenClawStateLeaseContext = {
+  owner: string;
   signal: AbortSignal;
   /** Verify that this exact owner holds a non-expired lease at this instant. */
   assertOwned(): void;
@@ -204,6 +207,10 @@ function validateOptions(options: OpenClawStateLeaseOptions) {
     operationLabel,
     processOwner: options.processOwner,
     strictRelease: options.strictRelease === true,
+    owner:
+      options.owner === undefined
+        ? undefined
+        : validateNonEmptyString(options.owner, `${leaseLabel} owner`),
   };
 }
 
@@ -522,7 +529,7 @@ export async function acquireOpenClawStateLease(
   if (validated.signal?.aborted) {
     throw abortError(validated.signal, "acquisition", validated.leaseLabel);
   }
-  const owner = randomUUID();
+  const owner = validated.owner ?? randomUUID();
   // Acquisition budgets are elapsed-time contracts. Wall-clock changes still
   // affect persisted expiry timestamps, but must not lengthen or shorten waits.
   const deadline = performance.now() + validated.waitMs;
@@ -707,6 +714,7 @@ export async function acquireOpenClawStateLease(
     clearLeaseLifecycle();
   };
   return {
+    owner,
     signal: operationSignal,
     assertOwned: assertOperationOwned,
     assertOwnedInTransaction: assertOperationOwnedInTransaction,
