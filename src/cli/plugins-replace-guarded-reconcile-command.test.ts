@@ -197,13 +197,32 @@ describe("plugins replace-guarded reconcile", () => {
     const fixture = await interruptAt("after-swap");
     const interrupted = JSON.parse(await fs.readFile(fixture.receiptPath, "utf8")) as {
       predecessor: { capturedBackup: string };
+      rollback: { stagedPayloadPath: string };
     };
     await fs.rm(interrupted.predecessor.capturedBackup, { recursive: true, force: true });
+    await fs.rm(interrupted.rollback.stagedPayloadPath, { recursive: true, force: true });
 
     const receipt = await reconcile(fixture);
     expect(receipt.outcome).toBe("INCOMPLETE");
     expect(receipt.recovery_status).toBe("REQUIRES_OPERATOR");
     expect(receipt.failure_code).toBe(GUARDED_REPLACE_FAILURE_CODE.RECOVERY_INCOMPLETE);
+  });
+
+  it("restores from the validated rollback fallback when the captured predecessor is lost", async () => {
+    const fixture = await interruptAt("after-swap");
+    const interrupted = JSON.parse(await fs.readFile(fixture.receiptPath, "utf8")) as {
+      predecessor: { capturedBackup: string };
+    };
+    await fs.rm(interrupted.predecessor.capturedBackup, { recursive: true, force: true });
+
+    const receipt = await reconcile(fixture);
+    expect(receipt.outcome).toBe("ROLLED_BACK");
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
+    const records = await loadInstalledPluginIndexInstallRecords({
+      stateDir: fixture.base.stateDir,
+      env: fixture.base.env,
+    });
+    expect(records.demo?.version).toBe("1.0.0");
   });
 
   it("rejects a symlinked candidate target that escapes the extensions directory", async () => {

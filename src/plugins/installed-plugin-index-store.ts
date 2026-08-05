@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import { withOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
@@ -433,6 +434,49 @@ export async function restorePersistedInstalledPluginIndexIfCurrent(
   // this process's cached metadata stale.
   clearPersistedInstalledPluginIndexCaches();
   return restored;
+}
+
+/** Replace one install record only while its trusted predecessor is still current. */
+export async function compareAndSwapPersistedInstalledPluginIndexInstallRecord(
+  params: InstalledPluginIndexStoreOptions &
+    Partial<Omit<RefreshInstalledPluginIndexParams, "reason" | "installRecords">> & {
+      pluginId: string;
+      expectedRecordSha256: string;
+      nextRecord: PluginInstallRecord;
+      lease: InstalledPluginIndexWriteLease;
+    },
+): Promise<boolean> {
+  const { lease, ...storeParams } = params;
+  assertWritableInstalledPluginIndexStoreOptions(storeParams);
+  const committed = runOpenClawStateWriteTransaction(({ db }) => {
+    lease.assertOwnedInTransaction(db);
+    const currentRow = readInstalledPluginIndexRow(db);
+    const current = parseInstalledPluginIndexSqliteRow(currentRow);
+    if (!current) {
+      return false;
+    }
+    const currentRecords = copySafeInstallRecords(current.installRecords) ?? {};
+    if (hashJson(currentRecords[params.pluginId] ?? null) !== params.expectedRecordSha256) {
+      return false;
+    }
+    const nextRecords: Record<string, PluginInstallRecord> = {
+      ...(currentRecords as Record<string, PluginInstallRecord>),
+      [params.pluginId]: structuredClone(params.nextRecord),
+    };
+    const nextIndex = refreshInstalledPluginIndex({
+      ...storeParams,
+      reason: "source-changed",
+      installRecords: nextRecords,
+    });
+    writePersistedInstalledPluginIndexRow(
+      db,
+      preparePersistedInstalledPluginIndex(nextIndex),
+      resolveNextInstalledPluginIndexRevision(currentRow ? Number(currentRow.updated_at_ms) : null),
+    );
+    return true;
+  }, resolveInstalledPluginIndexStateDatabaseOptions(storeParams));
+  clearPersistedInstalledPluginIndexCaches();
+  return committed;
 }
 
 export function writePersistedInstalledPluginIndexSync(

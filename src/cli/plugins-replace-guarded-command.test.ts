@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   GUARDED_REPLACE_FAILURE_CODE,
   GuardedReplaceError,
+  copyGuardedArchiveToCustody,
   hashGuardedPluginPayload,
   installGuardedReplace,
   installGuardedReplaceReconcile,
@@ -16,7 +17,7 @@ import {
   loadInstalledPluginIndexInstallRecords,
   writePersistedInstalledPluginIndexInstallRecords,
 } from "../plugins/installed-plugin-index-records.js";
-import { acquirePluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
+import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { registerPluginsCli } from "./plugins-cli.js";
 
@@ -29,6 +30,14 @@ afterEach(async () => {
 
 function sha256(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function payloadFiles(version: string, marker: string, withOpenClawPeer = false) {
@@ -151,6 +160,33 @@ function transactionParams(fixture: Awaited<ReturnType<typeof createFixture>>) {
 }
 
 describe("plugins replace-guarded transaction", () => {
+  it("copies the opened archive bytes even when the caller pathname is replaced", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-guarded-custody-"));
+    tempDirs.push(root);
+    const source = path.join(root, "candidate.zip");
+    const displaced = path.join(root, "candidate-original.zip");
+    const custodyDir = path.join(root, "custody");
+    const custody = path.join(custodyDir, "candidate.zip");
+    const trusted = Buffer.from("trusted archive bytes");
+    const replacement = Buffer.from("replacement archive bytes");
+    await fs.writeFile(source, trusted);
+    await fs.mkdir(custodyDir, { mode: 0o700 });
+
+    await copyGuardedArchiveToCustody({
+      sourcePath: source,
+      custodyPath: custody,
+      expectedSha256: sha256(trusted),
+      label: "candidate archive",
+      afterSourceOpen: async () => {
+        await fs.rename(source, displaced);
+        await fs.writeFile(source, replacement);
+      },
+    });
+
+    await expect(fs.readFile(custody)).resolves.toEqual(trusted);
+    await expect(fs.readFile(source)).resolves.toEqual(replacement);
+  });
+
   it("hashes payloads deterministically and detects byte changes", async () => {
     const fixture = await createFixture();
     const copy = path.join(fixture.root, "copy");
@@ -327,9 +363,37 @@ describe("plugins replace-guarded transaction", () => {
     expect(receiptText).not.toContain("secret-payload-value");
   });
 
+  it("rejects a rollback archive whose verified bytes do not reconstruct the predecessor", async () => {
+    const fixture = await createFixture();
+    const rollbackSha256 = await writeArchive(
+      fixture.rollbackArchive,
+      payloadFiles("1.0.0", "unrelated rollback payload"),
+    );
+
+    await expect(
+      installGuardedReplace({ ...transactionParams(fixture), rollbackSha256 }),
+    ).rejects.toMatchObject({ code: GUARDED_REPLACE_FAILURE_CODE.IDENTITY_MISMATCH });
+
+    expect(await hashGuardedPluginPayload(fixture.targetDir)).toBe(fixture.predecessorSha256);
+    const records = await loadInstalledPluginIndexInstallRecords({
+      stateDir: fixture.stateDir,
+      env: fixture.env,
+    });
+    expect(records.demo?.version).toBe("1.0.0");
+  });
+
   it("aborts without touching the target when another lifecycle mutation owns the lease", async () => {
     const fixture = await createFixture();
-    const lease = await acquirePluginLifecycleLease(fixture.extensionsDir);
+    const entered = deferred();
+    const release = deferred();
+    const holder = withPluginLifecycleLease(
+      { env: fixture.env, leaseMs: 1_000, waitMs: 3_000 },
+      async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    );
+    await entered.promise;
     try {
       await expect(installGuardedReplace(transactionParams(fixture))).rejects.toMatchObject({
         code: GUARDED_REPLACE_FAILURE_CODE.LEASE_UNAVAILABLE,
@@ -340,7 +404,8 @@ describe("plugins replace-guarded transaction", () => {
       };
       expect(receipt.outcome).toBe("ABORTED");
     } finally {
-      await lease.release();
+      release.resolve();
+      await holder;
     }
   });
 });

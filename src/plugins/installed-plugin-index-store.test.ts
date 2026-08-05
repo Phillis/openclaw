@@ -12,12 +12,14 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
 import type { PluginCandidate } from "./discovery.js";
+import { hashJson } from "./installed-plugin-index-hash.js";
 import {
   readPersistedInstalledPluginIndexInstallRecords,
   writePersistedInstalledPluginIndexInstallRecords,
   writePersistedInstalledPluginIndexInstallRecordsWithLease,
 } from "./installed-plugin-index-records.js";
 import {
+  compareAndSwapPersistedInstalledPluginIndexInstallRecord,
   inspectPersistedInstalledPluginIndex,
   readPersistedInstalledPluginIndex,
   refreshPersistedInstalledPluginIndex,
@@ -285,6 +287,77 @@ describe("installed plugin index persistence", () => {
 
     expect(receipt.previous).toEqual(predecessor);
     expect(receipt.revision).toBe(requirePersistedRevision(readPersistedIndexRevision(stateDir)));
+    expect(lease.assertOwnedInTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("replaces one matching install record without overwriting unrelated records", async () => {
+    const stateDir = makeTempDir();
+    const lease = { assertOwnedInTransaction: vi.fn() };
+    const previous = {
+      source: "archive" as const,
+      sourcePath: "/archives/demo-old.tgz",
+      installPath: "/plugins/demo",
+      version: "1.0.0",
+    };
+    const unrelated = {
+      source: "path" as const,
+      sourcePath: "/plugins/other",
+      installPath: "/plugins/other",
+    };
+    const next = {
+      ...previous,
+      sourcePath: "/archives/demo-new.tgz",
+      version: "2.0.0",
+    };
+    await writePersistedInstalledPluginIndex(
+      createIndex({ installRecords: { demo: previous, other: unrelated } }),
+      { stateDir },
+    );
+
+    await expect(
+      compareAndSwapPersistedInstalledPluginIndexInstallRecord({
+        stateDir,
+        candidates: [],
+        pluginId: "demo",
+        expectedRecordSha256: hashJson(previous),
+        nextRecord: next,
+        lease,
+      }),
+    ).resolves.toBe(true);
+
+    const persisted = requirePersisted(await readPersistedInstalledPluginIndex({ stateDir }));
+    expect(persisted.installRecords).toEqual({ demo: next, other: unrelated });
+    expect(lease.assertOwnedInTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a stale per-record compare-and-swap without changing the index", async () => {
+    const stateDir = makeTempDir();
+    const lease = { assertOwnedInTransaction: vi.fn() };
+    const current = {
+      source: "archive" as const,
+      sourcePath: "/archives/demo-current.tgz",
+      installPath: "/plugins/demo",
+      version: "2.0.0",
+    };
+    const next = { ...current, version: "3.0.0" };
+    const index = createIndex({ installRecords: { demo: current } });
+    await writePersistedInstalledPluginIndex(index, { stateDir });
+
+    await expect(
+      compareAndSwapPersistedInstalledPluginIndexInstallRecord({
+        stateDir,
+        candidates: [],
+        pluginId: "demo",
+        expectedRecordSha256: hashJson({ ...current, version: "1.0.0" }),
+        nextRecord: next,
+        lease,
+      }),
+    ).resolves.toBe(false);
+
+    expect(requirePersisted(await readPersistedInstalledPluginIndex({ stateDir }))).toEqual({
+      ...index,
+      warning: expect.any(String),
+    });
     expect(lease.assertOwnedInTransaction).toHaveBeenCalledOnce();
   });
 

@@ -4,6 +4,7 @@ import { formatDocsLink } from "../../packages/terminal-core/src/links.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import type { PluginInspectOptions } from "./plugins-inspect-command.js";
 import type { PluginsListOptions } from "./plugins-list-command.js";
+import type { PluginReplaceGuardedOptions } from "./plugins-replace-guarded-command.js";
 import { parseStrictPositiveIntOption } from "./program/helpers.js";
 import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
 
@@ -242,6 +243,32 @@ export function registerPluginsCli(program: Command) {
           acknowledgeClawHubRisk: normalizeCommanderClawHubRiskOption(opts),
         },
       });
+    });
+
+  const replaceGuarded = plugins
+    .command("replace-guarded")
+    .description("Replace one archive-installed plugin with verified custody identities")
+    .argument("<candidate-archive>", "Candidate plugin archive")
+    .requiredOption("--id <id>", "Installed plugin id")
+    .requiredOption("--candidate-sha256 <sha256>", "Expected candidate archive SHA-256")
+    .requiredOption("--expected-predecessor-sha256 <sha256>", "Expected installed payload SHA-256")
+    .requiredOption("--rollback-archive <path>", "Verified rollback archive")
+    .requiredOption("--rollback-sha256 <sha256>", "Expected rollback archive SHA-256")
+    .requiredOption("--receipt <path>", "Create-only durable receipt path")
+    .action(async (candidateArchive: string, opts: PluginReplaceGuardedOptions) => {
+      const { runPluginReplaceGuardedCommand } =
+        await import("./plugins-replace-guarded-command.js");
+      await runPluginReplaceGuardedCommand(candidateArchive, opts);
+    });
+
+  replaceGuarded
+    .command("reconcile")
+    .description("Reconcile one interrupted guarded replacement receipt")
+    .requiredOption("--receipt <path>", "Existing guarded replacement receipt")
+    .action(async (opts: { receipt: string }) => {
+      const { runPluginReplaceGuardedReconcileCommand } =
+        await import("./plugins-replace-guarded-reconcile-command.js");
+      await runPluginReplaceGuardedReconcileCommand(opts);
     });
 
   plugins

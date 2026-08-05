@@ -34,6 +34,8 @@ Manage Gateway plugins, hook packs, and compatible bundles.
 openclaw plugins list [--enabled] [--verbose] [--json]
 openclaw plugins search <query> [--limit <n>] [--json]
 openclaw plugins install <path-or-spec> [--link] [--force] [--pin] [--marketplace <source>]
+openclaw plugins replace-guarded <candidate-archive> --id <id> --candidate-sha256 <sha256> --expected-predecessor-sha256 <sha256> --rollback-archive <path> --rollback-sha256 <sha256> --receipt <path>
+openclaw plugins replace-guarded reconcile --receipt <path>
 openclaw plugins inspect <id> [--runtime] [--json]
 openclaw plugins inspect --all [--runtime] [--json]
 openclaw plugins info <id>                    # alias for inspect
@@ -192,6 +194,14 @@ non-npm sources are not rewritten.
     `--force` confirms a non-ClawHub source without prompting. It does not bypass `security.installPolicy` or remaining install safety checks. When the plugin or hook pack is already installed, it also reuses the existing target and overwrites it in place. Use it after reviewing an arbitrary npm, local, archive, git, or marketplace source, or when intentionally reinstalling the same id. For routine upgrades of an already tracked npm plugin, prefer `openclaw plugins update <id-or-npm-spec>`.
 
     If you run `plugins install` for a plugin id that is already installed, OpenClaw stops and points you at `plugins update <id-or-npm-spec>` for a normal upgrade, or at `plugins install <package> --force` when you genuinely want to overwrite the current install from a different source. Arbitrary sources still show the interactive provenance warning; noninteractive installs must pass `--force` after review. Trusted ClawHub and OpenClaw-catalog sources do not need it. With `--link`, `--force` confirms the source but does not change the linked-path install mode.
+
+  </Accordion>
+  <Accordion title="Guarded archive replacement">
+    `plugins replace-guarded` is a recovery-oriented command for an already-installed local archive plugin. It requires exact candidate archive, installed predecessor payload, and rollback archive SHA-256 identities plus a new receipt path whose parent directory already exists. Each caller-owned archive is copied through one no-follow file descriptor into create-only, read-only transaction custody while its exact copied bytes are hashed. The command reserves the receipt before changing the plugin target, stores an independent trust anchor in the shared state database, and holds the SQLite-backed host lifecycle lease. It then stages and validates both archives, requires the rollback payload to match the installed predecessor, retains the captured predecessor and validated rollback fallback until the target and installed index are consistent, and records a typed final outcome. The installed-index transition uses per-record compare-and-swap, preserving unrelated plugin records.
+
+    If the process stops after publication, run `openclaw plugins replace-guarded reconcile --receipt <path>`. Reconciliation verifies the mutable receipt against its independent trust anchor, then completes a committed candidate, restores the verified predecessor, or reports that operator authorization is required when neither state can be proven safe. Re-running reconciliation verifies the anchored state and otherwise makes no change.
+
+    This command does not accept `--force`, `--marketplace`, `--link`, `--pin`, or `--dangerously-force-unsafe-install`. It does not mutate plugin configuration or restart the Gateway.
 
   </Accordion>
   <Accordion title="--pin scope">
