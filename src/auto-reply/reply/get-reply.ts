@@ -271,7 +271,10 @@ export async function getReplyFromConfig(
     // publications must not mix a new global config with an older prepared catalog owner.
     const owner = await (
       await import("../../agents/prepared-model-catalog.js")
-    ).loadResolvedPublishedModelCatalogOwner({ agentId });
+    ).loadResolvedPublishedModelCatalogOwner({
+      agentId,
+      allowGatewaySubagentBinding: true,
+    });
     // The published generation may refresh config, directories, and catalog together, but the
     // admitted session must never cross agent ownership while doing so.
     if (!publishedModelCatalogOwnerMatchesAgent(owner, agentId)) {

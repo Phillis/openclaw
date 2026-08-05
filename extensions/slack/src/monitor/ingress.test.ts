@@ -109,15 +109,12 @@ describe("Slack durable ingress", () => {
     closeOpenClawStateDatabaseForTest();
   });
 
-  it("dead-letters an unpublished prepared runtime owner instead of poisoning retries", () => {
+  it("treats an unpublished prepared runtime owner as retryable", () => {
     const error = Object.assign(new Error("prepared model catalog owner was not published"), {
       code: "prepared_model_runtime_owner_not_published",
     });
 
-    expect(resolveSlackIngressNonRetryableFailure(error)).toEqual({
-      reason: "runtime-owner-unavailable",
-      message: "prepared model catalog owner was not published",
-    });
+    expect(resolveSlackIngressNonRetryableFailure(error)).toBe(null);
   });
 
   it("does not acknowledge when the durable append fails", async () => {

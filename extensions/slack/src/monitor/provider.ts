@@ -413,7 +413,9 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const clientOptions = resolveSlackWebClientOptions({}, slackDispatcher);
   const durableIngress = createSlackDurableIngress({
     accountId: account.accountId,
-    ...(runtime.log ? { onLog: runtime.log } : {}),
+    ...(runtime.log
+      ? { onLog: (message: string) => runtime.log?.(`[${account.accountId}] ${message}`) }
+      : {}),
     ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
   });
   const monitorContextRef: { current?: SlackMonitorContext } = {};
@@ -483,7 +485,11 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       ? registerSlackSocketModeConnectionDiagnostics({
           app,
           onSharedConnection: (activeConnections) => {
-            runtime.log?.(warn(formatSlackSocketModeSharedConnectionWarning(activeConnections)));
+            runtime.log?.(
+              warn(
+                formatSlackSocketModeSharedConnectionWarning(activeConnections, account.accountId),
+              ),
+            );
           },
         })
       : () => {};

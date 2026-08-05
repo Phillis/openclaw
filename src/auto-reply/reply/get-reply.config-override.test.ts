@@ -9,6 +9,7 @@ import {
 } from "./get-reply.test-fixtures.js";
 import { loadGetReplyModuleForTest } from "./get-reply.test-loader.js";
 import "./get-reply.test-runtime-mocks.js";
+import { usesFullReplyRuntime, usesPublishedReplyRuntime } from "./reply-config-runtime-mode.js";
 
 const mocks = vi.hoisted(() => ({
   resolveReplyDirectives: vi.fn(),
@@ -135,6 +136,7 @@ describe("getReplyFromConfig configOverride", () => {
 
     expect(mocks.loadResolvedPublishedModelCatalogOwner).toHaveBeenCalledWith({
       agentId: "main",
+      allowGatewaySubagentBinding: true,
     });
     expectResolvedTelegramTimezone(mocks.resolveReplyDirectives);
     expect(mocks.resolveReplyDirectives).toHaveBeenCalledWith(
@@ -185,5 +187,22 @@ describe("getReplyFromConfig configOverride", () => {
     expect(Reflect.ownKeys(cfg)).toEqual(ownKeys);
     expect(loadConfigMock).not.toHaveBeenCalled();
     expectResolvedTelegramTimezone(mocks.resolveReplyDirectives);
+  });
+
+  it("isolates conflicting runtime modes for concurrent replies sharing one config", async () => {
+    const { withFullRuntimeReplyConfig, withPublishedRuntimeReplyConfig } =
+      await import("./get-reply-fast-path.js");
+    const sharedConfig = Object.freeze({
+      agents: { defaults: { userTimezone: "UTC" } },
+    } satisfies OpenClawConfig);
+
+    const publishedConfig = withPublishedRuntimeReplyConfig(sharedConfig);
+    const fullConfig = withFullRuntimeReplyConfig(sharedConfig);
+
+    expect(publishedConfig).toBe(sharedConfig);
+    expect(fullConfig).not.toBe(sharedConfig);
+    expect(usesPublishedReplyRuntime(publishedConfig)).toBe(true);
+    expect(usesFullReplyRuntime(fullConfig)).toBe(true);
+    expect(usesPublishedReplyRuntime(fullConfig)).toBe(false);
   });
 });

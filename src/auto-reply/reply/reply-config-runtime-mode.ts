@@ -8,6 +8,15 @@ export function markReplyConfigRuntimeMode<T extends OpenClawConfig>(
   config: T,
   runtimeMode: "fast" | "full" | "published",
 ): T {
+  const existingMode = replyConfigRuntimeModes.get(config);
+  if (existingMode !== undefined && existingMode !== runtimeMode) {
+    // Runtime mode belongs to one reply admission, while Gateway config snapshots are shared
+    // across concurrent channel turns. Never let an exact/full caller downgrade a published turn
+    // (or vice versa) by mutating metadata attached to the shared object.
+    const isolatedConfig = { ...config } as T;
+    replyConfigRuntimeModes.set(isolatedConfig, runtimeMode);
+    return isolatedConfig;
+  }
   replyConfigRuntimeModes.set(config, runtimeMode);
   return config;
 }

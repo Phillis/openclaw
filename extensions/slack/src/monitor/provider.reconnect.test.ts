@@ -175,9 +175,12 @@ describe("slack socket reconnect helpers", () => {
     expect(formatSlackSocketModeSharedConnectionWarning(2)).toContain(
       "equivalent routing and authorization",
     );
+    expect(formatSlackSocketModeSharedConnectionWarning(2, "oscar")).toContain(
+      "[oscar] slack socket mode reports 2 active connections",
+    );
   });
 
-  it("warns once when Slack reports a shared Socket Mode app token", () => {
+  it("warns once per shared Socket Mode connection episode", () => {
     const client = new FakeEmitter();
     const onSharedConnection = vi.fn();
     const unregister = registerSlackSocketModeConnectionDiagnostics({
@@ -197,6 +200,11 @@ describe("slack socket reconnect helpers", () => {
     );
     client.emit(
       "ws_message",
+      Buffer.from(JSON.stringify({ type: "hello", num_connections: 2 })),
+      false,
+    );
+    client.emit(
+      "ws_message",
       Buffer.from(JSON.stringify({ type: "hello", num_connections: 1 })),
       false,
     );
@@ -208,8 +216,9 @@ describe("slack socket reconnect helpers", () => {
     client.emit("ws_message", JSON.stringify({ type: "hello", num_connections: 2 }), false);
     client.emit("ws_message", JSON.stringify({ type: "hello", num_connections: 3 }), false);
 
-    expect(onSharedConnection).toHaveBeenCalledTimes(1);
-    expect(onSharedConnection).toHaveBeenCalledWith(2);
+    expect(onSharedConnection).toHaveBeenCalledTimes(2);
+    expect(onSharedConnection).toHaveBeenNthCalledWith(1, 2);
+    expect(onSharedConnection).toHaveBeenNthCalledWith(2, 2);
 
     unregister();
     client.emit(
@@ -217,7 +226,7 @@ describe("slack socket reconnect helpers", () => {
       Buffer.from(JSON.stringify({ type: "hello", num_connections: 2 })),
       false,
     );
-    expect(onSharedConnection).toHaveBeenCalledTimes(1);
+    expect(onSharedConnection).toHaveBeenCalledTimes(2);
     expect(client.listenerCount("ws_message")).toBe(0);
   });
 

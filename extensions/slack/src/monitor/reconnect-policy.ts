@@ -78,9 +78,13 @@ function resolveSlackSocketModeConnectionCount(message: unknown): number | undef
   return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
 }
 
-export function formatSlackSocketModeSharedConnectionWarning(activeConnections: number): string {
+export function formatSlackSocketModeSharedConnectionWarning(
+  activeConnections: number,
+  accountId?: string,
+): string {
+  const accountPrefix = accountId?.trim() ? `[${accountId.trim()}] ` : "";
   return [
-    `slack socket mode reports ${activeConnections} active connections for this Slack app`,
+    `${accountPrefix}slack socket mode reports ${activeConnections} active connections for this Slack app`,
     "Slack may deliver each event to any one connection",
     "ensure every OpenClaw gateway sharing this app has equivalent routing and authorization, or use a separate Slack app per gateway, one relay ingress, or HTTP Request URLs behind a load balancer",
     `See ${SLACK_SOCKET_SHARED_CONNECTION_DOCS_URL}`,
@@ -95,16 +99,23 @@ export function registerSlackSocketModeConnectionDiagnostics(params: {
   if (!emitter) {
     return () => {};
   }
-  let hasWarned = false;
+  let sharedConnectionActive = false;
   const listener = (message: unknown, isBinary?: unknown) => {
-    if (isBinary === true || hasWarned) {
+    if (isBinary === true) {
       return;
     }
     const activeConnections = resolveSlackSocketModeConnectionCount(message);
-    if (activeConnections === undefined || activeConnections <= 1) {
+    if (activeConnections === undefined) {
       return;
     }
-    hasWarned = true;
+    if (activeConnections <= 1) {
+      sharedConnectionActive = false;
+      return;
+    }
+    if (sharedConnectionActive) {
+      return;
+    }
+    sharedConnectionActive = true;
     params.onSharedConnection(activeConnections);
   };
   emitter.on("ws_message", listener);
