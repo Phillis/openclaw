@@ -93,6 +93,7 @@ export function formatSlackSocketModeSharedConnectionWarning(
 
 export function registerSlackSocketModeConnectionDiagnostics(params: {
   app: unknown;
+  onConnectionCount?: (activeConnections: number) => void;
   onSharedConnection: (activeConnections: number) => void;
 }): () => void {
   const emitter = getSocketEmitter(params.app);
@@ -108,6 +109,7 @@ export function registerSlackSocketModeConnectionDiagnostics(params: {
     if (activeConnections === undefined) {
       return;
     }
+    params.onConnectionCount?.(activeConnections);
     if (activeConnections <= 1) {
       sharedConnectionActive = false;
       return;

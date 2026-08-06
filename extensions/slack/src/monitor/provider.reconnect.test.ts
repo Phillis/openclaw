@@ -183,8 +183,10 @@ describe("slack socket reconnect helpers", () => {
   it("warns once per shared Socket Mode connection episode", () => {
     const client = new FakeEmitter();
     const onSharedConnection = vi.fn();
+    const onConnectionCount = vi.fn();
     const unregister = registerSlackSocketModeConnectionDiagnostics({
       app: { receiver: { client } },
+      onConnectionCount,
       onSharedConnection,
     });
 
@@ -219,6 +221,7 @@ describe("slack socket reconnect helpers", () => {
     expect(onSharedConnection).toHaveBeenCalledTimes(2);
     expect(onSharedConnection).toHaveBeenNthCalledWith(1, 2);
     expect(onSharedConnection).toHaveBeenNthCalledWith(2, 2);
+    expect(onConnectionCount.mock.calls.map(([count]) => count)).toEqual([2, 1, 2, 3]);
 
     unregister();
     client.emit(
@@ -227,6 +230,7 @@ describe("slack socket reconnect helpers", () => {
       false,
     );
     expect(onSharedConnection).toHaveBeenCalledTimes(2);
+    expect(onConnectionCount).toHaveBeenCalledTimes(4);
     expect(client.listenerCount("ws_message")).toBe(0);
   });
 

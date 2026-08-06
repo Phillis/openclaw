@@ -484,6 +484,13 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     slackMode === "socket"
       ? registerSlackSocketModeConnectionDiagnostics({
           app,
+          onConnectionCount: (activeConnections) => {
+            opts.setStatus?.({
+              socketModeConnectionCount: activeConnections,
+              socketModeConnectionCountObservedAt: Date.now(),
+              socketModeSharedConnection: activeConnections > 1,
+            });
+          },
           onSharedConnection: (activeConnections) => {
             runtime.log?.(
               warn(
