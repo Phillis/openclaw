@@ -17,8 +17,8 @@ import {
 } from "../test-utils/talk-test-provider.js";
 import { isSecretsApplyPlan } from "./plan.js";
 import { isValidExecSecretRefId, isValidFileSecretRefId } from "./ref-contract.js";
-import { materializePathTokens, parsePathPattern } from "./target-registry-pattern.js";
-import { canonicalizeSecretTargetCoverageId } from "./target-registry-test-helpers.js";
+import { compileTargetRegistryEntry, materializePathTokens } from "./target-registry-pattern.js";
+import type { SecretTargetRegistryEntry } from "./target-registry-types.js";
 import { listSecretTargetRegistryEntries } from "./target-registry.js";
 
 describe("exec SecretRef id parity", () => {
@@ -57,6 +57,21 @@ describe("exec SecretRef id parity", () => {
     return result.ok;
   }
 
+  function configAcceptsRef(ref: unknown): boolean {
+    const result = validateConfigObjectRaw({
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: ref,
+            models: [{ id: "gpt-5", name: "gpt-5" }],
+          },
+        },
+      },
+    });
+    return result.ok;
+  }
+
   function planAcceptsExecRef(id: string): boolean {
     return isSecretsApplyPlan({
       version: 1,
@@ -75,7 +90,7 @@ describe("exec SecretRef id parity", () => {
     });
   }
 
-  function planAcceptsRef(ref: { source: "env" | "file" | "exec"; provider: string; id: string }) {
+  function planAcceptsRef(ref: unknown) {
     return isSecretsApplyPlan({
       version: 1,
       protocolVersion: 1,
@@ -128,6 +143,19 @@ describe("exec SecretRef id parity", () => {
     expect(pluginSdkSecretInput.safeParse(ref).success).toBe(false);
   });
 
+  for (const ref of [
+    { source: "env", provider: "default", id: "OPENAI_API_KEY", extra: "x" },
+    { source: "file", provider: "default", id: "value", extra: "x" },
+    { source: "exec", provider: "vault", id: "vault/openai/api-key", extra: "x" },
+  ]) {
+    it(`rejects non-canonical ${ref.source} refs with extra properties across config/plan/gateway/plugin`, () => {
+      expect(configAcceptsRef(ref)).toBe(false);
+      expect(planAcceptsRef(ref)).toBe(false);
+      expect(validateGatewaySecretRef.Check(ref)).toBe(false);
+      expect(pluginSdkSecretInput.safeParse(ref).success).toBe(false);
+    });
+  }
+
   for (const id of [...VALID_EXEC_SECRET_REF_IDS, ...INVALID_EXEC_SECRET_REF_IDS]) {
     it(`keeps config/plan/gateway/plugin parity for exec id "${id}"`, () => {
       const expected = isValidExecSecretRefId(id);
@@ -143,69 +171,68 @@ describe("exec SecretRef id parity", () => {
   }
 
   function classifyTargetClass(id: string): string {
-    const canonicalId = canonicalizeSecretTargetCoverageId(id);
-    if (canonicalId.startsWith("auth-profiles.")) {
+    if (id.startsWith("auth-profiles.")) {
       return "auth-profiles";
     }
-    if (canonicalId.startsWith("agents.")) {
+    if (id.startsWith("agents.")) {
       return "agents";
     }
-    if (canonicalId.startsWith("channels.")) {
+    if (id.startsWith("channels.")) {
       return "channels";
     }
-    if (canonicalId.startsWith("cron.")) {
+    if (id.startsWith("cron.")) {
       return "cron";
     }
-    if (canonicalId.startsWith("gateway.auth.")) {
+    if (id.startsWith("gateway.auth.")) {
       return "gateway.auth";
     }
-    if (canonicalId.startsWith("gateway.remote.")) {
+    if (id.startsWith("gateway.remote.")) {
       return "gateway.remote";
     }
-    if (canonicalId.startsWith("messages.")) {
+    if (id.startsWith("messages.")) {
       return "messages";
     }
-    if (canonicalId.startsWith("models.providers.") && canonicalId.includes(".headers.")) {
+    if (id.startsWith("memory.search.")) {
+      return "memory";
+    }
+    if (id.startsWith("models.providers.") && id.includes(".headers.")) {
       return "models.headers";
     }
-    if (canonicalId.startsWith("models.providers.") && canonicalId.includes(".request.")) {
+    if (id.startsWith("models.providers.") && id.includes(".request.")) {
       return "models.request";
     }
-    if (canonicalId.startsWith("models.providers.")) {
+    if (id.startsWith("models.providers.")) {
       return "models.apiKey";
     }
-    if (canonicalId.startsWith("skills.entries.")) {
+    if (id.startsWith("skills.entries.")) {
       return "skills";
     }
-    if (canonicalId.startsWith("talk.")) {
+    if (id.startsWith("talk.")) {
       return "talk";
     }
-    if (canonicalId.startsWith("tools.web.fetch.")) {
+    if (id.startsWith("tts.providers.")) {
+      return "tts";
+    }
+    if (id.startsWith("tools.web.fetch.")) {
       return "tools.web.fetch";
     }
-    if (
-      canonicalId.startsWith("plugins.entries.") &&
-      canonicalId.includes(".config.webFetch.apiKey")
-    ) {
+    if (id.startsWith("plugins.entries.") && id.includes(".config.webFetch.apiKey")) {
       return "tools.web.fetch";
     }
-    if (
-      canonicalId.startsWith("plugins.entries.") &&
-      canonicalId.includes(".config.webSearch.apiKey")
-    ) {
+    if (id.startsWith("plugins.entries.") && id.includes(".config.webSearch.apiKey")) {
       return "tools.web.search";
     }
-    if (canonicalId.startsWith("tools.web.search.")) {
+    if (id.startsWith("tools.web.search.")) {
       return "tools.web.search";
     }
-    if (canonicalId.startsWith("plugins.entries.")) {
+    if (id.startsWith("plugins.entries.")) {
       return "plugins.config";
     }
     return "unclassified";
   }
 
-  function samplePathSegments(pathPattern: string): string[] {
-    const tokens = parsePathPattern(pathPattern);
+  function samplePathSegments(entry: SecretTargetRegistryEntry): string[] {
+    const tokens = compileTargetRegistryEntry(entry).pathTokens;
     const captures = tokens.flatMap((token) => {
       if (token.kind === "literal") {
         return [];
@@ -214,7 +241,7 @@ describe("exec SecretRef id parity", () => {
     });
     const segments = materializePathTokens(tokens, captures);
     if (!segments) {
-      throw new Error(`failed to sample path segments for pattern "${pathPattern}"`);
+      throw new Error(`failed to sample path segments for pattern "${entry.pathPattern}"`);
     }
     return segments;
   }
@@ -237,7 +264,7 @@ describe("exec SecretRef id parity", () => {
       if (!selected) {
         throw new Error(`missing sampled target for class "${className}"`);
       }
-      const pathSegments = samplePathSegments(selected.pathPattern);
+      const pathSegments = samplePathSegments(selected);
       return {
         className,
         id: selected.id,

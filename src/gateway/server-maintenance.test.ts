@@ -1,18 +1,24 @@
 // Gateway maintenance tests cover periodic cleanup for media, dedupe records,
 // stale chat buffers, expired runs, health summaries, and timer disposal.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HealthSummary } from "../commands/health.js";
+import { managedWorktrees } from "../agents/worktrees/service.js";
+import type { HealthSummary } from "./health/types.js";
+const CURATOR_INITIAL_DELAY_MS = 5 * 60_000;
+const CURATOR_SWEEP_INTERVAL_MS = 24 * 60 * 60_000;
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
+import { pendingChatSendDedupeKey } from "./server-shared.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 
 const cleanOldMediaMock = vi.fn(async () => {});
+const prunePlaybackTranscodeCacheMock = vi.fn(async () => {});
 
 vi.mock("../media/store.js", async () => {
   const actual = await vi.importActual<typeof import("../media/store.js")>("../media/store.js");
   return {
     ...actual,
     cleanOldMedia: cleanOldMediaMock,
+    prunePlaybackTranscodeCache: prunePlaybackTranscodeCacheMock,
   };
 });
 
@@ -35,7 +41,11 @@ function createActiveRun(
 }
 
 function createMaintenanceTimerDeps() {
-  return createGatewayMaintenanceStateForTest();
+  return {
+    ...createGatewayMaintenanceStateForTest(),
+    runWorktreeGc: vi.fn(async () => undefined),
+    runDeliveryQueueMediaGc: vi.fn(async () => undefined),
+  };
 }
 
 type MaintenanceTimerDeps = ReturnType<typeof createMaintenanceTimerDeps>;
@@ -45,42 +55,51 @@ function staleRunTimestamp(): number {
 }
 
 function seedStaleRunBuffers(deps: MaintenanceTimerDeps, runId: string): void {
-  deps.chatRunBuffers.set(runId, "buffer");
-  deps.chatRunState.rawBuffers.set(runId, "raw buffer");
-  deps.chatRunState.bufferUpdatedAt.set(runId, staleRunTimestamp());
-  deps.chatDeltaSentAt.set(runId, staleRunTimestamp());
-  deps.chatDeltaLastBroadcastLen.set(runId, 6);
-  deps.chatRunState.deltaLastBroadcastText.set(runId, "buffer");
+  Object.assign(deps.chatRunState.getOrCreate(runId), {
+    buffer: "buffer",
+    rawBuffer: "raw buffer",
+    bufferUpdatedAt: staleRunTimestamp(),
+    deltaSentAt: staleRunTimestamp(),
+    deltaLastBroadcastLen: 6,
+    deltaLastBroadcastText: "buffer",
+  });
 }
 
 function expectStaleRunBuffersPresent(deps: MaintenanceTimerDeps, runId: string): void {
-  expect(deps.chatRunBuffers.get(runId)).toBe("buffer");
-  expect(deps.chatRunState.rawBuffers.get(runId)).toBe("raw buffer");
-  expect(deps.chatRunState.bufferUpdatedAt.has(runId)).toBe(true);
-  expect(deps.chatDeltaSentAt.has(runId)).toBe(true);
-  expect(deps.chatDeltaLastBroadcastLen.get(runId)).toBe(6);
-  expect(deps.chatRunState.deltaLastBroadcastText.get(runId)).toBe("buffer");
+  expect(deps.chatRunState.runs.get(runId)).toMatchObject({
+    buffer: "buffer",
+    rawBuffer: "raw buffer",
+    bufferUpdatedAt: expect.any(Number),
+    deltaSentAt: expect.any(Number),
+    deltaLastBroadcastLen: 6,
+    deltaLastBroadcastText: "buffer",
+  });
 }
 
 function expectStaleRunBuffersSwept(deps: MaintenanceTimerDeps, runId: string): void {
-  expect(deps.chatRunBuffers.has(runId)).toBe(false);
-  expect(deps.chatRunState.rawBuffers.has(runId)).toBe(false);
-  expect(deps.chatRunState.bufferUpdatedAt.has(runId)).toBe(false);
-  expect(deps.chatDeltaSentAt.has(runId)).toBe(false);
-  expect(deps.chatDeltaLastBroadcastLen.has(runId)).toBe(false);
-  expect(deps.chatRunState.deltaLastBroadcastText.has(runId)).toBe(false);
+  const run = deps.chatRunState.runs.get(runId);
+  expect(run?.buffer).toBeUndefined();
+  expect(run?.rawBuffer).toBeUndefined();
+  expect(run?.bufferUpdatedAt).toBeUndefined();
+  expect(run?.deltaSentAt).toBeUndefined();
+  expect(run?.deltaLastBroadcastLen).toBeUndefined();
+  expect(run?.deltaLastBroadcastText).toBeUndefined();
 }
 
-function seedBufferedAgentEvent(deps: MaintenanceTimerDeps, key: string, runId = key): void {
-  deps.chatRunState.bufferedAgentEvents.set(key, {
-    payload: {
-      runId,
-      seq: 1,
-      stream: "assistant",
-      ts: Date.now(),
-      data: { text: "buffer", delta: "buffer" },
+function seedBufferedAgentEvent(deps: MaintenanceTimerDeps, runId: string): void {
+  deps.chatRunState.getOrCreate(runId).agentText = {
+    assistant: {
+      bufferedEvent: {
+        payload: {
+          runId,
+          seq: 1,
+          stream: "assistant",
+          ts: Date.now(),
+          data: { text: "buffer", delta: "buffer" },
+        },
+      },
     },
-  });
+  };
 }
 
 function seedStableDedupeEntries(deps: MaintenanceTimerDeps, now: number): void {
@@ -102,36 +121,129 @@ function stopMaintenanceTimers(timers: {
   healthInterval: NodeJS.Timeout;
   dedupeCleanup: NodeJS.Timeout;
   mediaCleanup: NodeJS.Timeout | null;
+  worktreeCleanup: NodeJS.Timeout;
+  skillCuratorCleanup: () => void;
 }) {
   clearInterval(timers.tickInterval);
   clearInterval(timers.healthInterval);
   clearInterval(timers.dedupeCleanup);
+  clearInterval(timers.worktreeCleanup);
   if (timers.mediaCleanup) {
     clearInterval(timers.mediaCleanup);
   }
+  timers.skillCuratorCleanup();
 }
 
 describe("startGatewayMaintenanceTimers", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
+    cleanOldMediaMock.mockReset().mockResolvedValue(undefined);
+    prunePlaybackTranscodeCacheMock.mockReset().mockResolvedValue(undefined);
   });
 
-  it("does not schedule recursive media cleanup unless ttl is configured", async () => {
+  it("runs playback cache cleanup at startup and hourly without an attachment ttl", async () => {
     vi.useFakeTimers();
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
 
-    const timers = startGatewayMaintenanceTimers({
-      ...createMaintenanceTimerDeps(),
-    });
+    const timers = startGatewayMaintenanceTimers(createMaintenanceTimerDeps());
 
+    await vi.advanceTimersByTimeAsync(0);
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(1);
     expect(cleanOldMediaMock).not.toHaveBeenCalled();
-    expect(timers.mediaCleanup).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(2);
+    expect(cleanOldMediaMock).not.toHaveBeenCalled();
 
     stopMaintenanceTimers(timers);
   });
 
-  it("runs startup media cleanup and repeats it hourly", async () => {
+  it("runs managed worktree cleanup at startup and hourly", async () => {
+    vi.useFakeTimers();
+    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+    const deps = createMaintenanceTimerDeps();
+    const timers = startGatewayMaintenanceTimers(deps);
+
+    await Promise.resolve();
+    expect(deps.runWorktreeGc).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(deps.runWorktreeGc).toHaveBeenCalledTimes(2);
+
+    stopMaintenanceTimers(timers);
+  });
+
+  it("runs queue media cleanup at startup and hourly", async () => {
+    vi.useFakeTimers();
+    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+    const deps = createMaintenanceTimerDeps();
+    const timers = startGatewayMaintenanceTimers(deps);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deps.runDeliveryQueueMediaGc).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(deps.runDeliveryQueueMediaGc).toHaveBeenCalledTimes(2);
+
+    stopMaintenanceTimers(timers);
+  });
+
+  it("delays curator startup, skips overlap, and unregisters on cleanup", async () => {
+    vi.useFakeTimers();
+    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+    let resolveSweep = () => {};
+    const sweep = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSweep = resolve;
+        }),
+    );
+    const unregister = vi.fn();
+    const register = vi.fn(() => unregister);
+    const timers = startGatewayMaintenanceTimers({
+      ...createMaintenanceTimerDeps(),
+      enableSkillCurator: true,
+      runSkillCuratorSweep: sweep,
+      registerSkillUsageTracking: register,
+    });
+
+    expect(register).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(CURATOR_INITIAL_DELAY_MS - 1);
+    expect(sweep).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sweep).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(CURATOR_SWEEP_INTERVAL_MS);
+    expect(sweep).toHaveBeenCalledTimes(1);
+
+    resolveSweep();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(CURATOR_SWEEP_INTERVAL_MS);
+    expect(sweep).toHaveBeenCalledTimes(2);
+    resolveSweep();
+    await vi.advanceTimersByTimeAsync(0);
+
+    stopMaintenanceTimers(timers);
+    expect(unregister).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes owner activity to default managed worktree cleanup", async () => {
+    vi.useFakeTimers();
+    const gc = vi.spyOn(managedWorktrees, "gc").mockResolvedValue({
+      removed: [],
+      orphansDeleted: 0,
+      snapshotsPruned: 0,
+    });
+    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+    const { runWorktreeGc: _runWorktreeGc, ...deps } = createMaintenanceTimerDeps();
+
+    const timers = startGatewayMaintenanceTimers(deps);
+    await Promise.resolve();
+
+    expect(gc).toHaveBeenCalledWith({ shouldProtectOwner: expect.any(Function), limits: {} });
+    stopMaintenanceTimers(timers);
+  });
+
+  it("adds configured attachment cleanup to playback maintenance", async () => {
     vi.useFakeTimers();
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
 
@@ -140,17 +252,48 @@ describe("startGatewayMaintenanceTimers", () => {
       mediaCleanupTtlMs: MEDIA_CLEANUP_TTL_MS,
     });
 
+    await vi.advanceTimersByTimeAsync(0);
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(1);
     expect(cleanOldMediaMock).toHaveBeenCalledWith(MEDIA_CLEANUP_TTL_MS, {
       recursive: true,
       pruneEmptyDirs: true,
     });
 
-    cleanOldMediaMock.mockClear();
     await vi.advanceTimersByTimeAsync(60 * 60_000);
-    expect(cleanOldMediaMock).toHaveBeenCalledWith(MEDIA_CLEANUP_TTL_MS, {
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(2);
+    expect(cleanOldMediaMock).toHaveBeenCalledTimes(2);
+    expect(cleanOldMediaMock).toHaveBeenLastCalledWith(MEDIA_CLEANUP_TTL_MS, {
       recursive: true,
       pruneEmptyDirs: true,
     });
+
+    stopMaintenanceTimers(timers);
+  });
+
+  it("keeps playback cleanup independent of attachment cleanup failures", async () => {
+    vi.useFakeTimers();
+    cleanOldMediaMock.mockRejectedValueOnce(new Error("synthetic attachment cleanup failure"));
+    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+    const deps = {
+      ...createMaintenanceTimerDeps(),
+      logHealth: { error: vi.fn() },
+    };
+
+    const timers = startGatewayMaintenanceTimers({
+      ...deps,
+      mediaCleanupTtlMs: MEDIA_CLEANUP_TTL_MS,
+    });
+
+    await vi.waitFor(() => {
+      expect(deps.logHealth.error).toHaveBeenCalledWith(
+        expect.stringContaining("synthetic attachment cleanup failure"),
+      );
+    });
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(2);
+    expect(cleanOldMediaMock).toHaveBeenCalledTimes(2);
 
     stopMaintenanceTimers(timers);
   });
@@ -192,7 +335,7 @@ describe("startGatewayMaintenanceTimers", () => {
     stopMaintenanceTimers(timers);
   });
 
-  it("skips overlapping media cleanup runs", async () => {
+  it("skips overlapping configured attachment cleanup runs", async () => {
     vi.useFakeTimers();
     let resolveCleanup = () => {};
     let cleanupReady = false;
@@ -223,6 +366,36 @@ describe("startGatewayMaintenanceTimers", () => {
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(cleanOldMediaMock).toHaveBeenCalledTimes(2);
 
+    resolveCleanup();
+    await vi.advanceTimersByTimeAsync(0);
+    stopMaintenanceTimers(timers);
+  });
+
+  it("skips overlapping playback cache cleanup runs", async () => {
+    vi.useFakeTimers();
+    let resolveCleanup = () => {};
+    prunePlaybackTranscodeCacheMock.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCleanup = resolve;
+        }),
+    );
+    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+
+    const timers = startGatewayMaintenanceTimers(createMaintenanceTimerDeps());
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(1);
+
+    resolveCleanup();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(2);
+
+    resolveCleanup();
+    await vi.advanceTimersByTimeAsync(0);
     stopMaintenanceTimers(timers);
   });
 
@@ -267,18 +440,18 @@ describe("startGatewayMaintenanceTimers", () => {
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
     const deps = createMaintenanceTimerDeps();
     const runId = "run-agent-orphaned";
-    const throttleKey = `${runId}:assistant`;
-    deps.chatRunState.agentDeltaSentAt.set(throttleKey, staleRunTimestamp());
-    seedBufferedAgentEvent(deps, throttleKey, runId);
+    seedBufferedAgentEvent(deps, runId);
+    const agentText = deps.chatRunState.getOrCreate(runId).agentText?.assistant;
+    expect(agentText).toBeDefined();
+    if (agentText) {
+      agentText.lastSentAt = staleRunTimestamp();
+    }
 
     const timers = startGatewayMaintenanceTimers(deps);
 
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(deps.chatRunState.agentDeltaSentAt.has(runId)).toBe(false);
-    expect(deps.chatRunState.agentDeltaSentAt.has(throttleKey)).toBe(false);
-    expect(deps.chatRunState.bufferedAgentEvents.has(runId)).toBe(false);
-    expect(deps.chatRunState.bufferedAgentEvents.has(throttleKey)).toBe(false);
+    expect(deps.chatRunState.runs.get(runId)?.agentText).toBeUndefined();
 
     stopMaintenanceTimers(timers);
   });
@@ -289,19 +462,22 @@ describe("startGatewayMaintenanceTimers", () => {
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
     const deps = createMaintenanceTimerDeps();
     const runId = "run-aborted";
-    deps.chatRunState.abortedRuns.set(runId, staleRunTimestamp());
+    deps.chatRunState.getOrCreate(runId).abortMarker = staleRunTimestamp();
     seedStaleRunBuffers(deps, runId);
-    deps.chatRunState.agentDeltaSentAt.set(runId, staleRunTimestamp());
     seedBufferedAgentEvent(deps, runId);
+    const agentText = deps.chatRunState.getOrCreate(runId).agentText?.assistant;
+    expect(agentText).toBeDefined();
+    if (agentText) {
+      agentText.lastSentAt = staleRunTimestamp();
+    }
 
     const timers = startGatewayMaintenanceTimers(deps);
 
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(deps.chatRunState.abortedRuns.has(runId)).toBe(false);
+    expect(deps.chatRunState.runs.get(runId)?.abortMarker).toBeUndefined();
     expectStaleRunBuffersSwept(deps, runId);
-    expect(deps.chatRunState.agentDeltaSentAt.has(runId)).toBe(false);
-    expect(deps.chatRunState.bufferedAgentEvents.has(runId)).toBe(false);
+    expect(deps.chatRunState.runs.get(runId)?.agentText).toBeUndefined();
 
     stopMaintenanceTimers(timers);
   });
@@ -312,17 +488,17 @@ describe("startGatewayMaintenanceTimers", () => {
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
     const deps = createMaintenanceTimerDeps();
     const runId = "run-raw-only";
-    deps.chatRunState.rawBuffers.set(runId, "suppressed raw buffer");
-    deps.chatRunState.bufferUpdatedAt.set(runId, staleRunTimestamp());
-    deps.chatRunState.deltaLastBroadcastText.set(runId, "suppressed raw buffer");
+    Object.assign(deps.chatRunState.getOrCreate(runId), {
+      rawBuffer: "suppressed raw buffer",
+      bufferUpdatedAt: staleRunTimestamp(),
+      deltaLastBroadcastText: "suppressed raw buffer",
+    });
 
     const timers = startGatewayMaintenanceTimers(deps);
 
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(deps.chatRunState.rawBuffers.has(runId)).toBe(false);
-    expect(deps.chatRunState.bufferUpdatedAt.has(runId)).toBe(false);
-    expect(deps.chatRunState.deltaLastBroadcastText.has(runId)).toBe(false);
+    expect(deps.chatRunState.runs.has(runId)).toBe(false);
 
     stopMaintenanceTimers(timers);
   });
@@ -380,6 +556,40 @@ describe("startGatewayMaintenanceTimers", () => {
 
     expect(deps.dedupe.has("agent:pending-agent")).toBe(true);
     expect(deps.dedupe.has("agent:expired-pending-agent")).toBe(false);
+
+    stopMaintenanceTimers(timers);
+  });
+
+  it("keeps pending chat sends through ttl and overflow until their run expiry", async () => {
+    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
+    seedStableDedupeEntries(deps, now);
+    deps.dedupe.set(pendingChatSendDedupeKey("pending-chat"), {
+      ts: now - DEDUPE_TTL_MS - 1,
+      ok: true,
+      payload: {
+        runId: "pending-chat",
+        sessionKey: "agent:main:main",
+        status: "accepted",
+        expiresAtMs: now + 120_000,
+      },
+    });
+    deps.dedupe.set(pendingChatSendDedupeKey("expired-chat"), {
+      ts: now - DEDUPE_TTL_MS - 1,
+      ok: true,
+      payload: {
+        runId: "expired-chat",
+        sessionKey: "agent:main:main",
+        status: "accepted",
+        expiresAtMs: now - 1,
+      },
+    });
+    const timers = startGatewayMaintenanceTimers(deps);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(deps.dedupe.has(pendingChatSendDedupeKey("pending-chat"))).toBe(true);
+    expect(deps.dedupe.has(pendingChatSendDedupeKey("expired-chat"))).toBe(false);
+    expect(deps.dedupe.size).toBe(DEDUPE_MAX);
 
     stopMaintenanceTimers(timers);
   });
@@ -497,6 +707,52 @@ describe("startGatewayMaintenanceTimers", () => {
     expect(deps.dedupe.has("agent:exec-approval-followup:req-active")).toBe(true);
     expect(deps.dedupe.has("agent:exec-approval-followup:req-stale")).toBe(false);
 
+    stopMaintenanceTimers(timers);
+  });
+
+  it("keeps queued chat dedupe entries past the normal ttl", async () => {
+    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
+    const runId = "queued-chat";
+    deps.chatQueuedTurns.set(runId, {
+      controller: new AbortController(),
+      sessionId: "session-main",
+      sessionKey: "agent:main:main",
+    });
+    deps.dedupe.set(`chat:${runId}`, {
+      ts: now - DEDUPE_TTL_MS - 1,
+      ok: true,
+      payload: { runId, status: "ok" },
+    });
+
+    const timers = startGatewayMaintenanceTimers(deps);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(deps.dedupe.has(`chat:${runId}`)).toBe(true);
+    stopMaintenanceTimers(timers);
+  });
+
+  it("keeps queued chat dedupe entries while trimming overflow", async () => {
+    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
+    const runId = "queued-oldest";
+    seedStableDedupeEntries(deps, now);
+    deps.chatQueuedTurns.set(runId, {
+      controller: new AbortController(),
+      sessionId: "session-main",
+      sessionKey: "agent:main:main",
+    });
+    deps.dedupe.set(`chat:${runId}`, {
+      ts: now - 10_000,
+      ok: true,
+      payload: { runId, status: "ok" },
+    });
+    deps.dedupe.set("overflow-newest", { ts: now, ok: true });
+
+    const timers = startGatewayMaintenanceTimers(deps);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(deps.dedupe.size).toBe(DEDUPE_MAX);
+    expect(deps.dedupe.has(`chat:${runId}`)).toBe(true);
+    expect(deps.dedupe.has("stable-0")).toBe(false);
     stopMaintenanceTimers(timers);
   });
 

@@ -1,8 +1,12 @@
 // Discord plugin module implements native command model picker apply behavior.
 import { randomUUID } from "node:crypto";
+import { resolveAgentDir } from "openclaw/plugin-sdk/agent-runtime";
 import type { ChatCommandDefinition, CommandArgs } from "openclaw/plugin-sdk/command-auth-native";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { applyModelOverrideToSessionEntry } from "openclaw/plugin-sdk/model-session-runtime";
+import {
+  applyModelOverrideWithAuthProfileCompatibility,
+  ModelSelectionLockedError,
+} from "openclaw/plugin-sdk/model-session-runtime";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { patchSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
@@ -36,6 +40,7 @@ async function persistDiscordModelPickerOverride(params: {
   provider: string;
   model: string;
   isDefault: boolean;
+  defaultProvider: string;
   runtime?: string;
 }): Promise<boolean> {
   const storePath = resolveStorePath(params.cfg.session?.store, {
@@ -51,9 +56,14 @@ async function persistDiscordModelPickerOverride(params: {
     },
     replaceEntry: true,
     update: (entry) => {
+      const currentProvider =
+        entry.providerOverride?.trim() || entry.modelProvider?.trim() || params.defaultProvider;
       persisted =
-        applyModelOverrideToSessionEntry({
+        applyModelOverrideWithAuthProfileCompatibility({
+          cfg: params.cfg,
+          agentDir: resolveAgentDir(params.cfg, params.route.agentId),
           entry,
+          currentProvider,
           selection: {
             provider: params.provider,
             model: params.model,
@@ -138,6 +148,7 @@ export async function applyDiscordModelPickerSelection(params: {
         route: fallbackRoute,
         provider: params.selectedProvider,
         model: params.selectedModel,
+        defaultProvider: params.defaultProvider,
         isDefault:
           params.selectedProvider === params.defaultProvider &&
           params.selectedModel === params.defaultModel,
@@ -160,6 +171,7 @@ export async function applyDiscordModelPickerSelection(params: {
           route: fallbackRoute,
           provider: params.selectedProvider,
           model: params.selectedModel,
+          defaultProvider: params.defaultProvider,
           isDefault:
             params.selectedProvider === params.defaultProvider &&
             params.selectedModel === params.defaultModel,
@@ -180,6 +192,12 @@ export async function applyDiscordModelPickerSelection(params: {
           );
         }
       } catch (error) {
+        if (error instanceof ModelSelectionLockedError) {
+          return {
+            status: "rejected",
+            noticeMessage: `❌ ${error.message}`,
+          };
+        }
         const message = error instanceof Error ? error.message : String(error);
         logVerbose(
           `discord: direct session override persist threw for session key ${fallbackRoute.sessionKey}: ${message}`,
@@ -207,6 +225,12 @@ export async function applyDiscordModelPickerSelection(params: {
           noticeMessage: `⚠️ Tried to set ${params.resolvedModelRef}, but current model is ${effectiveModelRef}.`,
         };
   } catch (error) {
+    if (error instanceof ModelSelectionLockedError) {
+      return {
+        status: "rejected",
+        noticeMessage: `❌ ${error.message}`,
+      };
+    }
     if (error instanceof Error && error.message === "timeout") {
       return {
         status: "timeout",

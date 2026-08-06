@@ -1,4 +1,6 @@
 // Transitive Manifest Risk Report tests cover transitive manifest risk report script behavior.
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createTransitiveManifestRiskReport,
@@ -7,7 +9,27 @@ import {
   renderTransitiveManifestRiskMarkdownReport,
 } from "../../scripts/transitive-manifest-risk-report.mjs";
 
+function runCli(...args: string[]) {
+  return spawnSync(process.execPath, ["scripts/transitive-manifest-risk-report.mjs", ...args], {
+    cwd: path.resolve("."),
+    encoding: "utf8",
+  });
+}
+
+function expectNoNodeStack(stderr: string) {
+  expect(stderr).not.toContain("Node.js");
+  expect(stderr).not.toContain("\n    at ");
+}
+
 describe("transitive-manifest-risk-report", () => {
+  it("reports CLI argument errors without a Node stack trace", () => {
+    const unknownArg = runCli("--wat");
+    expect(unknownArg.status).toBe(1);
+    expect(unknownArg.stdout).toBe("");
+    expect(unknownArg.stderr.trim()).toBe("Unsupported argument: --wat");
+    expectNoNodeStack(unknownArg.stderr);
+  });
+
   it("reports floating transitive specs, lifecycle scripts, exotic sources, and recently published versions", async () => {
     const report = await createTransitiveManifestRiskReport({
       packageVersions: [
@@ -186,8 +208,9 @@ describe("transitive-manifest-risk-report", () => {
       version: "1.0.0",
       registryBaseUrl: "https://registry.example.test",
       fetchImpl: async (url, init) => {
+        const requestUrl = url instanceof Request ? url.url : url instanceof URL ? url.href : url;
         fetchCalls.push({
-          url: String(url),
+          url: requestUrl,
           accept: new Headers(init?.headers).get("accept"),
           signal: init?.signal instanceof AbortSignal ? init.signal : null,
         });
@@ -216,7 +239,7 @@ describe("transitive-manifest-risk-report", () => {
 
     expect(fetchCalls).toEqual([
       {
-        url: "https://registry.example.test/@scope%2fpackage",
+        url: "https://registry.example.test/@scope%2Fpackage",
         accept: "application/json",
         signal: expect.any(AbortSignal),
       },

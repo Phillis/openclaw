@@ -35,6 +35,7 @@ export type DiagnosticStabilityEventRecord = {
   transport?: string;
   brain?: string;
   toolName?: string;
+  approvalId?: string;
   activeWorkKind?: string;
   pairedToolName?: string;
   provider?: string;
@@ -188,13 +189,11 @@ function resolveDiagnosticLivenessRecordLevel(
   const hasBlockingWork = event.waiting > 0 || event.queued > 0;
   const hasSustainedEventLoopDelay =
     (event.eventLoopDelayP99Ms ?? 0) >= LIVENESS_EVENT_LOOP_DELAY_WARN_MS;
-  return hasBlockingWork || (event.active > 0 && hasSustainedEventLoopDelay) ? "warning" : "info";
-}
-
-function isRecord(
-  record: DiagnosticStabilityEventRecord | undefined,
-): record is DiagnosticStabilityEventRecord {
-  return record !== undefined;
+  return event.degradedSinceMs !== undefined ||
+    hasBlockingWork ||
+    (event.active > 0 && hasSustainedEventLoopDelay)
+    ? "warning"
+    : "info";
 }
 
 function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabilityEventRecord {
@@ -341,6 +340,12 @@ function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabi
     case "run.progress":
       assignReasonCode(record, event.reason);
       break;
+    case "run.execution_phase":
+      record.phase = event.phase;
+      record.provider = event.provider;
+      record.model = event.model;
+      record.toolName = event.tool;
+      break;
     case "context.assembled":
       record.channel = event.channel;
       record.provider = event.provider;
@@ -359,7 +364,7 @@ function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabi
       break;
     case "diagnostic.liveness.warning":
       record.level = resolveDiagnosticLivenessRecordLevel(event);
-      record.durationMs = event.intervalMs;
+      record.durationMs = event.degradedSinceMs ?? event.intervalMs;
       record.count = event.reasons.length;
       assignReasonCode(record, event.reasons[0]);
       record.eventLoopDelayP99Ms = event.eventLoopDelayP99Ms;
@@ -405,6 +410,9 @@ function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabi
       record.source = event.toolSource;
       record.pluginId = event.toolOwner;
       record.durationMs = event.durationMs;
+      if (event.terminalReason) {
+        record.outcome = event.terminalReason;
+      }
       assignReasonCode(record, event.errorCategory);
       break;
     case "tool.execution.blocked":
@@ -430,6 +438,11 @@ function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabi
       record.timedOut = event.timedOut;
       record.failureKind = event.failureKind;
       assignReasonCode(record, event.failureKind);
+      break;
+    case "exec.approval.followup_suppressed":
+      record.approvalId = event.approvalId;
+      record.phase = event.phase;
+      assignReasonCode(record, event.reason);
       break;
     case "run.started":
       record.provider = event.provider;
@@ -570,12 +583,14 @@ function listRecords(): DiagnosticStabilityEventRecord[] {
     return [];
   }
   if (state.count < state.capacity) {
-    return state.records.slice(0, state.count).filter(isRecord);
+    return state.records
+      .slice(0, state.count)
+      .filter((record): record is DiagnosticStabilityEventRecord => record !== undefined);
   }
   return [
     ...state.records.slice(state.nextIndex),
     ...state.records.slice(0, state.nextIndex),
-  ].filter(isRecord);
+  ].filter((record): record is DiagnosticStabilityEventRecord => record !== undefined);
 }
 
 function summarizeRecords(
@@ -780,3 +795,4 @@ export function resetDiagnosticStabilityRecorderForTest(): void {
   };
   globalStore["__openclawDiagnosticStabilityState"] = next;
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

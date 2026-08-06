@@ -1,7 +1,8 @@
 // Gateway Smoke tests cover QA Lab gateway smoke evidence.
+import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { runGatewaySmoke } from "../../../../scripts/dev/gateway-smoke.js";
 
 let server: Server | undefined;
@@ -72,8 +73,13 @@ describe("gateway-smoke", () => {
     server = createServer();
     wss = new WebSocketServer({ server });
     wss.on("connection", (ws: WebSocket) => {
-      ws.on("message", (data) => {
-        const frame = JSON.parse(data.toString()) as {
+      ws.on("message", (data: RawData) => {
+        const text = Array.isArray(data)
+          ? Buffer.concat(data.map((chunk) => Buffer.from(chunk))).toString("utf8")
+          : Buffer.isBuffer(data)
+            ? data.toString("utf8")
+            : Buffer.from(data).toString("utf8");
+        const frame = JSON.parse(text) as {
           id: string;
           method: string;
           params?: unknown;
@@ -162,6 +168,86 @@ describe("gateway-smoke", () => {
       },
     };
   }
+
+  it("prints CLI help without connecting", () => {
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/dev/gateway-smoke.ts", "--help"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Usage: bun scripts/dev/gateway-smoke.ts");
+    expect(result.stderr).toBe("");
+  });
+
+  it("rejects unknown CLI args before connecting", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "scripts/dev/gateway-smoke.ts",
+        "--url",
+        "ws://127.0.0.1:9",
+        "--token",
+        "token",
+        "--wat",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr.trim()).toBe("Unknown argument: --wat");
+  });
+
+  it("rejects option-looking CLI values before connecting", () => {
+    for (const [flag, args] of [
+      ["--url", ["--url", "-h", "--token", "token"]],
+      ["--token", ["--url", "ws://127.0.0.1:9", "--token", "-h"]],
+    ] as const) {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", "scripts/dev/gateway-smoke.ts", ...args],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+        },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr.trim()).toBe(`${flag} requires a value`);
+    }
+  });
+
+  it("rejects duplicate CLI args before connecting", () => {
+    for (const [flag, args] of [
+      ["--url", ["--url", "ws://127.0.0.1:9", "--url", "ws://127.0.0.1:10", "--token", "token"]],
+      ["--token", ["--url", "ws://127.0.0.1:9", "--token", "one", "--token", "two"]],
+      ["--help", ["--help", "--help"]],
+    ] as const) {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", "scripts/dev/gateway-smoke.ts", ...args],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+        },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr.trim()).toBe(`${flag} was provided more than once`);
+    }
+  });
 
   it("passes against a loopback gateway websocket using the real client", async () => {
     const stdout: string[] = [];

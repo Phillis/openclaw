@@ -1,24 +1,23 @@
-# OpenClaw iOS (Super Alpha)
+# OpenClaw iOS
 
-This iOS app is super-alpha and internal-use only. The first public App Store release targets iPhone and connects to an OpenClaw Gateway as a `role: node`.
+OpenClaw iOS is the officially released iPhone app. It connects to an OpenClaw Gateway as a `role: node` for chat, voice, approvals, sharing, and device-aware automation.
 
 ## Distribution Status
 
-- Public distribution: App Store Connect app created; production signing is configured through the App Store release Fastlane path.
-- Internal TestFlight distribution: uses the same App Store distribution archive uploaded to App Store Connect.
-- Local/manual deploy from source via Xcode remains the default development path.
+- Public distribution: App Store.
+- App Store Connect uploads use the App Store release Fastlane path.
+- Local/manual deploy from source via Xcode remains the default development path for app development.
 
-## Super-Alpha Disclaimer
+## Support Notes
 
-- Breaking changes are expected.
-- UI and onboarding flows can change without migration guarantees.
-- Foreground use is the only reliable mode right now.
-- Treat this build as sensitive while permissions and background behavior are still being hardened.
+- UI and onboarding changes ship through normal app releases.
+- Some node commands require foreground access because of iOS platform limits.
+- Permissions, background behavior, and push delivery are documented below so release and support checks stay explicit.
 
 ## Exact Xcode Manual Deploy Flow
 
 1. Prereqs:
-   - Xcode 16+
+   - Xcode 26.x
    - `pnpm`
    - `xcodegen`
    - Apple Development signing set up in Xcode
@@ -26,10 +25,7 @@ This iOS app is super-alpha and internal-use only. The first public App Store re
 
 ```bash
 pnpm install
-./scripts/ios-configure-signing.sh
-cd apps/ios
-xcodegen generate
-open OpenClaw.xcodeproj
+pnpm ios:open
 ```
 
 3. In Xcode:
@@ -41,17 +37,17 @@ open OpenClaw.xcodeproj
    - Use unique local bundle IDs via `apps/ios/LocalSigning.xcconfig`.
    - Start from `apps/ios/LocalSigning.xcconfig.example`.
 
-Shortcut command (same flow + open project):
+Generate without opening Xcode:
 
 ```bash
-pnpm ios:open
+pnpm ios:gen
 ```
 
 ## App Store Release Flow
 
 Prereqs:
 
-- Xcode 16+
+- Xcode 26.x
 - `pnpm`
 - `xcodegen`
 - `fastlane`
@@ -67,25 +63,28 @@ Release behavior:
 - App Store release uses canonical `ai.openclawfoundation.app*` bundle IDs through a temporary generated xcconfig in `apps/ios/build/AppStoreRelease.xcconfig`.
 - App Store release uses manual `Apple Distribution` signing with profile names pinned in `apps/ios/Config/AppStoreSigning.json`.
 - Fastlane owns one-time Developer Portal setup, encrypted `match` signing sync to the repo/branch pinned in `apps/ios/Config/AppStoreSigning.json`, and release handling.
-- App Store release also switches the app to `OpenClawPushTransport=relay`, `OpenClawPushDistribution=official`, `OpenClawPushAPNsEnvironment=production`, and a production `aps-environment` entitlement.
-- `pnpm ios:release:upload` generates App Store screenshots and uploads release notes before archiving and uploading the IPA.
-- `pnpm ios:release` remains a compatibility alias for `pnpm ios:release:upload`; prefer the explicit upload command in new release docs and automation.
-- App Review submission is manual in App Store Connect. The release lane uploads a build and metadata, but does not submit for review.
+- App Store release also switches the app to `OpenClawPushMode=appStore`, which derives relay transport, official distribution, the canonical production relay, production APNs, production relay profile, `appleStrict` proof, and the App-Attest-capable entitlement file.
+- `pnpm ios:release:upload` generates App Store screenshots, archives and validates the IPA, uploads release notes and the rendered `apps/ios/APP-REVIEW-NOTES.md` attachment, uploads the IPA, and waits for Apple processing.
+- Agent-driven App Store uploads must use `pnpm ios:release:upload` as the only release path. If that command fails, stop and fix the failing screenshot, metadata, archive, validation, or upload step before trying again.
+- Do not treat `pnpm ios:release:archive`, `asc builds upload`, `asc release stage`, `asc publish appstore`, direct Fastlane lanes, or App Store Connect mutation commands as fallback upload paths after `pnpm ios:release:upload` fails.
+- The release archive is validated before upload by inspecting the exported IPA's signed entitlements, embedded App Store profile, and push mode. The upload fails if the IPA is not an App Store production relay build.
+- App Review submission is manual in App Store Connect. The release lane uploads a build, public metadata, and the App Review PDF attachment, but it does not submit for review or upload the App Store Connect `Notes` field.
+- Before submitting a HealthKit-enabled build, the release owner must update the public privacy policy and App Store Connect privacy details for the Health & Fitness aggregates shared with the user's configured AI provider.
 - The release flow does not modify `apps/ios/.local-signing.xcconfig` or `apps/ios/LocalSigning.xcconfig`.
-- `apps/ios/version.json` is the pinned iOS release version source.
+- Release uploads derive the gateway, App Store revision, and build from the canonical repository version plus live App Store Connect state.
 - `apps/ios/CHANGELOG.md` is the iOS-only changelog and release-note source.
-- The pinned iOS version must use CalVer like `2026.4.10`.
-- That pinned value becomes:
-  - `CFBundleShortVersionString = 2026.4.10`
-  - `CFBundleVersion = next App Store Connect build number for 2026.4.10`
-- Changing the root gateway version does not change the iOS app version until you explicitly pin from the gateway.
+- The gateway version must use CalVer like `2026.7.2`.
+- Gateway `2026.7.2`, App Store revision `1` becomes:
+  - `CFBundleShortVersionString = 2026.7.21`
+  - `CFBundleVersion = next App Store Connect build number for 2026.7.21`
+- Each App Store version has its own build sequence beginning at `1`.
+- Local defaults and release planning derive the gateway from root `package.json`; App Store Connect versions and build uploads determine the release revision and build.
 - See `apps/ios/VERSIONING.md` for the full workflow.
 
 Relay behavior for App Store builds:
 
-- Release builds default to `https://ios-push-relay.openclaw.ai`.
-- Optional custom relay override: `OPENCLAW_PUSH_RELAY_BASE_URL=https://relay.example.com`
-  This must be a plain `https://host[:port][/path]` base URL without whitespace, query params, fragments, or xcconfig metacharacters.
+- App Store release builds use the canonical hosted relay at `https://ios-push-relay.openclaw.ai`.
+- App Store release builds reject custom relay URL overrides. Future self-hosted relay support should use a separate explicit release path, not the public App Store build lane.
 
 Signing setup commands:
 
@@ -102,32 +101,40 @@ Release-owner secrets:
 - App Store Connect API auth uses Keychain for private key material plus non-secret `apps/ios/fastlane/.env` variables.
 - The encrypted signing repo password lives outside this repo in the release-owner vault and is exposed locally as `MATCH_PASSWORD`.
 - The share sheet requires the Apple Developer App Group in `apps/ios/Config/AppStoreSigning.json` to be associated with both the app and share-extension bundle IDs before App Store profiles are regenerated.
+- Relay registration requires the App Attest capability on the main app ID before App Store profiles are regenerated.
 - Apple Distribution private keys, certificates, provisioning profiles, and decrypted signing sync output stay under `apps/ios/build/` or Keychain and are gitignored.
 - Rotating release signing means refreshing Fastlane `match` assets and pushing a fresh encrypted sync state.
 
 Prepare the generated release xcconfig/project without archiving:
 
 ```bash
-pnpm ios:release:prepare -- --build-number 7
+pnpm ios:release:prepare -- --version 2026.7.2 --revision 1 --build-number 3
 ```
 
 Archive without upload:
 
 ```bash
-pnpm ios:release:archive
+pnpm ios:release:archive -- --version 2026.7.2 --revision 1
 ```
 
-Archive and upload to App Store Connect:
+This command is for local archive validation only. It is not a fallback upload
+path after `pnpm ios:release:upload` fails.
+
+Inspect and cut the deterministic release plan:
+
+```bash
+pnpm ios:release:plan -- --json
+pnpm ios:release:cut
+```
+
+Review and commit the changelog cut, then archive and upload to App Store Connect:
 
 ```bash
 pnpm ios:release:upload
 ```
 
-If you need to force a specific build number:
-
-```bash
-pnpm ios:release:upload -- --build-number 7
-```
+Explicit `--version`, `--revision`, and `--build-number` values are checked
+overrides and must match the live plan.
 
 ### Maintainer Quick Release Checklist
 
@@ -157,85 +164,84 @@ This should create `apps/ios/fastlane/.env` with non-secret App Store Connect va
    - `ai.openclawfoundation.app.activitywidget`
    - `ai.openclawfoundation.app.watchkitapp`
 
-   The main app and share extension must both be associated with the App Group pinned in `apps/ios/Config/AppStoreSigning.json`.
+   The main app and share extension must both be associated with the App Group pinned in `apps/ios/Config/AppStoreSigning.json`. The main app must also have App Attest enabled.
 
    Use `pnpm ios:release:signing:setup` for the initial portal setup, then `MATCH_PASSWORD=... pnpm ios:release:signing:sync:push` to publish encrypted Fastlane match assets to the shared private repo.
 
-4. Optional: set a custom official relay URL for the build. If unset, the release flow uses `https://ios-push-relay.openclaw.ai`.
+4. Inspect the plan and cut the exact encoded-version changelog section:
 
 ```bash
-export OPENCLAW_PUSH_RELAY_BASE_URL=https://relay.example.com
+pnpm ios:release:plan -- --json
+pnpm ios:release:cut
 ```
 
-5. If you are starting a brand-new production release train, pin iOS to the current gateway version first:
-
-```bash
-pnpm ios:version:pin -- --from-gateway
-```
-
-6. Upload the build:
+5. Review and commit `apps/ios/CHANGELOG.md`, then upload:
 
 ```bash
 pnpm ios:release:upload
 ```
 
+6. If `pnpm ios:release:upload` fails, stop at that failure. Do not archive
+   and upload the IPA through another command. Fix the failing release-lane
+   step, then rerun `pnpm ios:release:upload`.
+
 7. Expected behavior:
-   - Fastlane reads `apps/ios/version.json`
-   - verifies synced iOS versioning artifacts
+   - Fastlane resolves the gateway, revision, and next build from repository and App Store Connect state
+   - validates iOS versioning inputs for that version
    - resolves the next App Store Connect build number for that short version
    - generates deterministic App Store screenshots
-   - uploads release notes and screenshots to the editable App Store version
+   - uploads release notes, screenshots, and the App Review PDF attachment to the editable App Store version
    - generates `apps/ios/build/AppStoreRelease.xcconfig`
    - archives `OpenClaw`
-   - uploads the IPA to App Store Connect for TestFlight/App Review use
+   - validates the exported IPA's push mode, signed entitlements, and embedded App Store profile
+   - validates the IPA with Apple, uploads it, and waits for App Store Connect processing
    - leaves App Review submission for a maintainer to complete manually
 
 8. Expected outputs after a successful run:
    - `apps/ios/build/app-store/OpenClaw-<version>.ipa`
    - `apps/ios/build/app-store/OpenClaw-<version>.app.dSYM.zip`
    - Fastlane log line like `Uploaded iOS App Store build: version=<version> short=<short> build=<build>`
+   - a complete App Store Connect build-upload record for that version and build
 
 9. If this is a fresh clone on a maintainer machine that already works elsewhere, it is OK to copy the non-secret `apps/ios/fastlane/.env` from another trusted local clone on the same Mac. The Keychain-backed private key remains machine-local and is not stored in the repo.
 
 ## iOS Versioning Workflow
 
-- Pinned iOS release version: `apps/ios/version.json`
+- Release gateway version: canonical root version, with an optional checked `--version` override
+- App Store revision and build: deterministic App Store Connect plan
+- Local default version: root `package.json`
 - iOS-only changelog: `apps/ios/CHANGELOG.md`
-- Generated checked-in artifacts:
-  - `apps/ios/Config/Version.xcconfig`
-  - `apps/ios/fastlane/metadata/en-US/release_notes.txt`
+- Generated local artifacts:
+  - `apps/ios/build/Version.xcconfig`
+  - `apps/ios/SwiftSources.input.xcfilelist`
+  - temporary Fastlane metadata containing release notes rendered from `apps/ios/CHANGELOG.md`
 - Useful commands:
 
 ```bash
 pnpm ios:version
 pnpm ios:version:check
-pnpm ios:version:sync
-pnpm ios:version:pin -- --from-gateway
-pnpm ios:version:pin -- --version 2026.4.10
+pnpm ios:release:plan -- --json
+pnpm ios:release:cut
+pnpm ios:filelist:gen
 ```
 
 Recommended flow:
 
-### TestFlight iteration on an existing train
+### App Store Connect iteration on an existing train
 
-1. Keep `apps/ios/version.json` pinned to the current train version.
-2. Update `apps/ios/CHANGELOG.md`, usually under `## Unreleased` while iterating.
-3. Run `pnpm ios:version:sync` after changelog changes.
-4. Upload more TestFlight builds with `pnpm ios:release:upload`.
-5. Let Fastlane bump only the numeric build number.
+1. Run `pnpm ios:release:plan -- --json`; the editable revision is selected automatically.
+2. Run `pnpm ios:release:cut` when new `## Unreleased` notes need to join that revision.
+3. Review and commit `apps/ios/CHANGELOG.md`.
+4. Run `pnpm ios:release:upload`.
+5. Failed, processing, and complete Apple-visible uploads all advance the next numeric build.
 
-### Starting the next production release train
+### Starting the next App Store revision
 
-1. Pin iOS to the current gateway version:
-
-```bash
-pnpm ios:version:pin -- --from-gateway
-```
-
-2. Update `apps/ios/CHANGELOG.md` for the new release as needed.
-3. Run `pnpm ios:version:sync`.
-4. Submit the first App Store Connect build for that newly pinned version.
-5. Keep iterating on that same version until the release candidate is ready.
+1. Confirm the target gateway version in root `package.json`.
+2. Add release notes under `## Unreleased`.
+3. Run `pnpm ios:release:plan -- --json`; released history determines the next revision.
+4. Run `pnpm ios:release:cut`, review and commit the changelog, then run `pnpm ios:release:upload`.
+5. Keep rerunning the planner-driven upload until the release candidate is ready.
 
 See `apps/ios/VERSIONING.md` for the detailed spec.
 
@@ -243,23 +249,24 @@ See `apps/ios/VERSIONING.md` for the detailed spec.
 
 - The app calls `registerForRemoteNotifications()` at launch.
 - `apps/ios/Sources/OpenClaw.entitlements` derives `aps-environment` from the active build configuration/signing override.
+- App Attest relay builds use `apps/ios/Sources/OpenClawAppAttest.entitlements`; local/direct builds do not require App Attest provisioning.
 - APNs token registration to gateway happens only after gateway connection (`push.apns.register`).
-- Local/manual builds default to `OpenClawPushTransport=direct`, `OpenClawPushDistribution=local`, and a development `aps-environment` entitlement.
+- Local/manual Debug builds default to `OpenClawPushMode=localSandbox`, direct APNs registration, and a development `aps-environment` entitlement. Local/manual Release builds default to `OpenClawPushMode=localProduction` and direct production APNs registration.
 - Your selected team/profile must support Push Notifications for the app bundle ID you are signing.
 - If push capability or provisioning is wrong, APNs registration fails at runtime (check Xcode logs for `APNs registration failed`).
 - The gateway host also needs direct APNs auth configured separately with `OPENCLAW_APNS_TEAM_ID`, `OPENCLAW_APNS_KEY_ID`, and either `OPENCLAW_APNS_PRIVATE_KEY_P8` or `OPENCLAW_APNS_PRIVATE_KEY_PATH`.
 - Recommended gateway-host storage for the APNs `.p8` file is `~/.openclaw/credentials/apns/AuthKey_<KEYID>.p8` with restrictive permissions, then point `OPENCLAW_APNS_PRIVATE_KEY_PATH` at that file.
 - `apps/ios/fastlane/.env` only covers App Store Connect / Fastlane auth; it does not provide gateway APNs credentials for local direct-push testing.
-- Debug builds default to `OpenClawPushAPNsEnvironment=sandbox`; Release builds default to `production`.
+- Debug builds default to sandbox APNs through `OpenClawPushMode=localSandbox`; Release builds default to production APNs through `OpenClawPushMode=localProduction`.
 
 ## APNs Expectations For Official Builds
 
-- Official/TestFlight builds register with the external push relay before they publish `push.apns.register` to the gateway.
+- Official App Store builds register with the external push relay before they publish `push.apns.register` to the gateway.
 - The gateway registration for relay mode contains an opaque relay handle, a registration-scoped send grant, relay origin metadata, and installation metadata instead of the raw APNs token.
 - The relay registration is bound to the gateway identity fetched from `gateway.identity.get`, so another gateway cannot reuse that stored registration.
 - The app persists the relay handle metadata locally so reconnects can republish the gateway registration without re-registering on every connect.
 - If the relay base URL changes in a later build, the app refreshes the relay registration instead of reusing the old relay origin.
-- Relay mode requires a reachable relay base URL and uses App Attest plus a StoreKit app transaction JWS during registration.
+- App Store release mode uses the internal `production` relay profile, production APNs, App Attest, and a StoreKit app transaction JWS during registration.
 - Gateway-side relay sending is configured through `gateway.push.apns.relay.baseUrl` in `openclaw.json`. `OPENCLAW_APNS_RELAY_BASE_URL` remains a temporary env override only.
 
 ## Official Build Relay Trust Model
@@ -269,7 +276,7 @@ See `apps/ios/VERSIONING.md` for the detailed spec.
   - The operator session is used to fetch `gateway.identity.get`.
 - `iOS -> relay`
   - The app registers with the relay over HTTPS using App Attest plus a StoreKit app transaction JWS.
-  - The relay requires the official production/TestFlight distribution path, which is why local
+  - The relay requires the official App Store distribution path, which is why local
     Xcode/dev installs cannot use the hosted relay.
 - `gateway delegation`
   - The app includes the gateway identity in relay registration.
@@ -289,7 +296,7 @@ gateway can only send pushes for iOS devices that paired with that gateway.
 
 - Pairing via QR or setup code flow (`/pair qr` or `/pair`, then `/pair approve` in Telegram).
 - Gateway connection via discovery or manual host/port with TLS fingerprint trust prompt.
-- Chat + Talk surfaces through the operator gateway session.
+- One Chat surface for text, realtime voice, dictation, and voice notes through the operator gateway session.
 - iOS node commands in foreground: camera snap/clip, canvas present/navigate/eval/snapshot, screen record, location, contacts, calendar, reminders, photos, motion, local notifications.
 - Authenticated background `node.presence.alive` beacons that update gateway last-seen metadata when the app moves between foreground and background, without treating suspended sockets as connected.
 - Share extension deep-link forwarding into the connected gateway session.

@@ -3,11 +3,11 @@ title: Subagent stale child links
 scenario:
   id: subagent-stale-child-links
   surface: subagents
+  runtimePairLane: core
   coverage:
     primary:
-      - agents.subagents
-    secondary:
-      - gateway.sessions-list
+      - gateway.session-apis-subagents
+      - gateway.session-apis-sessions-list
   objective: Verify restarted gateways hide stale persisted subagent child links without hiding live or fresh children.
   successCriteria:
     - Old ended subagent run records are not exposed as current children.
@@ -24,6 +24,8 @@ scenario:
     - extensions/qa-lab/src/gateway-child.ts
   execution:
     kind: flow
+    suiteIsolation: isolated
+    isolationReason: Seeds persisted gateway session/subagent state and restarts the gateway.
     summary: Seed stale subagent session state on disk, restart the real gateway, then assert sessions.list filters only the stale child links.
 
 flow:

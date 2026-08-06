@@ -2,7 +2,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readBoundedResponseText } from "../bounded-response-text.mjs";
+import {
+  createBoundedResponseTooLargeError,
+  readBoundedResponseText,
+} from "../../../lib/bounded-response.mjs";
 import { readPositiveIntEnv } from "../env-limits.mjs";
 import {
   readPluginInstallIndex,
@@ -844,11 +847,7 @@ async function assertClawHubPreflight() {
     process.env.CLAWHUB_URL ||
     "https://clawhub.ai"
   ).replace(/\/+$/, "");
-  const token =
-    process.env.OPENCLAW_CLAWHUB_TOKEN ||
-    process.env.CLAWHUB_TOKEN ||
-    process.env.CLAWHUB_AUTH_TOKEN ||
-    "";
+  const token = process.env.CLAWHUB_TOKEN || process.env.CLAWHUB_AUTH_TOKEN || "";
   const preflightUrl = `${baseUrl}/api/v1/packages/${encodeURIComponent(packageName)}`;
   const response = await withTimeout(
     `ClawHub package preflight for ${packageName}`,
@@ -868,7 +867,7 @@ async function assertClawHubPreflight() {
           response,
           `ClawHub package preflight response for ${packageName}`,
           limits.bodyMaxBytes,
-          timeoutPromise,
+          { createTooLargeError: createBoundedResponseTooLargeError, timeoutPromise },
         ),
     );
     throw new Error(
@@ -883,7 +882,7 @@ async function assertClawHubPreflight() {
         response,
         `ClawHub package preflight response for ${packageName}`,
         limits.bodyMaxBytes,
-        timeoutPromise,
+        { createTooLargeError: createBoundedResponseTooLargeError, timeoutPromise },
       ),
   );
   const detail = await withTimeout(
@@ -952,13 +951,11 @@ function assertClawHubInstalled() {
   assertClawHubArtifactMetadata(record, pluginId);
 
   const installPath = resolveHomePath(record.installPath);
-  const extensionsRoot = path.join(process.env.HOME, ".openclaw", "extensions");
-  if (!installPath.startsWith(`${extensionsRoot}${path.sep}`)) {
-    throw new Error(`ClawHub install path is outside managed extensions root: ${installPath}`);
-  }
   if (!fs.existsSync(installPath)) {
     throw new Error(`ClawHub install path missing on disk: ${installPath}`);
   }
+  const extensionsRoot = path.join(process.env.HOME, ".openclaw", "extensions");
+  assertRealPathInside(extensionsRoot, installPath, "ClawHub install path");
   if (record.artifactKind === "npm-pack") {
     assertClawHubExternalInstallContract(installPath);
   }

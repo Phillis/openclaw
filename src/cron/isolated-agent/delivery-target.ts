@@ -5,18 +5,20 @@ import { resolveExplicitDeliveryTargetCompat } from "../../channels/plugins/targ
 import type { ChannelId } from "../../channels/plugins/types.public.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { resolveStorePath } from "../../config/sessions/paths.js";
-import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
+import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { stripTargetProviderPrefix } from "../../infra/outbound/channel-target-prefix.js";
 import type { OutboundSessionRoute } from "../../infra/outbound/outbound-session.js";
+import { isReservedTargetLiteralError } from "../../infra/outbound/target-errors.js";
 import type { ResolvedMessagingTarget } from "../../infra/outbound/target-resolver.js";
 import { tryResolveLoadedOutboundTarget } from "../../infra/outbound/targets-loaded.js";
 import { resolveSessionDeliveryTarget } from "../../infra/outbound/targets-session.js";
 import type { OutboundChannel } from "../../infra/outbound/targets.js";
 import { normalizeAccountId } from "../../routing/session-key.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
+import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { resolveCronStoredDeliveryContext } from "../delivery-context.js";
 import { resolveCronAgentSessionKey } from "./session-key.js";
 
@@ -143,7 +145,7 @@ export async function resolveDeliveryTarget(
     accountId?: string;
     sessionKey?: string;
   },
-  options?: { dryRun?: boolean },
+  options?: { dryRun?: boolean; inheritSessionThread?: boolean },
 ): Promise<DeliveryTargetResolution> {
   const requestedChannel = typeof jobPayload.channel === "string" ? jobPayload.channel : "last";
   const explicitTo = typeof jobPayload.to === "string" ? jobPayload.to : undefined;
@@ -173,13 +175,13 @@ export async function resolveDeliveryTarget(
     ? ({
         sessionId: threadSessionKey ?? mainSessionKey,
         updatedAt: 0,
-        deliveryContext: storedDeliveryContext,
+        delivery: normalizeSessionDeliveryState({ context: storedDeliveryContext }),
       } satisfies SessionEntry)
     : undefined;
   const threadEntry = threadSessionKey
-    ? loadSessionEntry({ agentId, sessionKey: threadSessionKey, storePath })
+    ? loadSessionEntryReadOnly({ agentId, sessionKey: threadSessionKey, storePath })
     : undefined;
-  const mainEntry = loadSessionEntry({ agentId, sessionKey: mainSessionKey, storePath });
+  const mainEntry = loadSessionEntryReadOnly({ agentId, sessionKey: mainSessionKey, storePath });
   const main = storedDeliveryEntry ?? threadEntry ?? mainEntry;
   // True when the cron has no delivery identity of its own (no per-job target, no own
   // sessionKey, no stored/creation delivery context) and therefore fell back to the SHARED
@@ -233,9 +235,7 @@ export async function resolveDeliveryTarget(
   // --account on cron add/edit). Fall back to the session's lastAccountId,
   // then to the agent's bound account from bindings config.
   const explicitAccountId =
-    typeof jobPayload.accountId === "string" && jobPayload.accountId.trim()
-      ? jobPayload.accountId.trim()
-      : undefined;
+    typeof jobPayload.accountId === "string" ? jobPayload.accountId.trim() || undefined : undefined;
   let accountId = explicitAccountId ?? resolved.accountId;
   if (!accountId && channel) {
     accountId = deliveryTargetRuntime.resolveFirstBoundAccountId({
@@ -243,11 +243,6 @@ export async function resolveDeliveryTarget(
       channelId: channel,
       agentId,
     });
-  }
-
-  // job.delivery.accountId takes highest precedence — explicitly set by the job author.
-  if (jobPayload.accountId) {
-    accountId = jobPayload.accountId;
   }
 
   if (!channel) {
@@ -349,17 +344,20 @@ export async function resolveDeliveryTarget(
     allowFrom: effectiveAllowFrom,
   });
   if (!docked.ok) {
-    return {
-      ok: false,
-      channel,
-      to: undefined,
-      accountId,
-      threadId: explicitThreadId,
-      mode,
-      error: docked.error,
-    };
+    if (!toCandidate || !isReservedTargetLiteralError(docked.error)) {
+      return {
+        ok: false,
+        channel,
+        to: undefined,
+        accountId,
+        threadId: explicitThreadId,
+        mode,
+        error: docked.error,
+      };
+    }
+  } else {
+    toCandidate = docked.to;
   }
-  toCandidate = docked.to;
   const targetResolution = await deliveryTargetRuntime.resolveChannelTargetForDelivery({
     cfg,
     channel,
@@ -474,28 +472,19 @@ export async function resolveDeliveryTarget(
       : undefined;
   // Thread precedence is explicit config, route canonicalization, parser-derived
   // explicit target, then same-peer session history.
-  const threadId =
-    explicitThreadId ??
-    route?.threadId ??
-    parserExplicitThreadId ??
-    (shouldCarrySessionThread({
+  const canUseSessionThread =
+    options?.inheritSessionThread !== false &&
+    shouldCarrySessionThread({
       resolved,
       explicitTo,
       route,
       lastRoute,
-    })
-      ? resolved.threadId
-      : undefined);
-  if (options?.dryRun) {
-    return {
-      ok: true,
-      channel,
-      to: toCandidate,
-      accountId,
-      threadId,
-      mode,
-    };
-  }
+    });
+  const threadId =
+    explicitThreadId ??
+    route?.threadId ??
+    parserExplicitThreadId ??
+    (canUseSessionThread ? resolved.threadId : undefined);
   return {
     ok: true,
     channel,

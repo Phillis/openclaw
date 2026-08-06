@@ -65,7 +65,7 @@ pnpm ios:release:signing:check
 pnpm ios:release:signing:setup
 ```
 
-`signing:setup` uses Fastlane `produce` and `modify_services` to create Developer Portal bundle IDs and enable required services before running `match`. The main app and share extension also require the shared App Group from `apps/ios/Config/AppStoreSigning.json`; associate that group with both bundle IDs in the Apple Developer Portal before regenerating profiles. If Fastlane does not already have a valid Apple Developer Portal session, run `fastlane spaceauth` for a release-owner Apple ID and export the resulting `FASTLANE_SESSION`.
+`signing:setup` uses Fastlane `produce` and `modify_services` to create Developer Portal bundle IDs and enable required services before running `match`. The main app also requires App Attest, and the main app and share extension both require the shared App Group from `apps/ios/Config/AppStoreSigning.json`; associate that group with both bundle IDs in the Apple Developer Portal before regenerating profiles. If Fastlane does not already have a valid Apple Developer Portal session, run `fastlane spaceauth` for a release-owner Apple ID and export the resulting `FASTLANE_SESSION`.
 
 Shared encrypted signing storage:
 
@@ -88,14 +88,14 @@ fastlane ios auth_check
 App Store Connect API auth is required when:
 
 - uploading to App Store Connect
-- auto-resolving the next build number from App Store Connect
+- planning the App Store revision and next build from App Store Connect
 
 If you pass `--build-number` to `pnpm ios:release:archive`, the local archive path does not need App Store Connect API auth.
 
 Archive locally without upload:
 
 ```bash
-pnpm ios:release:archive
+pnpm ios:release:archive -- --version 2026.7.2 --revision 1 --build-number 3
 ```
 
 Generate deterministic App Store screenshots:
@@ -104,20 +104,20 @@ Generate deterministic App Store screenshots:
 pnpm ios:screenshots
 ```
 
-The screenshot lane runs the app with `--openclaw-screenshot-mode`, which enters the built-in connected screenshot fixture instead of pairing with a live gateway. By default it captures the tab set on `iPhone 16 Pro Max` and `iPad Pro 13-inch (M4)`; override devices with a comma-separated `OPENCLAW_SNAPSHOT_DEVICES` value when the requested simulators exist locally.
+The screenshot lane runs the app with `--openclaw-screenshot-mode`, which enters the built-in connected screenshot fixture instead of pairing with a live gateway. By default it chooses one available large iPhone simulator and one available 13-inch iPad simulator from the installed Xcode runtime; override devices with a comma-separated `OPENCLAW_SNAPSHOT_DEVICES` value when the requested simulators exist locally.
 
 Upload to App Store Connect:
 
 ```bash
+pnpm ios:release:plan -- --json
+pnpm ios:release:cut
+# Review and commit apps/ios/CHANGELOG.md.
 pnpm ios:release:upload
 ```
 
-Direct Fastlane entry point:
-
-```bash
-cd apps/ios
-fastlane ios release_upload
-```
+Direct Fastlane upload is disabled. Use the package script so the release
+wrapper, App Store push mode, and exported-IPA validation gate all run in the
+same path.
 
 Maintainer recovery path for a fresh clone on the same Mac:
 
@@ -138,19 +138,14 @@ cd apps/ios
 fastlane ios auth_check
 ```
 
-4. If you are starting a brand-new production release train, pin iOS to the current gateway version:
+4. Plan and cut the exact encoded-version changelog section:
 
 ```bash
-pnpm ios:version:pin -- --from-gateway
+pnpm ios:release:plan -- --json
+pnpm ios:release:cut
 ```
 
-5. Set the official relay URL before release:
-
-```bash
-export OPENCLAW_PUSH_RELAY_BASE_URL=https://relay.example.com
-```
-
-6. Upload:
+5. Review and commit `apps/ios/CHANGELOG.md`, then upload:
 
 ```bash
 pnpm ios:release:upload
@@ -159,21 +154,24 @@ pnpm ios:release:upload
 Quick verification after upload:
 
 - confirm `apps/ios/build/app-store/OpenClaw-<version>.ipa` exists
+- confirm Fastlane validates the exported IPA before upload
 - confirm Fastlane prints `Uploaded iOS App Store build: version=<version> short=<short> build=<build>`
-- remember that App Store Connect/TestFlight processing can take a few minutes after the upload succeeds
+- remember that App Store Connect processing can take a few minutes after the upload succeeds
 
 Versioning rules:
 
-- `apps/ios/version.json` is the pinned iOS release version source
+- App Store release uploads derive the gateway from root `package.json` and revision/build state from App Store Connect
+- explicit `--version`, `--revision`, and `--build-number` values are checked overrides
 - `apps/ios/CHANGELOG.md` is the iOS-only changelog and release-note source
-- Supported pinned iOS versions use CalVer: `YYYY.M.D`
-- `pnpm ios:version:pin -- --from-gateway` promotes the current root gateway version into the pinned iOS release version
-- Fastlane uses the pinned iOS version only; changing `package.json.version` alone does not change the iOS app version
-- Fastlane sets `CFBundleShortVersionString` to the pinned iOS version, for example `2026.4.10`
-- Fastlane resolves `CFBundleVersion` as the next integer App Store Connect build number for that short version
-- Run `pnpm ios:version:sync` after changing `apps/ios/version.json` or `apps/ios/CHANGELOG.md`
-- `pnpm ios:version:check` validates that checked-in iOS version artifacts are in sync
+- Gateway versions use CalVer: `YYYY.M.D`
+- Fastlane appends one unpadded revision digit: gateway `YYYY.M.D`, revision `R`, becomes `YYYY.M.DR`
+- Gateway `2026.7.2`, revision `1` sets `CFBundleShortVersionString` to `2026.7.21`
+- Fastlane resolves `CFBundleVersion` from the maximum awaiting, processing, failed, or complete build-upload record plus one
+- Run `pnpm ios:release:cut` after changing `## Unreleased`, then review and commit the exact encoded heading
+- `pnpm ios:version:check` validates that release notes can be generated from the iOS changelog
 - The release flow regenerates `apps/ios/OpenClaw.xcodeproj` from `apps/ios/project.yml` before archiving
 - Local App Store signing uses a temporary generated xcconfig with profile names from `apps/ios/Config/AppStoreSigning.json` and leaves local development signing overrides untouched
-- `pnpm ios:release:upload` generates and uploads screenshots and release notes before archiving, then uploads the IPA without submitting it for App Review
+- App Store release uses `OpenClawPushMode=appStore`, which derives the canonical production hosted relay, production APNs, production relay profile, and `appleStrict` proof. The release lane rejects custom production relay URL overrides.
+- The exported IPA is validated before upload by inspecting its push mode, signed entitlements, and embedded App Store profile.
+- `pnpm ios:release:upload` generates and uploads screenshots, release notes, and the App Review PDF attachment before uploading the IPA, waits for build processing, and does not submit for App Review or upload the App Store Connect `Notes` field
 - See `apps/ios/VERSIONING.md` for the detailed workflow

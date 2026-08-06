@@ -4,13 +4,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseStrictIntegerOption } from "./lib/dev-tooling-safety.ts";
+import { expectDefined } from "../packages/normalization-core/src/expect.js";
 
 type CommandCase = {
   id: string;
   name: string;
   args: string[];
   presets: readonly string[];
+  stateScope?: "case" | "sample";
   expectedExitCodes?: readonly number[];
   expectedNonzeroOutputIncludes?: readonly string[];
   firstOutputBudgetMs?: number;
@@ -23,9 +24,16 @@ type Sample = {
   maxRssMb: number | null;
   exitCode: number | null;
   signal: string | null;
+  startedAt?: string;
+  endedAt?: string;
   timedOut?: boolean;
   stdoutTail?: string;
   stderrTail?: string;
+};
+
+type CaseRuns = {
+  warmupSamples: Sample[];
+  samples: Sample[];
 };
 
 type SummaryStats = {
@@ -56,6 +64,7 @@ type SuiteResult = {
       firstOutputBudgetMs: number | null;
       exitBudgetMs: number | null;
     } | null;
+    warmupSamples?: Sample[];
     samples: Sample[];
     summary: CaseSummary;
   }>;
@@ -105,8 +114,36 @@ type CliOptions = {
 const DEFAULT_RUNS = 5;
 const DEFAULT_WARMUP = 1;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_KILL_GRACE_MS = 1_000;
+const TIMEOUT_KILL_GRACE_MS = resolveTimeoutKillGraceMs(process.env);
+const PROCESS_GROUP_EXIT_POLL_MS = 25;
 const DEFAULT_ENTRY = "openclaw.mjs";
 const MAX_RSS_MARKER = "__OPENCLAW_MAX_RSS_KB__=";
+
+function resolveTimeoutKillGraceMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.VITEST ? env.OPENCLAW_TEST_CLI_STARTUP_TIMEOUT_KILL_GRACE_MS : undefined;
+  if (!raw || !/^\d+$/u.test(raw)) {
+    return DEFAULT_TIMEOUT_KILL_GRACE_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : DEFAULT_TIMEOUT_KILL_GRACE_MS;
+}
+const VALUE_FLAGS = new Set([
+  "--case",
+  "--compare-baseline",
+  "--compare-candidate",
+  "--cpu-prof-dir",
+  "--entry",
+  "--entry-primary",
+  "--entry-secondary",
+  "--heap-prof-dir",
+  "--output",
+  "--preset",
+  "--runs",
+  "--timeout-ms",
+  "--warmup",
+]);
+const BOOLEAN_FLAGS = new Set(["--help", "--json"]);
 
 const COMMAND_CASES: readonly CommandCase[] = [
   {
@@ -416,6 +453,19 @@ const COMMAND_CASES: readonly CommandCase[] = [
     expectedNonzeroOutputIncludes: ['"ok"', '"gateway_transport_error"'],
   },
   {
+    id: "gatewayHealthJsonConnected",
+    name: "gateway health --json (connected)",
+    args: ["gateway", "health", "--json"],
+    presets: [],
+    stateScope: "case",
+  },
+  {
+    id: "gatewayHealthJsonFirstDevice",
+    name: "gateway health --json (first device)",
+    args: ["gateway", "health", "--json"],
+    presets: [],
+  },
+  {
     id: "configGetGatewayPort",
     name: "config get gateway.port",
     args: ["config", "get", "gateway.port"],
@@ -431,7 +481,7 @@ function parseFlagValue(flag: string): string | undefined {
     return undefined;
   }
   const value = process.argv[idx + 1];
-  if (!value || value.startsWith("--")) {
+  if (!value || value.startsWith("-")) {
     throw new Error(`${flag} requires a value`);
   }
   return value;
@@ -444,19 +494,67 @@ function hasFlag(flag: string): boolean {
 function parseRepeatableFlag(flag: string): string[] {
   const values: string[] = [];
   for (let i = 0; i < process.argv.length; i += 1) {
-    if (process.argv[i] === flag && process.argv[i + 1]) {
-      values.push(process.argv[i + 1]);
+    const value = process.argv[i + 1];
+    if (process.argv[i] === flag && value && !value.startsWith("-")) {
+      values.push(value);
     }
   }
   return values;
 }
 
+function validateCliArgs(argv: readonly string[] = process.argv.slice(2)): void {
+  const seenSingleValueFlags = new Set<string>();
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = expectDefined(argv[index], `CLI benchmark argument at index ${index}`);
+    if (VALUE_FLAGS.has(arg)) {
+      if (arg !== "--case") {
+        if (seenSingleValueFlags.has(arg)) {
+          throw new Error(`${arg} was provided more than once`);
+        }
+        seenSingleValueFlags.add(arg);
+      }
+      const value = argv[index + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error(`${arg} requires a value`);
+      }
+      index += 1;
+      continue;
+    }
+    if (BOOLEAN_FLAGS.has(arg)) {
+      continue;
+    }
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+}
+
 function parsePositiveInt(raw: string | undefined, fallback: number, label = "value"): number {
-  return parseStrictIntegerOption({ fallback, label, min: 1, raw });
+  return parseIntegerOption(raw, fallback, label, 1);
 }
 
 function parseNonNegativeInt(raw: string | undefined, fallback: number, label = "value"): number {
-  return parseStrictIntegerOption({ fallback, label, min: 0, raw });
+  return parseIntegerOption(raw, fallback, label, 0);
+}
+
+// This runner is checked out from trusted main beside frozen candidates, whose
+// root dependencies need not include current workspace packages.
+function parseIntegerOption(
+  raw: string | undefined,
+  fallback: number,
+  label: string,
+  min: number,
+): number {
+  const value = raw?.trim();
+  if (!value) {
+    return fallback;
+  }
+  if (!/^\d+$/u.test(value)) {
+    throw new Error(`${label} must be an integer >= ${min}; got ${JSON.stringify(raw)}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min) {
+    throw new Error(`${label} must be an integer >= ${min}; got ${JSON.stringify(raw)}`);
+  }
+  return parsed;
 }
 
 function parseGatewayPortEnv(raw: string | undefined): number {
@@ -496,7 +594,12 @@ function parsePresets(raw: string | undefined): string[] {
 function resolveCases(options: { presets: string[]; caseIds: string[] }): CommandCase[] {
   const byId = new Map(COMMAND_CASES.map((commandCase) => [commandCase.id, commandCase]));
   if (options.caseIds.length > 0) {
+    const seenIds = new Set<string>();
     return options.caseIds.map((id) => {
+      if (seenIds.has(id)) {
+        throw new Error(`Duplicate --case "${id}"`);
+      }
+      seenIds.add(id);
       const commandCase = byId.get(id);
       if (!commandCase) {
         throw new Error(`Unknown --case "${id}"`);
@@ -516,9 +619,13 @@ function median(values: number[]): number {
   const sorted = [...values].toSorted((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   if (sorted.length % 2 === 0) {
-    return (sorted[mid - 1] + sorted[mid]) / 2;
+    return (
+      (expectDefined(sorted[mid - 1], "lower middle CLI benchmark sample") +
+        expectDefined(sorted[mid], "upper middle CLI benchmark sample")) /
+      2
+    );
   }
-  return sorted[mid];
+  return expectDefined(sorted[mid], "middle CLI benchmark sample");
 }
 
 function percentile(values: number[], p: number): number {
@@ -585,6 +692,8 @@ function buildConfigFixture(commandCase: CommandCase): Record<string, unknown> |
   if (
     commandCase.id !== "configGetGatewayPort" &&
     commandCase.id !== "gatewayHealthJson" &&
+    commandCase.id !== "gatewayHealthJsonConnected" &&
+    commandCase.id !== "gatewayHealthJsonFirstDevice" &&
     commandCase.id !== "health" &&
     commandCase.id !== "healthJson"
   ) {
@@ -626,6 +735,10 @@ function parseMaxRssMb(stderr: string): number | null {
   return Number(lastMatch[1]) / 1024;
 }
 
+function nodeImportSpecifierForPath(filePath: string): string {
+  return pathToFileURL(filePath).href;
+}
+
 function buildCpuOrHeapFlags(options: { cpuProfDir?: string; heapProfDir?: string }): string[] {
   const flags: string[] = [];
   if (options.cpuProfDir) {
@@ -649,8 +762,10 @@ async function runSample(params: {
   cpuProfDir?: string;
   heapProfDir?: string;
   rssHookPath: string;
+  runRoot?: string;
 }): Promise<Sample> {
-  const runRoot = mkdtempSync(path.join(os.tmpdir(), "openclaw-cli-bench-home-"));
+  const runRoot = params.runRoot ?? mkdtempSync(path.join(os.tmpdir(), "openclaw-cli-bench-home-"));
+  const ownsRunRoot = params.runRoot == null;
   const stateDir = path.join(runRoot, ".openclaw");
   const configPath = path.join(stateDir, "openclaw.json");
   const configFixture = buildConfigFixture(params.commandCase);
@@ -660,7 +775,7 @@ async function runSample(params: {
   }
   const nodeArgs = [
     "--import",
-    params.rssHookPath,
+    nodeImportSpecifierForPath(params.rssHookPath),
     ...buildCpuOrHeapFlags({
       cpuProfDir: params.cpuProfDir,
       heapProfDir: params.heapProfDir,
@@ -668,18 +783,23 @@ async function runSample(params: {
     params.entry,
     ...params.commandCase.args,
   ];
+  const startedAt = new Date();
   const started = process.hrtime.bigint();
   let firstOutputMs: number | null = null;
   let stdout = "";
   let stderr = "";
   let settled = false;
   let timedOut = false;
+  let forceKillAt: number | null = null;
+  let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
   const maxOutputLength = 32 * 1024 * 1024;
 
   try {
     return await new Promise<Sample>((resolve) => {
+      const useProcessGroup = process.platform !== "win32";
       const proc = spawn(process.execPath, nodeArgs, {
         cwd: process.cwd(),
+        detached: useProcessGroup,
         env: {
           ...process.env,
           HOME: runRoot,
@@ -699,11 +819,17 @@ async function runSample(params: {
           return;
         }
         settled = true;
+        if (forceKillTimer) {
+          clearTimeout(forceKillTimer);
+          forceKillTimer = null;
+        }
         const ms = Number(process.hrtime.bigint() - started) / 1e6;
         resolve({
           ms,
           firstOutputMs,
           maxRssMb: parseMaxRssMb(stderr),
+          startedAt: startedAt.toISOString(),
+          endedAt: new Date().toISOString(),
           ...(timedOut ? { timedOut } : {}),
           ...sample,
         });
@@ -717,18 +843,11 @@ async function runSample(params: {
 
       const timeout = setTimeout(() => {
         timedOut = true;
-        try {
-          proc.kill("SIGTERM");
-        } catch {
-          // Best-effort timeout cleanup.
-        }
-        setTimeout(() => {
-          try {
-            proc.kill("SIGKILL");
-          } catch {
-            // Best-effort timeout cleanup.
-          }
-        }, 1_000).unref?.();
+        signalSampleProcess(proc, "SIGTERM", useProcessGroup);
+        forceKillAt = Date.now() + TIMEOUT_KILL_GRACE_MS;
+        forceKillTimer = setTimeout(() => {
+          signalSampleProcess(proc, "SIGKILL", useProcessGroup);
+        }, TIMEOUT_KILL_GRACE_MS).unref?.();
       }, params.timeoutMs);
       timeout.unref?.();
 
@@ -756,21 +875,108 @@ async function runSample(params: {
       });
       proc.once("close", (code, signal) => {
         clearTimeout(timeout);
-        finish({
-          exitCode: code,
-          signal,
-          ...(code === 0 && signal == null
-            ? {}
-            : {
-                stdoutTail: tailLines(stdout, 20),
-                stderrTail: tailLines(stderr, 20),
-              }),
-        });
+        const complete = () =>
+          finish({
+            exitCode: code,
+            signal,
+            ...(code === 0 && signal == null
+              ? {}
+              : {
+                  stdoutTail: tailLines(stdout, 20),
+                  stderrTail: tailLines(stderr, 20),
+                }),
+          });
+        if (timedOut && isSampleProcessGroupAlive(proc, useProcessGroup)) {
+          void finishAfterTimeoutCleanup({
+            complete,
+            forceKillAt,
+            proc,
+            useProcessGroup,
+          });
+          return;
+        }
+        complete();
       });
     });
   } finally {
-    rmSync(runRoot, { recursive: true, force: true });
+    if (ownsRunRoot) {
+      rmSync(runRoot, { recursive: true, force: true });
+    }
   }
+}
+
+async function finishAfterTimeoutCleanup(params: {
+  complete: () => void;
+  forceKillAt: number | null;
+  proc: ReturnType<typeof spawn>;
+  useProcessGroup: boolean;
+}): Promise<void> {
+  const graceRemainingMs =
+    params.forceKillAt === null
+      ? TIMEOUT_KILL_GRACE_MS
+      : Math.max(0, params.forceKillAt - Date.now());
+  if (graceRemainingMs > 0) {
+    await waitForSampleProcessGroupExit(params.proc, params.useProcessGroup, graceRemainingMs);
+  }
+  if (isSampleProcessGroupAlive(params.proc, params.useProcessGroup)) {
+    signalSampleProcess(params.proc, "SIGKILL", params.useProcessGroup);
+  }
+  await waitForSampleProcessGroupExit(params.proc, params.useProcessGroup, TIMEOUT_KILL_GRACE_MS);
+  params.complete();
+}
+
+function signalSampleProcess(
+  proc: ReturnType<typeof spawn>,
+  signal: NodeJS.Signals,
+  useProcessGroup: boolean,
+): void {
+  if (!proc.pid) {
+    return;
+  }
+  try {
+    if (useProcessGroup) {
+      process.kill(-proc.pid, signal);
+    } else {
+      proc.kill(signal);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== "ESRCH" && code !== "EPERM") {
+      throw error;
+    }
+  }
+}
+
+function isSampleProcessGroupAlive(
+  proc: ReturnType<typeof spawn>,
+  useProcessGroup: boolean,
+): boolean {
+  if (!useProcessGroup || !proc.pid) {
+    return false;
+  }
+  try {
+    process.kill(-proc.pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
+  }
+}
+
+async function waitForSampleProcessGroupExit(
+  proc: ReturnType<typeof spawn>,
+  useProcessGroup: boolean,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadlineAt = Date.now() + timeoutMs;
+  while (Date.now() < deadlineAt) {
+    if (!isSampleProcessGroupAlive(proc, useProcessGroup)) {
+      return true;
+    }
+    await new Promise((resolvePoll) => {
+      setTimeout(resolvePoll, PROCESS_GROUP_EXIT_POLL_MS);
+    });
+  }
+  return !isSampleProcessGroupAlive(proc, useProcessGroup);
 }
 
 async function runCase(params: {
@@ -782,17 +988,29 @@ async function runCase(params: {
   cpuProfDir?: string;
   heapProfDir?: string;
   rssHookPath: string;
-}): Promise<Sample[]> {
+}): Promise<CaseRuns> {
+  const warmupSamples: Sample[] = [];
   const samples: Sample[] = [];
   const totalRuns = params.warmup + params.runs;
-  for (let i = 0; i < totalRuns; i += 1) {
-    const sample = await runSample(params);
-    if (i < params.warmup) {
-      continue;
+  const caseRunRoot =
+    params.commandCase.stateScope === "case"
+      ? mkdtempSync(path.join(os.tmpdir(), "openclaw-cli-bench-home-"))
+      : undefined;
+  try {
+    for (let i = 0; i < totalRuns; i += 1) {
+      const sample = await runSample({ ...params, runRoot: caseRunRoot });
+      if (i < params.warmup) {
+        warmupSamples.push(sample);
+        continue;
+      }
+      samples.push(sample);
     }
-    samples.push(sample);
+    return { warmupSamples, samples };
+  } finally {
+    if (caseRunRoot) {
+      rmSync(caseRunRoot, { recursive: true, force: true });
+    }
   }
-  return samples;
 }
 
 function tailLines(value: string, maxLines: number): string {
@@ -880,30 +1098,34 @@ export function collectFailedSamples(result: SuiteResult): string[] {
   for (const commandCase of result.cases) {
     if (commandCase.samples.length === 0) {
       failures.push(`${result.entry} ${commandCase.id}: no measured samples`);
-      continue;
     }
-    for (const [sampleIndex, sample] of commandCase.samples.entries()) {
-      const label = `${result.entry} ${commandCase.id} sample ${sampleIndex + 1}`;
-      const expectedExitCodes = new Set(commandCase.expectedExitCodes ?? [0]);
-      if (sample.timedOut === true) {
-        failures.push(`${label}: timed out`);
-      } else if (sample.signal !== null) {
-        failures.push(`${label}: exited via signal ${sample.signal}`);
-      } else if (!expectedExitCodes.has(sample.exitCode ?? -1)) {
-        failures.push(`${label}: exited with code ${String(sample.exitCode)}`);
-      } else if (sample.maxRssMb === null) {
-        failures.push(`${label}: did not report max RSS`);
-      } else if (sample.exitCode !== 0) {
-        const output = `${sample.stdoutTail ?? ""}\n${sample.stderrTail ?? ""}`;
-        const missing = (commandCase.expectedNonzeroOutputIncludes ?? []).filter(
-          (snippet) => !output.includes(snippet),
-        );
-        if (missing.length > 0) {
-          failures.push(
-            `${label}: exited with expected code ${String(
-              sample.exitCode,
-            )} but output did not match expected clean-state markers (${missing.join(", ")})`,
+    for (const [sampleKind, samples] of [
+      ["warmup", commandCase.warmupSamples ?? []],
+      ["sample", commandCase.samples],
+    ] as const) {
+      for (const [sampleIndex, sample] of samples.entries()) {
+        const label = `${result.entry} ${commandCase.id} ${sampleKind} ${sampleIndex + 1}`;
+        const expectedExitCodes = new Set(commandCase.expectedExitCodes ?? [0]);
+        if (sample.timedOut === true) {
+          failures.push(`${label}: timed out`);
+        } else if (sample.signal !== null) {
+          failures.push(`${label}: exited via signal ${sample.signal}`);
+        } else if (!expectedExitCodes.has(sample.exitCode ?? -1)) {
+          failures.push(`${label}: exited with code ${String(sample.exitCode)}`);
+        } else if (sample.maxRssMb === null) {
+          failures.push(`${label}: did not report max RSS`);
+        } else if (sample.exitCode !== 0) {
+          const output = `${sample.stdoutTail ?? ""}\n${sample.stderrTail ?? ""}`;
+          const missing = (commandCase.expectedNonzeroOutputIncludes ?? []).filter(
+            (snippet) => !output.includes(snippet),
           );
+          if (missing.length > 0) {
+            failures.push(
+              `${label}: exited with expected code ${String(
+                sample.exitCode,
+              )} but output did not match expected clean-state markers (${missing.join(", ")})`,
+            );
+          }
         }
       }
     }
@@ -918,7 +1140,7 @@ async function buildSuiteResult(params: {
 }): Promise<SuiteResult> {
   const cases = [];
   for (const commandCase of params.options.cases) {
-    const samples = await runCase({
+    const { warmupSamples, samples } = await runCase({
       entry: params.entry,
       commandCase,
       runs: params.options.runs,
@@ -945,6 +1167,7 @@ async function buildSuiteResult(params: {
               exitBudgetMs: commandCase.exitBudgetMs ?? null,
             }
           : null,
+      warmupSamples,
       samples,
       summary: summarizeSamples(samples),
     });
@@ -1039,6 +1262,7 @@ function readBenchmarkComparisonForTesting(
 }
 
 async function main(): Promise<void> {
+  validateCliArgs();
   if (hasFlag("--help")) {
     printUsage();
     return;
@@ -1144,16 +1368,18 @@ async function main(): Promise<void> {
 export const testing = {
   buildConfigFixture,
   collectFailedSamples,
+  nodeImportSpecifierForPath,
   parseGatewayPortEnv,
   parseNonNegativeInt,
   parsePositiveInt,
   readBenchmarkComparison: readBenchmarkComparisonForTesting,
+  validateCliArgs,
   writeJsonOutput,
 };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   await main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.stack : String(error));
+    console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
 }
