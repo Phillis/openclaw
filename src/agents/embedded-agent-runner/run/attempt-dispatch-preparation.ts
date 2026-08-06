@@ -111,15 +111,20 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     pluginHarnessOwnsTransport: runtime.pluginHarnessOwnsTransport,
   });
   const attemptFastMode = resolveAttemptFastModeParam();
+  // A caller-provided manager owns an isolated transcript that has no entry in
+  // the runtime session store. Persisted harness-lane claims only belong to
+  // runtime-owned transcript targets; claiming here rejects valid in-memory runs.
+  const callerOwnsTranscript = Boolean(params.sessionManager);
   const existingSessionTarget = sessionPromptState.sessionTarget;
   const reusableSessionTarget =
-    existingSessionTarget?.sessionKey === resolvedSessionKey ||
-    sessionPromptState.sessionTargetAdopted
+    !callerOwnsTranscript &&
+    (existingSessionTarget?.sessionKey === resolvedSessionKey ||
+      sessionPromptState.sessionTargetAdopted)
       ? existingSessionTarget
       : undefined;
   const resolvedTranscriptTarget =
     reusableSessionTarget ??
-    (resolvedSessionKey
+    (!callerOwnsTranscript && resolvedSessionKey
       ? await resolveSessionTranscriptRuntimeReadTarget({
           agentId: workspaceResolution.agentId,
           sessionId: sessionPromptState.sessionId,
@@ -135,14 +140,15 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
   const laneClaim = await ensureAgentHarnessLaneEpoch({
     agentId: resolvedSessionTarget?.agentId ?? workspaceResolution.agentId,
     sessionId: sessionPromptState.sessionId,
-    sessionKey: resolvedSessionKey,
-    storePath:
-      resolvedSessionTarget?.storePath ??
-      (resolvedSessionKey
-        ? resolveStorePath(params.config?.session?.store, {
-            agentId: workspaceResolution.agentId,
-          })
-        : undefined),
+    sessionKey: callerOwnsTranscript ? undefined : resolvedSessionKey,
+    storePath: callerOwnsTranscript
+      ? undefined
+      : (resolvedSessionTarget?.storePath ??
+        (resolvedSessionKey
+          ? resolveStorePath(params.config?.session?.store, {
+              agentId: workspaceResolution.agentId,
+            })
+          : undefined)),
     agentHarnessId: runtime.agentHarness.id,
     snapshotEpoch: params.agentHarnessLaneEpochs?.[runtime.agentHarness.id],
     modelSelectionLocked: params.modelSelectionLocked === true,
