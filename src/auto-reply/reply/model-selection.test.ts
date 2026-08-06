@@ -361,6 +361,36 @@ describe("createModelSelectionState catalog loading", () => {
     expect(catalogRuntimeMocks.loadModelCatalogSnapshot).not.toHaveBeenCalled();
   });
 
+  it("hydrates a generation-bound full catalog only when selection needs inventory", async () => {
+    const loadPreparedModelCatalog = vi.fn(async () => ({
+      entries: [{ provider: "openai", id: "dynamic-model", name: "Dynamic" }],
+      routeVariants: [],
+      authoritative: true,
+    }));
+    const cfg = {
+      agents: { defaults: { model: "openai/gpt-5.4" } },
+    } as OpenClawConfig;
+    const base = {
+      cfg,
+      agentCfg: cfg.agents?.defaults,
+      defaultProvider: "openai",
+      defaultModel: "gpt-5.4",
+      provider: "openai",
+      preparedModelCatalog: { entries: [], routeVariants: [] },
+      loadPreparedModelCatalog,
+    };
+
+    await createModelSelectionState({ ...base, model: "gpt-5.4", hasModelDirective: false });
+    expect(loadPreparedModelCatalog).not.toHaveBeenCalled();
+
+    await createModelSelectionState({
+      ...base,
+      model: "dynamic-model",
+      hasModelDirective: true,
+    });
+    expect(loadPreparedModelCatalog).toHaveBeenCalledOnce();
+  });
+
   it("uses manifest metadata before hydrating the runtime thinking catalog", async () => {
     vi.mocked(loadModelCatalogLocal).mockClear();
     vi.mocked(loadManifestModelCatalog).mockClear();

@@ -23,6 +23,7 @@ import {
 } from "../infra/sqlite-wal.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type {
   OpenClawAgentDatabase,
   OpenClawAgentDatabaseOptions,
@@ -106,19 +107,43 @@ export class IncognitoAgentDatabasePathCollisionError extends Error {
 // satisfies the bounded-cache policy within a predictable FD budget, without config.
 export const OPENCLAW_AGENT_DB_OPEN_HANDLE_CAP = 64;
 const agentDbLog = createSubsystemLogger("state/agent-db");
-const cachedDatabases = new Map<string, OpenClawAgentDatabase>();
-const incognitoDatabases = new WeakSet<OpenClawAgentDatabase>();
-const cachedDatabaseOpenFailures = new Map<string, unknown>();
-const cachedDatabaseLeases = new Map<
-  string,
-  { leaseId: string; env: NodeJS.ProcessEnv | undefined }
->();
-// External schema changes under a live process are unsupported: doctor migrations
-// require restart, so successful owner/schema validation is process-stable.
-const validatedAgentDatabasePaths = new Map<string, string>();
-const terminalOpenLatch = createSqliteTerminalOpenLatch({
-  closeByPath: closeOpenClawAgentDatabaseByPath,
-});
+type AgentDatabaseRuntimeState = {
+  cachedDatabases: Map<string, OpenClawAgentDatabase>;
+  incognitoDatabases: WeakSet<OpenClawAgentDatabase>;
+  cachedDatabaseOpenFailures: Map<string, unknown>;
+  cachedDatabaseLeases: Map<string, { leaseId: string; env: NodeJS.ProcessEnv | undefined }>;
+  validatedAgentDatabasePaths: Map<string, string>;
+  unregisterExitClose: (() => void) | null;
+};
+
+const AGENT_DATABASE_RUNTIME_STATE_KEY = Symbol.for("openclaw.agentDatabase.runtimeState");
+// Plugin SDK and gateway bundles can evaluate this module through distinct module graphs.
+// The SQLite handles and their durable leases are process-owned, so both graphs must share
+// one cache or the first turn for every agent opens a duplicate connection and lease.
+const agentDatabaseRuntimeState = resolveGlobalSingleton<AgentDatabaseRuntimeState>(
+  AGENT_DATABASE_RUNTIME_STATE_KEY,
+  () => ({
+    cachedDatabases: new Map(),
+    incognitoDatabases: new WeakSet(),
+    cachedDatabaseOpenFailures: new Map(),
+    cachedDatabaseLeases: new Map(),
+    // External schema changes under a live process are unsupported: doctor migrations
+    // require restart, so successful owner/schema validation is process-stable.
+    validatedAgentDatabasePaths: new Map(),
+    unregisterExitClose: null,
+  }),
+);
+const {
+  cachedDatabases,
+  incognitoDatabases,
+  cachedDatabaseOpenFailures,
+  cachedDatabaseLeases,
+  validatedAgentDatabasePaths,
+} = agentDatabaseRuntimeState;
+const terminalOpenLatch = resolveGlobalSingleton(
+  Symbol.for("openclaw.agentDatabase.terminalOpenLatch"),
+  () => createSqliteTerminalOpenLatch({ closeByPath: closeOpenClawAgentDatabaseByPath }),
+);
 
 /** Reconfirm an advisory worker failure on the live owner connection. */
 export function confirmOpenClawAgentDatabaseIntegrity(
@@ -258,7 +283,9 @@ export function openOpenClawAgentDatabase(
     ensureOpenClawAgentSchema(db, agentId, pathname);
     const database = { agentId, db, path: pathname, walMaintenance };
     incognitoDatabases.add(database);
-    unregisterExitClose ??= registerSqliteCacheExitClose(closeOpenClawAgentDatabases);
+    agentDatabaseRuntimeState.unregisterExitClose ??= registerSqliteCacheExitClose(
+      closeOpenClawAgentDatabases,
+    );
     cachedDatabases.set(pathname, database);
     return database;
   }
@@ -361,7 +388,9 @@ export function openOpenClawAgentDatabase(
     terminalOpenLatch.clear(pathname);
     // Safety net for processes that end without an orderly close: agent DBs have
     // no shutdown owner like the ACP/gateway state DB closes. Closing unregisters.
-    unregisterExitClose ??= registerSqliteCacheExitClose(closeOpenClawAgentDatabases);
+    agentDatabaseRuntimeState.unregisterExitClose ??= registerSqliteCacheExitClose(
+      closeOpenClawAgentDatabases,
+    );
     logSlowAgentDatabaseOpen({
       agentId,
       elapsedMs: Date.now() - openStartedAt,
@@ -396,7 +425,9 @@ export function openOpenClawAgentDatabase(
       cachedDatabases.set(pathname, retainedDatabase);
       cachedDatabaseLeases.set(pathname, { leaseId, env: options.env });
       cachedDatabaseOpenFailures.set(pathname, closeError ?? error);
-      unregisterExitClose ??= registerSqliteCacheExitClose(closeOpenClawAgentDatabases);
+      agentDatabaseRuntimeState.unregisterExitClose ??= registerSqliteCacheExitClose(
+        closeOpenClawAgentDatabases,
+      );
     } else {
       releaseOpenClawAgentDatabaseLease(leaseId, { env: options.env });
     }
@@ -405,7 +436,10 @@ export function openOpenClawAgentDatabase(
 }
 
 /** Run a synchronous immediate transaction against an agent database. */
-const postCommitPublications = new WeakMap<OpenClawAgentDatabase, Array<() => void>>();
+const postCommitPublications = resolveGlobalSingleton(
+  Symbol.for("openclaw.agentDatabase.postCommitPublications"),
+  () => new WeakMap<OpenClawAgentDatabase, Array<() => void>>(),
+);
 
 /** Queue a non-throwing runtime publication on the outer database commit edge. */
 export function deferOpenClawAgentPostCommitPublication(
@@ -474,8 +508,6 @@ export function runOpenClawAgentWriteTransaction<T>(
   }
   return result;
 }
-
-let unregisterExitClose: (() => void) | null = null;
 
 function closeCachedOpenClawAgentDatabase(
   database: OpenClawAgentDatabase,
@@ -608,8 +640,8 @@ export function closeOpenClawAgentDatabaseByPath(pathname: string): boolean {
   cachedDatabases.delete(resolvedPath);
   cachedDatabaseOpenFailures.delete(resolvedPath);
   if (cachedDatabases.size === 0) {
-    unregisterExitClose?.();
-    unregisterExitClose = null;
+    agentDatabaseRuntimeState.unregisterExitClose?.();
+    agentDatabaseRuntimeState.unregisterExitClose = null;
   }
   return true;
 }
@@ -651,8 +683,8 @@ export function disposeOpenClawAgentDatabaseByPath(
 
 /** Close all cached agent database handles. */
 export function closeOpenClawAgentDatabases(): void {
-  unregisterExitClose?.();
-  unregisterExitClose = null;
+  agentDatabaseRuntimeState.unregisterExitClose?.();
+  agentDatabaseRuntimeState.unregisterExitClose = null;
   for (const database of cachedDatabases.values()) {
     closeCachedOpenClawAgentDatabase(database);
   }

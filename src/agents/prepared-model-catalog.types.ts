@@ -16,3 +16,8 @@ export type ResolvedPublishedModelCatalogOwner = Readonly<{
   config: OpenClawConfig;
   modelCatalog: ModelCatalogSnapshot;
 }>;
+
+export type ResolvedPublishedConfiguredModelCatalogOwner = ResolvedPublishedModelCatalogOwner &
+  Readonly<{
+    loadFullModelCatalog: () => Promise<ModelCatalogSnapshot>;
+  }>;

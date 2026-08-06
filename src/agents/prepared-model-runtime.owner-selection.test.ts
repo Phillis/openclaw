@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   getPreparedModelRuntimeSnapshot,
@@ -343,6 +344,19 @@ describe("prepared model runtime owner selection", () => {
       mocks.configuredWorkspaces.set(agentId, "/tmp/shared-prepared-runtime-workspace");
     }
     mocks.configuredWorkspaces.set("agent-d", "/tmp/distinct-prepared-runtime-workspace");
+    let timerRanBetweenWorkspaceGroups = false;
+    let pluginLoadCount = 0;
+    mocks.loadAgentRuntimePluginRegistryHandle.mockImplementation(() => {
+      pluginLoadCount += 1;
+      if (pluginLoadCount === 1) {
+        setImmediate(() => {
+          timerRanBetweenWorkspaceGroups = true;
+        });
+      } else {
+        expect(timerRanBetweenWorkspaceGroups).toBe(true);
+      }
+      return createEmptyPluginRegistry();
+    });
     const config = { agents: { defaults: { model: "openai/gpt-5.5" } } };
     let stats:
       | {
@@ -366,6 +380,7 @@ describe("prepared model runtime owner selection", () => {
 
     expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
     expect(mocks.loadAgentRuntimePluginRegistryHandle).toHaveBeenCalledTimes(2);
+    expect(timerRanBetweenWorkspaceGroups).toBe(true);
     expect(mocks.resolveAmbientCredentials).toHaveBeenCalledTimes(2);
     expect(mocks.prepareStaticCatalog).toHaveBeenCalledTimes(2);
     expect(mocks.resolveStaticCatalogModel).toHaveBeenCalledTimes(2);

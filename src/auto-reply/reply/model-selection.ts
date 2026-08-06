@@ -168,6 +168,7 @@ export async function createModelSelectionState(params: {
   hasResolvedHeartbeatModelOverride?: boolean;
   isHeartbeat?: boolean;
   preparedModelCatalog?: ModelCatalogSnapshot;
+  loadPreparedModelCatalog?: () => Promise<ModelCatalogSnapshot>;
 }): Promise<ModelSelectionState> {
   const timingEnabled = isDiagnosticFlagEnabled("ingress.timing", params.cfg);
   const startMs = timingEnabled ? Date.now() : 0;
@@ -198,15 +199,13 @@ export async function createModelSelectionState(params: {
     agentDir: resolveAgentDir(cfg, catalogAgentId),
   };
   const loadRuntimeCatalogSnapshot = async (): Promise<ModelCatalogSnapshot> =>
-    params.preparedModelCatalog ??
-    (await (
-      await loadPreparedModelCatalogRuntime()
-    ).loadPreparedModelCatalogSnapshot(catalogScope));
+    params.loadPreparedModelCatalog
+      ? await params.loadPreparedModelCatalog()
+      : (params.preparedModelCatalog ??
+        (await loadPreparedModelCatalogRuntime()).loadPreparedModelCatalogSnapshot(catalogScope));
   const runtimeModelNormalization = resolveRuntimeNormalization(cfg);
   const { manifestPlugins } = runtimeModelNormalization;
-
-  let provider = params.provider;
-  let model = params.model;
+  let { provider, model } = params;
   let requestedRouteResolution: ModelFallbackRouteResolution = "resolved";
   const primaryProvider = params.primaryProvider ?? defaultProvider;
   const primaryModel = params.primaryModel ?? defaultModel;
@@ -238,8 +237,6 @@ export async function createModelSelectionState(params: {
   let allowedModelKeys = new Set<string>();
   let allowedModelCatalog: ModelCatalog = configuredModelCatalog;
   let modelCatalog: ModelCatalog | null = null;
-  // Whether the loaded catalog is a complete/live snapshot. A degraded catalog
-  // (discovery threw, static/empty fallback) must not destroy a pinned override.
   let catalogAuthoritative = true;
   let resetModelOverride = false;
   let resetModelOverrideRef: string | undefined;

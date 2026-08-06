@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import pLimit from "p-limit";
 import { withTimeout } from "../node-host/with-timeout.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
@@ -222,7 +223,13 @@ async function buildSnapshotBatch(
   const workspaceFactsStartedAt = performance.now();
   // Workspace plugin loading and static hooks are intentionally sequential. Large parallel
   // workspace fanout recreates the CPU/RSS spike this generation boundary is meant to contain.
+  let isFirstWorkspaceGroup = true;
   for (const [key, group] of groups) {
+    if (!isFirstWorkspaceGroup) {
+      await yieldToEventLoop();
+      assertPreparedModelRuntimeInputsCurrent(group, buildGuards);
+    }
+    isFirstWorkspaceGroup = false;
     if (typeof buildGuards === "function") {
       assertPreparedModelRuntimeInputsCurrent(group, buildGuards);
     }
@@ -319,7 +326,13 @@ async function buildSnapshotBatch(
       runtimeRegistryCount += 1;
     }
   } else {
+    let isFirstConfiguredFactsGroup = true;
     for (const [workspaceKey, group] of groups) {
+      if (!isFirstConfiguredFactsGroup) {
+        await yieldToEventLoop();
+        assertPreparedModelRuntimeInputsCurrent(group, buildGuards);
+      }
+      isFirstConfiguredFactsGroup = false;
       assertPreparedModelRuntimeInputsCurrent(group, buildGuards);
       const facts = workspaceFacts.get(workspaceKey);
       if (!facts) {

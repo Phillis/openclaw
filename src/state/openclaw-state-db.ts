@@ -38,6 +38,7 @@ import {
 } from "../infra/sqlite-wal.js";
 import { migrateLegacyCronRunLogsToTaskRuns } from "../infra/state-migrations.cron-run-logs.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveGlobalMap, resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { VERSION } from "../version.js";
 import {
   clearOpenClawDatabaseQuarantine,
@@ -104,7 +105,9 @@ export { withOpenClawStateStartupMigrationCheckpointDatabase } from "./openclaw-
  * tables, private file permissions, cached handles, and audit rows for
  * migrations/backups that operate on local state.
  */
-const cachedDatabases = new Map<string, OpenClawStateDatabase>();
+const cachedDatabases = resolveGlobalMap<string, OpenClawStateDatabase>(
+  Symbol.for("openclaw.stateDatabase.cachedDatabases"),
+);
 
 function evictCachedOpenClawStateDatabase(database: OpenClawStateDatabase): boolean {
   if (cachedDatabases.get(database.path) !== database) {
@@ -128,15 +131,19 @@ function evictCachedOpenClawStateDatabase(database: OpenClawStateDatabase): bool
   return true;
 }
 
-const terminalOpenLatch = createSqliteTerminalOpenLatch({
-  closeByPath: (pathname) => {
-    const cached = cachedDatabases.get(pathname);
-    if (!cached) {
-      return;
-    }
-    evictCachedOpenClawStateDatabase(cached);
-  },
-});
+const terminalOpenLatch = resolveGlobalSingleton(
+  Symbol.for("openclaw.stateDatabase.terminalOpenLatch"),
+  () =>
+    createSqliteTerminalOpenLatch({
+      closeByPath: (pathname) => {
+        const cached = cachedDatabases.get(pathname);
+        if (!cached) {
+          return;
+        }
+        evictCachedOpenClawStateDatabase(cached);
+      },
+    }),
+);
 
 /** Reconfirm an advisory worker failure on the live owner connection. */
 export function confirmOpenClawStateDatabaseIntegrity(

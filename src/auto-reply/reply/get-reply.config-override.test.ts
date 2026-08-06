@@ -15,12 +15,13 @@ import { markReplyConfigRuntimeMode, usesFullReplyRuntime } from "./reply-config
 const mocks = vi.hoisted(() => ({
   resolveReplyDirectives: vi.fn(),
   initSessionState: vi.fn(),
-  loadResolvedPublishedModelCatalogOwner: vi.fn(),
+  loadResolvedPublishedConfiguredModelCatalogOwner: vi.fn(),
 }));
 registerGetReplyRuntimeOverrides(mocks);
 
 vi.mock("../../agents/prepared-model-catalog.js", () => ({
-  loadResolvedPublishedModelCatalogOwner: mocks.loadResolvedPublishedModelCatalogOwner,
+  loadResolvedPublishedConfiguredModelCatalogOwner:
+    mocks.loadResolvedPublishedConfiguredModelCatalogOwner,
 }));
 
 let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfig;
@@ -37,7 +38,7 @@ describe("getReplyFromConfig configOverride", () => {
     vi.stubEnv("OPENCLAW_ALLOW_SLOW_REPLY_TESTS", "1");
     mocks.resolveReplyDirectives.mockReset();
     mocks.initSessionState.mockReset();
-    mocks.loadResolvedPublishedModelCatalogOwner.mockReset();
+    mocks.loadResolvedPublishedConfiguredModelCatalogOwner.mockReset();
     vi.mocked(loadConfigMock).mockReset();
 
     vi.mocked(loadConfigMock).mockReturnValue({});
@@ -98,7 +99,7 @@ describe("getReplyFromConfig configOverride", () => {
     );
 
     expect(loadConfigMock).not.toHaveBeenCalled();
-    expect(mocks.loadResolvedPublishedModelCatalogOwner).not.toHaveBeenCalled();
+    expect(mocks.loadResolvedPublishedConfiguredModelCatalogOwner).not.toHaveBeenCalled();
     expectResolvedTelegramTimezone(mocks.resolveReplyDirectives);
   });
 
@@ -119,12 +120,14 @@ describe("getReplyFromConfig configOverride", () => {
       },
     } satisfies OpenClawConfig;
     const preparedModelCatalog = { entries: [], routeVariants: [] };
-    mocks.loadResolvedPublishedModelCatalogOwner.mockResolvedValue({
+    const loadFullModelCatalog = vi.fn();
+    mocks.loadResolvedPublishedConfiguredModelCatalogOwner.mockResolvedValue({
       agentId: "main",
       agentDir: "/tmp/prepared-model-owner",
       workspaceDir: "/tmp/prepared-model-workspace",
       config: ownerConfig,
       modelCatalog: preparedModelCatalog,
+      loadFullModelCatalog,
     });
     const replyOptions: InternalGetReplyOptions = { usePublishedModelRuntime: true };
 
@@ -136,11 +139,12 @@ describe("getReplyFromConfig configOverride", () => {
       } satisfies OpenClawConfig),
     );
 
-    expect(mocks.loadResolvedPublishedModelCatalogOwner).toHaveBeenCalledWith({
+    expect(mocks.loadResolvedPublishedConfiguredModelCatalogOwner).toHaveBeenCalledWith({
       agentId: "main",
       allowGatewaySubagentBinding: true,
     });
     expectResolvedTelegramTimezone(mocks.resolveReplyDirectives);
+    expect(loadFullModelCatalog).not.toHaveBeenCalled();
     expect(mocks.resolveReplyDirectives).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: "main",
@@ -154,12 +158,13 @@ describe("getReplyFromConfig configOverride", () => {
   it("rejects a published model owner that crosses the admitted session agent", async () => {
     const { withFullRuntimeReplyConfig } = await import("./get-reply-fast-path.js");
     vi.stubEnv("OPENCLAW_TEST_FAST", "0");
-    mocks.loadResolvedPublishedModelCatalogOwner.mockResolvedValue({
+    mocks.loadResolvedPublishedConfiguredModelCatalogOwner.mockResolvedValue({
       agentId: "worker",
       agentDir: "/tmp/prepared-model-owner",
       workspaceDir: "/tmp/prepared-model-workspace",
       config: { agents: { list: [{ id: "worker", default: true }] } },
       modelCatalog: { entries: [], routeVariants: [] },
+      loadFullModelCatalog: vi.fn(),
     });
     const replyOptions: InternalGetReplyOptions = { usePublishedModelRuntime: true };
 

@@ -11,7 +11,10 @@ import {
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { resolvePublishedModelCatalogOwner } from "./prepared-model-catalog-owner.js";
 import { PreparedModelCatalogConfigReplacedError } from "./prepared-model-catalog.errors.js";
-import type { ResolvedPublishedModelCatalogOwner } from "./prepared-model-catalog.types.js";
+import type {
+  ResolvedPublishedConfiguredModelCatalogOwner,
+  ResolvedPublishedModelCatalogOwner,
+} from "./prepared-model-catalog.types.js";
 import { isPreparedModelCatalogFull } from "./prepared-model-runtime.facts.js";
 import {
   acquireAgentRunPreparedModelRuntime,
@@ -284,6 +287,20 @@ export async function loadResolvedPublishedModelCatalogOwner(
   return resolvePublishedModelCatalogOwner(
     await loadPublishedPreparedModelCatalogOwnerSnapshot(params),
   );
+}
+
+/** Resolves configured published facts and retains generation-bound full inventory access. */
+export async function loadResolvedPublishedConfiguredModelCatalogOwner(
+  params: LoadPreparedModelCatalogParams = {},
+): Promise<ResolvedPublishedConfiguredModelCatalogOwner> {
+  const snapshot = await resolvePreparedModelCatalogOwnerSnapshotWithPolicy(params, "published");
+  const owner = resolvePublishedModelCatalogOwner(snapshot);
+  return Object.freeze({
+    ...owner,
+    loadFullModelCatalog: snapshot.loadFullModelCatalog
+      ? snapshot.loadFullModelCatalog
+      : async () => snapshot.modelCatalog,
+  });
 }
 
 /** Reads one atomic catalog generation, activating a lifecycle owner when needed. */

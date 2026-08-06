@@ -17,6 +17,7 @@ import {
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { listOpenFileDescriptorsForPath } from "../infra/open-file-descriptors.test-support.js";
 import { readSqliteNumberPragma } from "../infra/sqlite-pragma.test-support.js";
+import { importFreshModule } from "../plugin-sdk/test-helpers/import-fresh.js";
 import { VERSION } from "../version.js";
 import {
   assertAgentDeletionPathFence,
@@ -2352,6 +2353,32 @@ describe("openclaw agent database", () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+
+  it("shares one handle and lease across duplicated runtime module graphs", async () => {
+    const stateDir = createTempStateDir();
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const first = openOpenClawAgentDatabase({ agentId: "worker-1", env });
+    const duplicate = await importFreshModule<typeof import("./openclaw-agent-db.js")>(
+      import.meta.url,
+      "./openclaw-agent-db.js?duplicate-runtime-owner",
+    );
+
+    const second = duplicate.openOpenClawAgentDatabase({ agentId: "worker-1", env });
+    const stateDuplicate = await importFreshModule<typeof import("./openclaw-state-db.js")>(
+      import.meta.url,
+      "./openclaw-state-db.js?duplicate-runtime-owner",
+    );
+
+    expect(second).toBe(first);
+    expect(stateDuplicate.openOpenClawStateDatabase({ env })).toBe(
+      openOpenClawStateDatabase({ env }),
+    );
+    expect(
+      openOpenClawStateDatabase({ env })
+        .db.prepare("SELECT COUNT(*) AS count FROM agent_database_leases")
+        .get(),
+    ).toEqual({ count: 1 });
   });
 
   it("rejects the legacy agent registry primary key with a doctor repair hint", () => {

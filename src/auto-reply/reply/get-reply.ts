@@ -266,12 +266,13 @@ export async function getReplyFromConfig(
   let preparedAgentDir: string | undefined;
   let preparedWorkspaceDir: string | undefined;
   let preparedModelCatalog: ModelCatalogSnapshot | undefined;
+  let loadPreparedModelCatalog: (() => Promise<ModelCatalogSnapshot>) | undefined;
   if (usePublishedModelRuntime && !isFastTestEnv) {
     // Gateway turns consume one committed model-runtime generation. Later config/secret
     // publications must not mix a new global config with an older prepared catalog owner.
     const owner = await (
       await import("../../agents/prepared-model-catalog.js")
-    ).loadResolvedPublishedModelCatalogOwner({
+    ).loadResolvedPublishedConfiguredModelCatalogOwner({
       agentId,
       allowGatewaySubagentBinding: true,
     });
@@ -285,6 +286,7 @@ export async function getReplyFromConfig(
     preparedAgentDir = owner.agentDir;
     preparedWorkspaceDir = owner.workspaceDir;
     preparedModelCatalog = owner.modelCatalog;
+    loadPreparedModelCatalog = owner.loadFullModelCatalog;
   }
   const traceAttributes = resolverTiming.measureSync("reply.resolve_trace_context", () => ({
     surface: normalizeOptionalString(finalized.Surface ?? finalized.Provider) ?? "unknown",
@@ -875,6 +877,7 @@ export async function getReplyFromConfig(
       opts: withExtractedFileImages(resolvedOpts, extractedFileImages),
       skillFilter: mergedSkillFilter,
       preparedModelCatalog,
+      loadPreparedModelCatalog,
     }),
   );
   if (directiveResult.kind === "reply") {
@@ -1035,6 +1038,7 @@ export async function getReplyFromConfig(
         hasResolvedHeartbeatModelOverride,
         isHeartbeat: opts?.isHeartbeat === true,
         preparedModelCatalog,
+        loadPreparedModelCatalog,
       });
     } catch (error) {
       if (error instanceof ModelSelectionLockedError) {
