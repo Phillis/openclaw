@@ -44,8 +44,7 @@
         "successor-suspension-prepared",
         "postflight-initial-proven",
         "stability-window-proven",
-        "successor-suspension-resume-requested",
-        "successor-suspension-resumed"
+        "successor-suspension-held-proven"
       ]
     },
     "atJobSafety": {

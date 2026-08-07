@@ -312,8 +312,7 @@
             "successor-suspension-prepared",
             "postflight-initial-proven",
             "stability-window-proven",
-            "successor-suspension-resume-requested",
-            "successor-suspension-resumed",
+            "successor-suspension-held-proven",
             "pre-bootout-service-loaded-proven",
             "pre-bootout-reenable-requested",
             "pre-bootout-reenabled-same-predecessor-proven",
@@ -321,6 +320,7 @@
             "pre-bootout-label-enabled-unloaded-proven",
             "pre-bootout-suspension-resume-requested",
             "pre-bootout-suspension-resumed",
+            "pre-bootout-durable-suspension-retained",
             "interrupted-attempt-recovered"
           ]
         },
@@ -369,7 +369,7 @@
           "properties": {
             "phases": {
               "minItems": 1,
-              "maxItems": 18,
+              "maxItems": 17,
               "prefixItems": [
                 {
                   "allOf": [
@@ -397,8 +397,7 @@
                 { "properties": { "sequence": { "const": 13 }, "phase": { "const": "successor-suspension-prepared" } } },
                 { "properties": { "sequence": { "const": 14 }, "phase": { "const": "postflight-initial-proven" } } },
                 { "properties": { "sequence": { "const": 15 }, "phase": { "const": "stability-window-proven" } } },
-                { "properties": { "sequence": { "const": 16 }, "phase": { "const": "successor-suspension-resume-requested" } } },
-                { "properties": { "sequence": { "const": 17 }, "phase": { "const": "successor-suspension-resumed" } } }
+                { "properties": { "sequence": { "const": 16 }, "phase": { "const": "successor-suspension-held-proven" } } }
               ],
               "items": false
             }
@@ -412,8 +411,8 @@
         {
           "properties": {
             "phases": {
-              "minItems": 18,
-              "maxItems": 18,
+              "minItems": 17,
+              "maxItems": 17,
               "prefixItems": [
                 { "properties": { "sequence": { "const": 0 }, "phase": { "const": "claim" } } },
                 { "properties": { "sequence": { "const": 1 }, "phase": { "const": "predecessor-plist-preserved" } } },
@@ -431,8 +430,7 @@
                 { "properties": { "sequence": { "const": 13 }, "phase": { "const": "successor-suspension-prepared" } } },
                 { "properties": { "sequence": { "const": 14 }, "phase": { "const": "postflight-initial-proven" } } },
                 { "properties": { "sequence": { "const": 15 }, "phase": { "const": "stability-window-proven" } } },
-                { "properties": { "sequence": { "const": 16 }, "phase": { "const": "successor-suspension-resume-requested" } } },
-                { "properties": { "sequence": { "const": 17 }, "phase": { "const": "successor-suspension-resumed" } } }
+                { "properties": { "sequence": { "const": 16 }, "phase": { "const": "successor-suspension-held-proven" } } }
               ]
             },
             "recoveryPhases": { "maxItems": 0 },
@@ -610,6 +608,54 @@
             { "properties": { "phase": { "const": "pre-bootout-label-enabled-unloaded-proven" } } }
           ],
           "items": false
+        },
+        {
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            { "properties": { "phase": { "const": "pre-bootout-durable-suspension-retained" } } }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "properties": { "phase": { "const": "pre-bootout-reenable-requested" } } },
+            { "properties": { "phase": { "const": "pre-bootout-durable-suspension-retained" } } }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            { "properties": { "phase": { "const": "pre-bootout-reenable-requested" } } },
+            { "properties": { "phase": { "const": "pre-bootout-reenabled-same-predecessor-proven" } } },
+            { "properties": { "phase": { "const": "pre-bootout-durable-suspension-retained" } } }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            { "properties": { "phase": { "const": "pre-bootout-service-loaded-proven" } } },
+            { "properties": { "phase": { "const": "pre-bootout-reenabled-same-predecessor-proven" } } },
+            { "properties": { "phase": { "const": "pre-bootout-durable-suspension-retained" } } }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            { "properties": { "phase": { "const": "pre-bootout-service-loaded-proven" } } },
+            { "properties": { "phase": { "const": "pre-bootout-reenable-requested" } } },
+            { "properties": { "phase": { "const": "pre-bootout-reenabled-same-predecessor-proven" } } },
+            { "properties": { "phase": { "const": "pre-bootout-durable-suspension-retained" } } }
+          ],
+          "items": false
         }
       ]
     },
@@ -620,7 +666,7 @@
           "properties": {
             "phases": {
               "minItems": 15,
-              "maxItems": 18,
+              "maxItems": 17,
               "prefixItems": [
                 { "properties": { "sequence": { "const": 0 }, "phase": { "const": "claim" } } },
                 { "properties": { "sequence": { "const": 1 }, "phase": { "const": "predecessor-plist-preserved" } } },
@@ -638,8 +684,7 @@
                 { "properties": { "sequence": { "const": 13 }, "phase": { "const": "successor-suspension-prepared" } } },
                 { "properties": { "sequence": { "const": 14 }, "phase": { "const": "postflight-initial-proven" } } },
                 { "properties": { "sequence": { "const": 15 }, "phase": { "const": "stability-window-proven" } } },
-                { "properties": { "sequence": { "const": 16 }, "phase": { "const": "successor-suspension-resume-requested" } } },
-                { "properties": { "sequence": { "const": 17 }, "phase": { "const": "successor-suspension-resumed" } } }
+                { "properties": { "sequence": { "const": 16 }, "phase": { "const": "successor-suspension-held-proven" } } }
               ]
             },
             "recoveryPhases": { "maxItems": 0 }

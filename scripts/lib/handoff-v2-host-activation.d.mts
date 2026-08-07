@@ -1,8 +1,5 @@
-export const HOST_ACTIVATION_PLAN_SCHEMA: "handoff-v2-host-activation-plan/v1";
 export const HOST_ACTIVATION_RECEIPT_SCHEMA: "handoff-v2-host-activation-receipt/v1";
-export const SLACK_ACCESS_PROOF_SCHEMA: "openclaw-slack-access-proof/v1";
 
-export function canonicalJson(value: unknown): unknown;
 export function canonicalJsonBytes(value: unknown): Buffer;
 export function validateHostActivationPlan<T>(
   value: T,
@@ -17,7 +14,7 @@ export function parseLaunchdServiceState(
 export function parseLaunchdEnabledState(output: string, expectedLabel: string): boolean;
 export function verifyPidDead(pid: number, runtime: HostActivationRuntime): void;
 export function hostActivationExitCode(receipt: unknown): 0 | 2;
-export function persistGatewaySuspendHandoff(
+export function proveGatewaySuspendHandoff(
   plan: { host: { stateDir: string } },
   suspension: {
     requestId: string;
@@ -30,7 +27,6 @@ export function persistGatewaySuspendHandoff(
     handoffSchema: "openclaw-gateway-suspend-handoff/v3";
   },
   runtime: HostActivationRuntime,
-  allowGatewayInstanceTransition?: boolean,
 ): void;
 
 export type HostActivationCommandResult = {
@@ -56,9 +52,10 @@ export type HostActivationRuntime = {
   verifyFile(path: string, sha256: string, description: string): Buffer;
   assertSecureDirectory(path: string, description: string): void;
   assertSecureDirectoryChain(path: string, allowedRoot: string, description: string): void;
+  assertDistinctFiles(leftPath: string, rightPath: string, description: string): void;
   assertOutputAvailable(path: string, description: string): void;
   inspectDurableAtJobs(
-    plan: Record<string, any>,
+    plan: Record<string, unknown>,
     generation: "predecessor" | "successor",
   ): Array<{ jobId: string; startupInterruptedRunAtMs: number | null }>;
   readOptionalFile(path: string, description: string): Buffer | null;
