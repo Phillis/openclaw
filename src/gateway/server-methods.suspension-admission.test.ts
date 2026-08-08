@@ -1,4 +1,7 @@
 // Proves dispatcher root-work accounting and fail-closed suspension behavior.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resumeGatewaySuspend } from "../infra/gateway-suspend-coordinator.js";
 import {
@@ -14,6 +17,8 @@ import {
 import { handleGatewayRequest } from "./server-methods.js";
 import { suspendHandlers } from "./server-methods/suspend.js";
 import type { GatewayRequestHandler } from "./server-methods/types.js";
+
+let isolatedStateDir = "";
 
 function deferred() {
   let resolve = () => {};
@@ -69,11 +74,15 @@ function dispatch(params: {
 }
 
 beforeEach(() => {
+  isolatedStateDir = mkdtempSync(path.join(tmpdir(), "openclaw-suspend-admission-"));
+  vi.stubEnv("OPENCLAW_STATE_DIR", isolatedStateDir);
   resetGatewayWorkAdmission();
 });
 
 afterEach(() => {
   resetGatewayWorkAdmission();
+  vi.unstubAllEnvs();
+  rmSync(isolatedStateDir, { recursive: true, force: true });
 });
 
 describe("gateway request suspension admission", () => {
@@ -136,7 +145,11 @@ describe("gateway request suspension admission", () => {
       method: "gateway.suspend.prepare",
       scope: "operator.admin",
       handler: prepareHandler,
-      requestParams: { requestId: "request-concurrent-root" },
+      requestParams: {
+        requestId: "request-concurrent-root",
+        gatewayPid: process.pid,
+        launchdRunCount: 1,
+      },
       context,
     });
     await busy.request;
@@ -159,7 +172,11 @@ describe("gateway request suspension admission", () => {
       method: "gateway.suspend.prepare",
       scope: "operator.admin",
       handler: prepareHandler,
-      requestParams: { requestId: "request-own-root-excluded" },
+      requestParams: {
+        requestId: "request-own-root-excluded",
+        gatewayPid: process.pid,
+        launchdRunCount: 1,
+      },
       context,
     });
     await ready.request;
@@ -172,9 +189,23 @@ describe("gateway request suspension admission", () => {
         blockers: [],
       }),
     );
-    const readyPayload = ready.respond.mock.calls[0]?.[1] as { suspensionId?: string } | undefined;
+    const readyPayload = ready.respond.mock.calls[0]?.[1] as
+      | {
+          suspensionId?: string;
+          gatewayInstanceId?: string;
+          expiresAtMs?: number;
+          suspendMode?: "legacy-auto-expire/v1";
+        }
+      | undefined;
     expect(readyPayload?.suspensionId).toBeTypeOf("string");
-    expect(resumeGatewaySuspend(readyPayload?.suspensionId ?? "missing")).toMatchObject({
+    expect(
+      resumeGatewaySuspend({
+        suspensionId: readyPayload?.suspensionId ?? "missing",
+        gatewayInstanceId: readyPayload?.gatewayInstanceId ?? "missing",
+        resumeBeforeMs: readyPayload?.expiresAtMs ?? 0,
+        suspendMode: readyPayload?.suspendMode,
+      }),
+    ).toMatchObject({
       ok: true,
       resumed: true,
     });

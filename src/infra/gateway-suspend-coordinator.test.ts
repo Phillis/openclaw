@@ -234,7 +234,7 @@ describe("gateway suspend coordinator", () => {
         expiresAtMs: 2_000 + SUSPEND_TTL_MS,
       });
       expect(durableDeletionFault.postFailureProofSyncCount).toBe(0);
-      expect(getGatewaySuspendStatus("suspension-renew-retry")).toEqual({
+      expect(getGatewaySuspendStatus("suspension-renew-retry")).toMatchObject({
         status: "ready",
         expiresAtMs: 2_000 + SUSPEND_TTL_MS,
         suspendMode: GATEWAY_SUSPEND_MODE_LEGACY,

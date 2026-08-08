@@ -11,6 +11,27 @@ const ReleaseRequestIdSchema = Type.String({
 const CountSchema = Type.Integer({ minimum: 0 });
 const PositiveCountSchema = Type.Integer({ minimum: 1 });
 
+export const GatewaySuspendMutationCoverageSchema = closedObject({
+  schema: Type.Literal("openclaw-gateway-suspend-mutation-coverage/v1"),
+  surfaces: Type.Tuple([
+    Type.Literal("gateway_admission"),
+    Type.Literal("scheduler"),
+    Type.Literal("plugin_rpc_http"),
+    Type.Literal("task_controller"),
+    Type.Literal("channel_mutation"),
+    Type.Literal("provider_effect_admission"),
+    Type.Literal("legacy_state_writers"),
+  ]),
+  enforcement: closedObject({
+    rootAdmission: Type.Literal("process-wide-refuse-and-drain"),
+    scheduler: Type.Literal("pause-before-idle-proof"),
+    durableHandoff: Type.Literal("private-single-link-cas"),
+    startupAdoption: Type.Literal("before-request-cron-task-roots"),
+    release: Type.Literal("explicit-non-reusable-authority"),
+  }),
+  coverageHash: Sha256Schema,
+});
+
 export const GATEWAY_SUSPEND_MODE_LEGACY = "legacy-auto-expire/v1";
 export const GATEWAY_SUSPEND_MODE_DURABLE = "handoff-durable-hold/v1";
 export const GatewaySuspendModeSchema = Type.Union([
@@ -78,6 +99,7 @@ export const GatewaySuspendPrepareReadyResultSchema = closedObject({
   launchdRunCount: PositiveCountSchema,
   expiresAtMs: CountSchema,
   suspendMode: GatewaySuspendModeSchema,
+  mutationCoverage: GatewaySuspendMutationCoverageSchema,
   activeCount: CountSchema,
   blockers: Type.Array(GatewaySuspendBlockerSchema),
 });
@@ -115,6 +137,7 @@ export const GatewaySuspendStatusReadyResultSchema = closedObject({
   gatewayInstanceId: SuspensionTokenSchema,
   expiresAtMs: CountSchema,
   suspendMode: GatewaySuspendModeSchema,
+  mutationCoverage: GatewaySuspendMutationCoverageSchema,
 });
 
 const GatewaySuspendReleaseBindingSchema = {
@@ -214,6 +237,7 @@ export const GatewaySuspendResumeResultSchema = Type.Union([
 export type GatewaySuspendTaskBlocker = Static<typeof GatewaySuspendTaskBlockerSchema>;
 export type GatewaySuspendBlocker = Static<typeof GatewaySuspendBlockerSchema>;
 export type GatewaySuspendMode = Static<typeof GatewaySuspendModeSchema>;
+export type GatewaySuspendMutationCoverage = Static<typeof GatewaySuspendMutationCoverageSchema>;
 export type GatewaySuspendReleaseCommittedReceipt = Static<
   typeof GatewaySuspendReleaseCommittedReceiptSchema
 >;

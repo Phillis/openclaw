@@ -34,6 +34,7 @@ import {
   readDurableHandoff,
   recoverDurableHandoffCompareAndSwap,
 } from "./gateway-suspend-handoff.js";
+import { GATEWAY_SUSPEND_MUTATION_COVERAGE } from "./gateway-suspend-mutation-coverage.js";
 import {
   commitGatewaySuspendRelease,
   recoverGatewaySuspendReleaseCompareAndSwap,
@@ -150,6 +151,7 @@ export function prepareGatewaySuspend(params: {
       suspendMode: existing.suspendMode,
       activeCount: existing.snapshot.counts.totalActive,
       blockers: existing.snapshot.blockers,
+      mutationCoverage: GATEWAY_SUSPEND_MUTATION_COVERAGE,
     };
   }
 
@@ -258,6 +260,7 @@ export function prepareGatewaySuspend(params: {
       suspendMode,
       activeCount: snapshot.counts.totalActive,
       blockers: snapshot.blockers,
+      mutationCoverage: GATEWAY_SUSPEND_MUTATION_COVERAGE,
     };
   } catch (err) {
     if (durableHandoffPersistenceStarted) {

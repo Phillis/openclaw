@@ -182,7 +182,7 @@ describe("gateway durable suspension fence", () => {
 
       expect(
         getTestGatewaySuspendStatus(prepared.suspensionId, GATEWAY_SUSPEND_MODE_DURABLE),
-      ).toEqual({
+      ).toMatchObject({
         status: "ready",
         expiresAtMs: prepared.expiresAtMs,
         suspendMode: GATEWAY_SUSPEND_MODE_DURABLE,

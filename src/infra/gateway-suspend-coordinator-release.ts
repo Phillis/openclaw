@@ -34,6 +34,7 @@ import {
   readDurableHandoff,
   type GatewaySuspendHandoff,
 } from "./gateway-suspend-handoff.js";
+import { GATEWAY_SUSPEND_MUTATION_COVERAGE } from "./gateway-suspend-mutation-coverage.js";
 import {
   commitGatewaySuspendRelease,
   completeGatewaySuspendRelease,
@@ -163,6 +164,7 @@ export function getGatewaySuspendStatus(
     gatewayInstanceId: currentGatewayInstanceId,
     expiresAtMs: held.expiresAtMs,
     suspendMode: held.suspendMode,
+    mutationCoverage: GATEWAY_SUSPEND_MUTATION_COVERAGE,
   };
 }
 
