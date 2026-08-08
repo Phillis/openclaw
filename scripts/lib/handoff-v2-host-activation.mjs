@@ -1987,6 +1987,23 @@ export function validateHostActivationReceipt(value) {
       "activation receipt.authority.kind",
     );
     requiredLiteral(value.authority.reusable, false, "activation receipt.authority.reusable");
+    requiredStateRelativePath(
+      value.authority.receiptRelativePath,
+      "activation receipt.authority.receiptRelativePath",
+    );
+    requiredString(value.authority.receiptId, "activation receipt.authority.receiptId");
+    requiredSha256Pin(value.authority.receiptHash, "activation receipt.authority.receiptHash");
+    requiredInteger(value.authority.generation, "activation receipt.authority.generation", 1);
+    for (const key of ["sourceCommit", "sourceTree", "hostCommit", "hostTree"]) {
+      requiredGitObject(value.authority[key], `activation receipt.authority.${key}`);
+    }
+    requiredSha256Pin(
+      value.authority.authorityUseHash,
+      "activation receipt.authority.authorityUseHash",
+    );
+    requiredSha256Pin(value.authority.hostFenceHash, "activation receipt.authority.hostFenceHash");
+    requiredInstant(value.authority.issuedAt, "activation receipt.authority.issuedAt");
+    requiredInstant(value.authority.expiresAt, "activation receipt.authority.expiresAt");
   }
   validateGatewaySuspensionBinding(value.gatewaySuspension, "activation receipt.gatewaySuspension");
   exactKeys(
