@@ -57,6 +57,7 @@ const GATE7_AUTHORITY_KEYS = [
   "receiptRelativePath",
   "receiptId",
   "receiptHash",
+  "verifierFileSha256",
   "generation",
   "sourceCommit",
   "sourceTree",
@@ -468,6 +469,7 @@ export function validateHostActivationPlan(value, options = {}) {
     );
     requiredString(value.authority.receiptId, "plan.authority.receiptId");
     requiredSha256Pin(value.authority.receiptHash, "plan.authority.receiptHash");
+    requiredSha256Pin(value.authority.verifierFileSha256, "plan.authority.verifierFileSha256");
     requiredInteger(value.authority.generation, "plan.authority.generation", 1);
     requiredGitObject(value.authority.sourceCommit, "plan.authority.sourceCommit");
     requiredGitObject(value.authority.sourceTree, "plan.authority.sourceTree");
@@ -1993,6 +1995,10 @@ export function validateHostActivationReceipt(value) {
     );
     requiredString(value.authority.receiptId, "activation receipt.authority.receiptId");
     requiredSha256Pin(value.authority.receiptHash, "activation receipt.authority.receiptHash");
+    requiredSha256Pin(
+      value.authority.verifierFileSha256,
+      "activation receipt.authority.verifierFileSha256",
+    );
     requiredInteger(value.authority.generation, "activation receipt.authority.generation", 1);
     for (const key of ["sourceCommit", "sourceTree", "hostCommit", "hostTree"]) {
       requiredGitObject(value.authority[key], `activation receipt.authority.${key}`);
@@ -3154,6 +3160,7 @@ export function executeHostActivation(params) {
     const {
       kind: _kind,
       receiptRelativePath,
+      verifierFileSha256,
       reusable: _reusable,
       ...expectedBinding
     } = plan.authority;
@@ -3161,6 +3168,7 @@ export function executeHostActivation(params) {
       stateDir: plan.host.stateDir,
       receiptRelativePath,
       expectedReceiptHash: plan.authority.receiptHash,
+      expectedVerifierFileSha256: verifierFileSha256,
       requiredRemainingMs:
         plan.operations.startupWaitMs + plan.operations.stabilityWindowMs + 60_000,
       expectedBinding,
@@ -3377,6 +3385,9 @@ export function executeHostActivation(params) {
       if (!params.execute) {
         throw new Error("read-only preflight cannot recover an existing lifecycle claim");
       }
+      // Recovery is a separate mutation path. Reverify the exact one-use Gate
+      // 7 authority immediately before even durability or ownership writes.
+      verifyGate7();
       try {
         runtime.ensureFileDurable(globalClaimPath);
       } catch (error) {

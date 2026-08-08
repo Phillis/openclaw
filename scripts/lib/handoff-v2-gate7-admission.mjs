@@ -187,6 +187,19 @@ function normalizeReceiptHash(expectedReceiptHash) {
   return expectedReceiptHash;
 }
 
+function normalizeVerifierHash(expectedVerifierFileSha256) {
+  if (
+    typeof expectedVerifierFileSha256 !== "string" ||
+    !RECEIPT_HASH_PIN_RE.test(expectedVerifierFileSha256)
+  ) {
+    failClosed(
+      "INVALID_EXPECTED_VERIFIER_HASH",
+      "options.expectedVerifierFileSha256 must be a sha256:hex64 pin",
+    );
+  }
+  return expectedVerifierFileSha256;
+}
+
 function normalizeRequiredRemainingMs(requiredRemainingMs) {
   if (
     typeof requiredRemainingMs !== "number" ||
@@ -637,6 +650,7 @@ export function verifyHandoffV2Gate7Admission(options, dependencies = {}) {
   const stateDir = normalizeStateDir(options.stateDir);
   const receiptRelativePath = normalizeReceiptRelativePath(options.receiptRelativePath);
   const expectedReceiptHash = normalizeReceiptHash(options.expectedReceiptHash);
+  const expectedVerifierFileSha256 = normalizeVerifierHash(options.expectedVerifierFileSha256);
   const requiredRemainingMs = normalizeRequiredRemainingMs(options.requiredRemainingMs ?? 0);
   const expectedBinding = normalizeBinding(options.expectedBinding);
 
@@ -653,6 +667,12 @@ export function verifyHandoffV2Gate7Admission(options, dependencies = {}) {
     "host activation admission verifier",
   );
   const verifierFileSha256 = sha256Pin(verifierBytes);
+  if (verifierFileSha256 !== expectedVerifierFileSha256) {
+    failClosed(
+      "VERIFIER_HASH_MISMATCH",
+      "installed host activation admission verifier does not match the reviewed SHA-256 pin",
+    );
+  }
 
   const receiptPath = resolve(stateDir, receiptRelativePath);
   const receiptInspection = inspectSecureFile({

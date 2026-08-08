@@ -72,6 +72,7 @@ export function verifyHandoffV2Gate7Admission(
     stateDir: string;
     receiptRelativePath: string;
     expectedReceiptHash: `sha256:${string}`;
+    expectedVerifierFileSha256: `sha256:${string}`;
     requiredRemainingMs?: number;
     expectedBinding?: HandoffV2Gate7Binding;
   },

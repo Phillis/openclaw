@@ -51,6 +51,7 @@ export type HostActivationRuntime = {
     stateDir: string;
     receiptRelativePath: string;
     expectedReceiptHash: `sha256:${string}`;
+    expectedVerifierFileSha256: `sha256:${string}`;
     requiredRemainingMs: number;
     expectedBinding: Record<string, unknown>;
   }): unknown;

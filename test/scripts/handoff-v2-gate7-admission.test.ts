@@ -21,11 +21,12 @@ import type {
 import {
   HANDOFF_V2_GATE7_ADMISSION_SCHEMA,
   HandoffV2Gate7AdmissionError,
-  verifyHandoffV2Gate7Admission,
+  verifyHandoffV2Gate7Admission as verifyHandoffV2Gate7AdmissionRaw,
 } from "../../scripts/lib/handoff-v2-gate7-admission.mjs";
 
 const FIXED_VERIFIER_RELATIVE_PATH =
   "extensions/ewt-handoff-contracts/dist/v2/host-activation-admission-verifier-cli.js";
+const DEFAULT_VERIFIER_BYTES = Buffer.from("#!/usr/bin/env node\n// stub verifier CLI\n");
 
 function sha256Hex(bytes: Buffer | string): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -33,6 +34,23 @@ function sha256Hex(bytes: Buffer | string): string {
 
 function sha256Pin(bytes: Buffer | string): `sha256:${string}` {
   return `sha256:${sha256Hex(bytes)}` as `sha256:${string}`;
+}
+
+function verifyHandoffV2Gate7Admission(
+  options: Omit<
+    Parameters<typeof verifyHandoffV2Gate7AdmissionRaw>[0],
+    "expectedVerifierFileSha256"
+  > & { expectedVerifierFileSha256?: `sha256:${string}` },
+  dependencies?: Parameters<typeof verifyHandoffV2Gate7AdmissionRaw>[1],
+) {
+  return verifyHandoffV2Gate7AdmissionRaw(
+    {
+      ...options,
+      expectedVerifierFileSha256:
+        options.expectedVerifierFileSha256 ?? sha256Pin(DEFAULT_VERIFIER_BYTES),
+    },
+    dependencies,
+  );
 }
 
 function sha(char: string): string {
@@ -137,7 +155,7 @@ function setupHarness(
   const verifierDir = path.dirname(path.join(stateDir, FIXED_VERIFIER_RELATIVE_PATH));
   mkdirSync(verifierDir, { recursive: true, mode: 0o700 });
   const verifierPath = path.join(stateDir, FIXED_VERIFIER_RELATIVE_PATH);
-  const verifierContents = Buffer.from("#!/usr/bin/env node\n// stub verifier CLI\n");
+  const verifierContents = DEFAULT_VERIFIER_BYTES;
   if (!options.missingVerifier) {
     writeFileSync(verifierPath, verifierContents, { mode: 0o600 });
     if (options.verifierOverrides?.mode !== undefined) {
@@ -476,6 +494,23 @@ describe("verifyHandoffV2Gate7Admission", () => {
   });
 
   describe("verifier file inspection", () => {
+    it("rejects installed verifier bytes that differ from the reviewed pin", () => {
+      const harness = setupHarness();
+      currentHarness = harness;
+      expect(() =>
+        verifyHandoffV2Gate7Admission(
+          {
+            stateDir: harness.stateDir,
+            receiptRelativePath: "host-activation-evidence/receipt.json",
+            expectedReceiptHash: harness.expectedReceiptHash,
+            expectedVerifierFileSha256: sha256Pin(Buffer.from("different verifier")),
+          },
+          harness.dependencies,
+        ),
+      ).toThrowError(expect.objectContaining({ code: "VERIFIER_HASH_MISMATCH" }));
+      expect(harness.runVerifier).not.toHaveBeenCalled();
+    });
+
     it("rejects a missing verifier file", () => {
       const harness = setupHarness({ missingVerifier: true });
       currentHarness = harness;

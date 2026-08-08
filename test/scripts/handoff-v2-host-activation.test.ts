@@ -272,6 +272,7 @@ function fixtureGate7Plan() {
       receiptRelativePath: "rollout/rc17-generation.json",
       receiptId: "rc17-initial-shadow-admission",
       receiptHash: `sha256:${"a".repeat(64)}`,
+      verifierFileSha256: `sha256:${"f".repeat(64)}`,
       generation: 17,
       sourceCommit: "d".repeat(40),
       sourceTree: "e".repeat(40),
@@ -1210,6 +1211,7 @@ describe("one-use host activation lifecycle", () => {
       stateDir: plan.host.stateDir,
       receiptRelativePath: plan.authority.receiptRelativePath,
       expectedReceiptHash: plan.authority.receiptHash,
+      expectedVerifierFileSha256: plan.authority.verifierFileSha256,
       requiredRemainingMs: 150_000,
       expectedBinding: {
         receiptId: plan.authority.receiptId,
@@ -1589,7 +1591,7 @@ describe("one-use host activation lifecycle", () => {
   });
 
   it("recovers an interrupted exact-plan global claim into a terminal HOLD", () => {
-    const plan = fixturePlan();
+    const plan = fixtureGate7Plan();
     const planBytes = canonicalJsonBytes(plan);
     const planSha256 = hash(planBytes);
     const claim = {
@@ -1625,12 +1627,58 @@ describe("one-use host activation lifecycle", () => {
       operations: { disableCount: 0, bootoutCount: 0, bootstrapCount: 0 },
     });
     expect(fixture.commands).toHaveLength(0);
+    expect(fixture.runtime.verifyGate7Admission).toHaveBeenCalledTimes(2);
     expect(fixture.writes.has(plan.evidence.rollbackPacketPath)).toBe(true);
     expect(fixture.writes.has(plan.evidence.receiptPath)).toBe(true);
     const rollback = JSON.parse(
       fixture.writes.get(plan.evidence.rollbackPacketPath)!.toString("utf8"),
     );
     expect(rollback.phase).toBe("claim");
+  });
+
+  it("makes no recovery mutation when the immediate Gate 7 recheck expires", () => {
+    const plan = fixtureGate7Plan();
+    const planBytes = canonicalJsonBytes(plan);
+    const planSha256 = hash(planBytes);
+    const claim = {
+      schema: "handoff-v2-host-activation-ledger-phase/v1",
+      planId: plan.planId,
+      planSha256,
+      sequence: 0,
+      phase: "claim",
+      at: "2026-07-28T08:29:00.000Z",
+      detail: {
+        launchdDomain: plan.host.launchdDomain,
+        launchdLabel: plan.host.launchdLabel,
+        executorPid: 9_000,
+        predecessorPid: plan.predecessor.pid,
+        predecessorRunCount: plan.predecessor.runCount,
+        supervisorLeaseSha256: plan.evidence.supervisorLeaseSha256,
+      },
+    };
+    const claimBytes = canonicalJsonBytes(claim);
+    const fixture = createRuntime(plan, {
+      existingGlobalClaim: claimBytes,
+      existingLedger: [{ entry: claim, sha256: hash(claimBytes) }],
+    });
+    vi.mocked(fixture.runtime.verifyGate7Admission!).mockImplementationOnce(() => ({}));
+    vi.mocked(fixture.runtime.verifyGate7Admission!).mockImplementationOnce(() => {
+      throw new Error("Gate 7 authority expired at recovery takeover");
+    });
+
+    expect(() =>
+      executeHostActivation({
+        planBytes,
+        expectedPlanSha256: planSha256,
+        execute: true,
+        runtime: fixture.runtime,
+      }),
+    ).toThrow("expired at recovery takeover");
+    expect(fixture.runtime.verifyGate7Admission).toHaveBeenCalledTimes(2);
+    expect(fixture.runtime.ensureFileDurable).not.toHaveBeenCalled();
+    expect(fixture.runtime.acquireRecoveryOwnership).not.toHaveBeenCalled();
+    expect(fixture.commands).toHaveLength(0);
+    expect(fixture.writes.size).toBe(0);
   });
 
   it.each([
