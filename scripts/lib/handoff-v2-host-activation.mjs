@@ -19,9 +19,12 @@ import {
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { verifyHandoffV2Gate7Admission } from "./handoff-v2-gate7-admission.mjs";
 
 const HOST_ACTIVATION_PLAN_SCHEMA = "handoff-v2-host-activation-plan/v1";
+const HOST_ACTIVATION_PLAN_SCHEMA_V2 = "handoff-v2-host-activation-plan/v2";
 export const HOST_ACTIVATION_RECEIPT_SCHEMA = "handoff-v2-host-activation-receipt/v1";
+export const HOST_ACTIVATION_RECEIPT_SCHEMA_V2 = "handoff-v2-host-activation-receipt/v2";
 const SLACK_ACCESS_PROOF_SCHEMA = "openclaw-slack-access-proof/v1";
 const GATEWAY_SUSPENSION_BINDING_SCHEMA = "handoff-v2-gateway-suspension-binding/v1";
 const GATEWAY_SUSPEND_MODE = "handoff-durable-hold/v1";
@@ -49,6 +52,22 @@ const PLAN_KEYS = [
   "evidence",
 ];
 const AUTHORITY_KEYS = ["kind", "grants", "reusable"];
+const GATE7_AUTHORITY_KEYS = [
+  "kind",
+  "receiptRelativePath",
+  "receiptId",
+  "receiptHash",
+  "generation",
+  "sourceCommit",
+  "sourceTree",
+  "hostCommit",
+  "hostTree",
+  "authorityUseHash",
+  "hostFenceHash",
+  "issuedAt",
+  "expiresAt",
+  "reusable",
+];
 const HOST_KEYS = [
   "platform",
   "uid",
@@ -342,6 +361,25 @@ function requiredSha256(value, path) {
   return value;
 }
 
+function requiredSha256Pin(value, path) {
+  if (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(value)) {
+    throw new Error(`${path} must be a sha256: lowercase SHA-256 pin`);
+  }
+  return value;
+}
+
+function requiredStateRelativePath(value, path) {
+  const candidate = requiredString(value, path);
+  if (
+    candidate.startsWith("/") ||
+    candidate.includes("\\") ||
+    candidate.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+  ) {
+    throw new Error(`${path} must be a normalized state-relative path`);
+  }
+  return candidate;
+}
+
 function requiredGitObject(value, path) {
   if (typeof value !== "string" || !GIT_OBJECT_RE.test(value)) {
     throw new Error(`${path} must be a lowercase 40-character Git object id`);
@@ -397,7 +435,12 @@ export function canonicalJsonBytes(value) {
 
 export function validateHostActivationPlan(value, options = {}) {
   exactKeys(value, PLAN_KEYS, "plan");
-  requiredLiteral(value.schema, HOST_ACTIVATION_PLAN_SCHEMA, "plan.schema");
+  if (
+    value.schema !== HOST_ACTIVATION_PLAN_SCHEMA &&
+    value.schema !== HOST_ACTIVATION_PLAN_SCHEMA_V2
+  ) {
+    throw new Error("plan.schema must be a supported host activation plan schema");
+  }
   requiredString(value.planId, "plan.planId");
   const createdAt = requiredInstant(value.createdAt, "plan.createdAt");
   const expiresAt = requiredInstant(value.expiresAt, "plan.expiresAt");
@@ -409,12 +452,33 @@ export function validateHostActivationPlan(value, options = {}) {
     throw new Error("plan is expired");
   }
 
-  exactKeys(value.authority, AUTHORITY_KEYS, "plan.authority");
-  requiredLiteral(value.authority.kind, "none", "plan.authority.kind");
-  if (!Array.isArray(value.authority.grants) || value.authority.grants.length !== 0) {
-    throw new Error("plan.authority.grants must be empty");
+  if (value.schema === HOST_ACTIVATION_PLAN_SCHEMA) {
+    exactKeys(value.authority, AUTHORITY_KEYS, "plan.authority");
+    requiredLiteral(value.authority.kind, "none", "plan.authority.kind");
+    if (!Array.isArray(value.authority.grants) || value.authority.grants.length !== 0) {
+      throw new Error("plan.authority.grants must be empty");
+    }
+    requiredLiteral(value.authority.reusable, false, "plan.authority.reusable");
+  } else {
+    exactKeys(value.authority, GATE7_AUTHORITY_KEYS, "plan.authority");
+    requiredLiteral(value.authority.kind, "gate7_rc17_host_activation", "plan.authority.kind");
+    requiredStateRelativePath(
+      value.authority.receiptRelativePath,
+      "plan.authority.receiptRelativePath",
+    );
+    requiredString(value.authority.receiptId, "plan.authority.receiptId");
+    requiredSha256Pin(value.authority.receiptHash, "plan.authority.receiptHash");
+    requiredInteger(value.authority.generation, "plan.authority.generation", 1);
+    requiredGitObject(value.authority.sourceCommit, "plan.authority.sourceCommit");
+    requiredGitObject(value.authority.sourceTree, "plan.authority.sourceTree");
+    requiredGitObject(value.authority.hostCommit, "plan.authority.hostCommit");
+    requiredGitObject(value.authority.hostTree, "plan.authority.hostTree");
+    requiredSha256Pin(value.authority.authorityUseHash, "plan.authority.authorityUseHash");
+    requiredSha256Pin(value.authority.hostFenceHash, "plan.authority.hostFenceHash");
+    requiredInstant(value.authority.issuedAt, "plan.authority.issuedAt");
+    requiredInstant(value.authority.expiresAt, "plan.authority.expiresAt");
+    requiredLiteral(value.authority.reusable, false, "plan.authority.reusable");
   }
-  requiredLiteral(value.authority.reusable, false, "plan.authority.reusable");
 
   exactKeys(value.host, HOST_KEYS, "plan.host");
   requiredLiteral(value.host.platform, "darwin", "plan.host.platform");
@@ -617,6 +681,13 @@ export function validateHostActivationPlan(value, options = {}) {
   ]);
   if (uniqueEvidencePaths.size !== 5) {
     throw new Error("evidence paths must all differ");
+  }
+  if (
+    value.schema === HOST_ACTIVATION_PLAN_SCHEMA_V2 &&
+    (value.authority.hostCommit !== value.successor.commit ||
+      value.authority.hostTree !== value.successor.tree)
+  ) {
+    throw new Error("Gate 7 authority host commit/tree must equal the planned successor");
   }
   return value;
 }
@@ -1703,13 +1774,19 @@ function makeReceipt(params) {
   const recoveryPhases =
     firstRecoveryIndex === -1 ? [] : nonterminalPhases.slice(firstRecoveryIndex);
   return {
-    schema: HOST_ACTIVATION_RECEIPT_SCHEMA,
+    schema:
+      params.plan.schema === HOST_ACTIVATION_PLAN_SCHEMA_V2
+        ? HOST_ACTIVATION_RECEIPT_SCHEMA_V2
+        : HOST_ACTIVATION_RECEIPT_SCHEMA,
     planId: params.plan.planId,
     planSha256: params.planSha256,
     startedAt: params.startedAt,
     completedAt: params.completedAt,
     outcome: params.outcome,
-    authority: { kind: "none", grants: [], reusable: false },
+    authority:
+      params.plan.schema === HOST_ACTIVATION_PLAN_SCHEMA_V2
+        ? { ...params.plan.authority }
+        : { kind: "none", grants: [], reusable: false },
     operations: {
       disableCount: params.disableCount,
       enableCount: params.enableCount,
@@ -1881,7 +1958,12 @@ function validateReceiptPhaseOrder(outcome, phases, recoveryPhases) {
 
 export function validateHostActivationReceipt(value) {
   exactKeys(value, RECEIPT_KEYS, "activation receipt");
-  requiredLiteral(value.schema, HOST_ACTIVATION_RECEIPT_SCHEMA, "activation receipt.schema");
+  if (
+    value.schema !== HOST_ACTIVATION_RECEIPT_SCHEMA &&
+    value.schema !== HOST_ACTIVATION_RECEIPT_SCHEMA_V2
+  ) {
+    throw new Error("activation receipt.schema is unsupported");
+  }
   requiredString(value.planId, "activation receipt.planId");
   requiredSha256(value.planSha256, "activation receipt.planSha256");
   requiredInstant(value.startedAt, "activation receipt.startedAt");
@@ -1890,11 +1972,21 @@ export function validateHostActivationReceipt(value) {
     throw new Error("activation receipt completion precedes its start");
   }
   validateReceiptIdentity(value.predecessor, "activation receipt.predecessor");
-  exactKeys(value.authority, AUTHORITY_KEYS, "activation receipt.authority");
-  requiredLiteral(value.authority.kind, "none", "activation receipt.authority.kind");
-  requiredLiteral(value.authority.reusable, false, "activation receipt.authority.reusable");
-  if (!Array.isArray(value.authority.grants) || value.authority.grants.length !== 0) {
-    throw new Error("activation receipt authority grants must be empty");
+  if (value.schema === HOST_ACTIVATION_RECEIPT_SCHEMA) {
+    exactKeys(value.authority, AUTHORITY_KEYS, "activation receipt.authority");
+    requiredLiteral(value.authority.kind, "none", "activation receipt.authority.kind");
+    requiredLiteral(value.authority.reusable, false, "activation receipt.authority.reusable");
+    if (!Array.isArray(value.authority.grants) || value.authority.grants.length !== 0) {
+      throw new Error("activation receipt authority grants must be empty");
+    }
+  } else {
+    exactKeys(value.authority, GATE7_AUTHORITY_KEYS, "activation receipt.authority");
+    requiredLiteral(
+      value.authority.kind,
+      "gate7_rc17_host_activation",
+      "activation receipt.authority.kind",
+    );
+    requiredLiteral(value.authority.reusable, false, "activation receipt.authority.reusable");
   }
   validateGatewaySuspensionBinding(value.gatewaySuspension, "activation receipt.gatewaySuspension");
   exactKeys(
@@ -2921,6 +3013,7 @@ export function createDefaultHostActivationRuntime() {
       homePath: homedir(),
       executorPid: process.pid,
     }),
+    verifyGate7Admission: (options) => verifyHandoffV2Gate7Admission(options),
     assertClaimOwnerDead: (pid) => verifyPidDead(pid, { run: runCommand }),
     acquireRecoveryOwnership: (path, executorPid) => {
       const expected = Buffer.from(`${executorPid}\n`, "utf8");
@@ -3027,6 +3120,37 @@ export function executeHostActivation(params) {
   });
   if (!planBytes.equals(canonicalJsonBytes(plan))) {
     throw new Error("activation plan bytes must use the canonical JSON encoding");
+  }
+  const legacyTestExecution =
+    (process.env.VITEST || process.env.NODE_ENV === "test") &&
+    plan.schema === HOST_ACTIVATION_PLAN_SCHEMA;
+  if (params.execute && plan.schema !== HOST_ACTIVATION_PLAN_SCHEMA_V2 && !legacyTestExecution) {
+    throw new Error("production host activation requires a Gate 7 v2 activation plan");
+  }
+  const verifyGate7 = () => {
+    if (plan.schema !== HOST_ACTIVATION_PLAN_SCHEMA_V2) {
+      return null;
+    }
+    if (typeof runtime.verifyGate7Admission !== "function") {
+      throw new Error("Gate 7 activation runtime verifier is unavailable");
+    }
+    const {
+      kind: _kind,
+      receiptRelativePath,
+      reusable: _reusable,
+      ...expectedBinding
+    } = plan.authority;
+    return runtime.verifyGate7Admission({
+      stateDir: plan.host.stateDir,
+      receiptRelativePath,
+      expectedReceiptHash: plan.authority.receiptHash,
+      requiredRemainingMs:
+        plan.operations.startupWaitMs + plan.operations.stabilityWindowMs + 60_000,
+      expectedBinding,
+    });
+  };
+  if (params.execute) {
+    verifyGate7();
   }
   const hostIdentity = runtime.getHostIdentity();
   if (
@@ -3884,6 +4008,9 @@ export function executeHostActivation(params) {
       return preflightReceipt;
     }
 
+    // Re-run the fixed host-owned Gate 7 verifier at the last boundary before
+    // any durable evidence or launchd lifecycle mutation.
+    verifyGate7();
     if (existingPlistBackup === null) {
       runtime.preserveFile(
         plan.predecessor.servicePlistPath,

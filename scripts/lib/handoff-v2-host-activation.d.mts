@@ -1,4 +1,5 @@
 export const HOST_ACTIVATION_RECEIPT_SCHEMA: "handoff-v2-host-activation-receipt/v1";
+export const HOST_ACTIVATION_RECEIPT_SCHEMA_V2: "handoff-v2-host-activation-receipt/v2";
 
 export function canonicalJsonBytes(value: unknown): Buffer;
 export function validateHostActivationPlan<T>(
@@ -46,6 +47,13 @@ export type HostActivationRuntime = {
     options?: { timeoutMs?: number; env?: NodeJS.ProcessEnv; input?: Buffer },
   ): HostActivationCommandResult;
   getHostIdentity(): { uid: number; homePath: string; executorPid: number };
+  verifyGate7Admission?(options: {
+    stateDir: string;
+    receiptRelativePath: string;
+    expectedReceiptHash: `sha256:${string}`;
+    requiredRemainingMs: number;
+    expectedBinding: Record<string, unknown>;
+  }): unknown;
   assertClaimOwnerDead(pid: number): void;
   acquireRecoveryOwnership(path: string, executorPid: number): void;
   releaseRecoveryOwnership(path: string, executorPid: number): void;

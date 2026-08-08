@@ -1,7 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmodSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -263,6 +262,30 @@ function fixturePlan() {
   };
 }
 
+function fixtureGate7Plan() {
+  const plan = fixturePlan();
+  return {
+    ...plan,
+    schema: "handoff-v2-host-activation-plan/v2",
+    authority: {
+      kind: "gate7_rc17_host_activation",
+      receiptRelativePath: "rollout/rc17-generation.json",
+      receiptId: "rc17-initial-shadow-admission",
+      receiptHash: `sha256:${"a".repeat(64)}`,
+      generation: 17,
+      sourceCommit: "d".repeat(40),
+      sourceTree: "e".repeat(40),
+      hostCommit: plan.successor.commit,
+      hostTree: plan.successor.tree,
+      authorityUseHash: `sha256:${"b".repeat(64)}`,
+      hostFenceHash: `sha256:${"c".repeat(64)}`,
+      issuedAt: "2026-07-28T08:00:00.000Z",
+      expiresAt: "2026-07-28T09:30:00.000Z",
+      reusable: false,
+    },
+  };
+}
+
 function realisticMacHostPlan() {
   const plan = fixturePlan();
   const generation = plan.successor.commit;
@@ -442,6 +465,7 @@ function createRuntime(plan = fixturePlan(), options: RuntimeOptions = {}) {
       homePath: plan.host.homePath,
       executorPid: options.executorPid ?? 9_001,
     })),
+    verifyGate7Admission: vi.fn(() => ({ admission: plan.authority })),
     assertClaimOwnerDead: vi.fn(() => {
       if (options.claimOwnerAlive) {
         throw new Error("claim owner remains alive");
@@ -1052,6 +1076,23 @@ describe("host activation plan contract", () => {
     ).toEqual(plan);
   });
 
+  it("accepts a closed Gate 7 RC17 v2 authority binding", () => {
+    const plan = fixtureGate7Plan();
+    expect(
+      validateHostActivationPlan(plan, { nowMs: Date.parse("2026-07-28T08:30:00.000Z") }),
+    ).toEqual(plan);
+    const validateSchema = compileContractSchema("handoff-v2-host-activation-plan.v2.schema.json");
+    expect(validateSchema(plan), JSON.stringify(validateSchema.errors)).toBe(true);
+  });
+
+  it("rejects a Gate 7 host identity that differs from the successor", () => {
+    const plan = fixtureGate7Plan();
+    plan.authority.hostCommit = "f".repeat(40);
+    expect(() =>
+      validateHostActivationPlan(plan, { nowMs: Date.parse("2026-07-28T08:30:00.000Z") }),
+    ).toThrow("must equal the planned successor");
+  });
+
   it("accepts an external predecessor and a bundled successor Node runtime", () => {
     const plan = realisticMacHostPlan();
     expect(
@@ -1161,6 +1202,40 @@ describe("exact-host launchd parsers", () => {
 });
 
 describe("one-use host activation lifecycle", () => {
+  it("re-verifies the immutable Gate 7 binding before preflight and before mutation", () => {
+    const plan = fixtureGate7Plan();
+    const { fixture, receipt } = executeFixture(plan);
+    expect(fixture.runtime.verifyGate7Admission).toHaveBeenCalledTimes(2);
+    expect(fixture.runtime.verifyGate7Admission).toHaveBeenLastCalledWith({
+      stateDir: plan.host.stateDir,
+      receiptRelativePath: plan.authority.receiptRelativePath,
+      expectedReceiptHash: plan.authority.receiptHash,
+      requiredRemainingMs: 150_000,
+      expectedBinding: {
+        receiptId: plan.authority.receiptId,
+        receiptHash: plan.authority.receiptHash,
+        generation: plan.authority.generation,
+        sourceCommit: plan.authority.sourceCommit,
+        sourceTree: plan.authority.sourceTree,
+        hostCommit: plan.authority.hostCommit,
+        hostTree: plan.authority.hostTree,
+        authorityUseHash: plan.authority.authorityUseHash,
+        hostFenceHash: plan.authority.hostFenceHash,
+        issuedAt: plan.authority.issuedAt,
+        expiresAt: plan.authority.expiresAt,
+      },
+    });
+    expect(receipt).toMatchObject({
+      schema: "handoff-v2-host-activation-receipt/v2",
+      authority: plan.authority,
+      outcome: "ACTIVATED_VERIFIED",
+    });
+    const validateReceiptSchema = compileContractSchema(
+      "handoff-v2-host-activation-receipt.v2.schema.json",
+    );
+    expect(validateReceiptSchema(receipt), JSON.stringify(validateReceiptSchema.errors)).toBe(true);
+  });
+
   it("proves the complete one-restart lifecycle and accepts reset launchd run count", () => {
     const { plan, fixture, receipt } = executeFixture();
     expect(receipt).toMatchObject({

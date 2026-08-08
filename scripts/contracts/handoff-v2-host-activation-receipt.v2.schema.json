@@ -1,0 +1,2311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handoff-v2-host-activation-receipt/v2",
+  "title": "Handoff v2 Gate 7 host activation receipt",
+  "description": "Terminal evidence only. It grants no rollout, restart, rollback, canary, or production authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "planId",
+    "planSha256",
+    "startedAt",
+    "completedAt",
+    "outcome",
+    "authority",
+    "operations",
+    "gatewaySuspension",
+    "predecessor",
+    "successor",
+    "proofs",
+    "ledger",
+    "rollbackPacketSha256",
+    "holdReason"
+  ],
+  "properties": {
+    "schema": {
+      "const": "handoff-v2-host-activation-receipt/v2"
+    },
+    "planId": {
+      "$ref": "#/$defs/nonempty"
+    },
+    "planSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "startedAt": {
+      "$ref": "#/$defs/instant"
+    },
+    "completedAt": {
+      "$ref": "#/$defs/instant"
+    },
+    "outcome": {
+      "enum": [
+        "PREFLIGHT_PASS",
+        "ACTIVATED_VERIFIED",
+        "HOLD"
+      ]
+    },
+    "authority": {
+      "$ref": "#/$defs/gate7Authority"
+    },
+    "operations": {
+      "$ref": "#/$defs/operations"
+    },
+    "gatewaySuspension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "suspendMode",
+        "handoffSchema"
+      ],
+      "properties": {
+        "schema": {
+          "const": "handoff-v2-gateway-suspension-binding/v1"
+        },
+        "suspendMode": {
+          "const": "handoff-durable-hold/v1"
+        },
+        "handoffSchema": {
+          "const": "openclaw-gateway-suspend-handoff/v3"
+        }
+      }
+    },
+    "predecessor": {
+      "$ref": "#/$defs/predecessor"
+    },
+    "successor": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/successor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "proofs": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/preflightProofs"
+        },
+        {
+          "$ref": "#/$defs/activationProofs"
+        },
+        {
+          "$ref": "#/$defs/observedSuccessorProofs"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ledger": {
+      "$ref": "#/$defs/ledger"
+    },
+    "rollbackPacketSha256": {
+      "$ref": "#/$defs/nullableSha"
+    },
+    "holdReason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operations": {
+            "properties": {
+              "disableCount": {
+                "const": 0
+              }
+            },
+            "required": [
+              "disableCount"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "ledger": {
+            "properties": {
+              "phases": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "phase": {
+                        "const": "disable-requested"
+                      }
+                    },
+                    "required": [
+                      "phase"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "ledger": {
+            "properties": {
+              "phases": {
+                "contains": {
+                  "properties": {
+                    "phase": {
+                      "const": "disable-requested"
+                    }
+                  },
+                  "required": [
+                    "phase"
+                  ]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operations": {
+            "properties": {
+              "enableCount": {
+                "const": 0
+              }
+            },
+            "required": [
+              "enableCount"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "ledger": {
+            "properties": {
+              "phases": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "phase": {
+                        "const": "enable-requested"
+                      }
+                    },
+                    "required": [
+                      "phase"
+                    ]
+                  }
+                }
+              },
+              "recoveryPhases": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "phase": {
+                        "const": "pre-bootout-reenable-requested"
+                      }
+                    },
+                    "required": [
+                      "phase"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "ledger": {
+            "oneOf": [
+              {
+                "properties": {
+                  "phases": {
+                    "contains": {
+                      "properties": {
+                        "phase": {
+                          "const": "enable-requested"
+                        }
+                      },
+                      "required": [
+                        "phase"
+                      ]
+                    },
+                    "minContains": 1,
+                    "maxContains": 1
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "recoveryPhases": {
+                    "contains": {
+                      "properties": {
+                        "phase": {
+                          "const": "pre-bootout-reenable-requested"
+                        }
+                      },
+                      "required": [
+                        "phase"
+                      ]
+                    },
+                    "minContains": 1,
+                    "maxContains": 1
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operations": {
+            "properties": {
+              "bootoutCount": {
+                "const": 0
+              }
+            },
+            "required": [
+              "bootoutCount"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "ledger": {
+            "properties": {
+              "phases": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "phase": {
+                        "const": "bootout-requested"
+                      }
+                    },
+                    "required": [
+                      "phase"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "ledger": {
+            "properties": {
+              "phases": {
+                "contains": {
+                  "properties": {
+                    "phase": {
+                      "const": "bootout-requested"
+                    }
+                  },
+                  "required": [
+                    "phase"
+                  ]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operations": {
+            "properties": {
+              "bootstrapCount": {
+                "const": 0
+              }
+            },
+            "required": [
+              "bootstrapCount"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "operations": {
+            "properties": {
+              "restartCount": {
+                "const": 0
+              }
+            }
+          },
+          "ledger": {
+            "properties": {
+              "phases": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "phase": {
+                        "const": "bootstrap-requested"
+                      }
+                    },
+                    "required": [
+                      "phase"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "operations": {
+            "properties": {
+              "restartCount": {
+                "const": 1
+              }
+            }
+          },
+          "ledger": {
+            "properties": {
+              "phases": {
+                "contains": {
+                  "properties": {
+                    "phase": {
+                      "const": "bootstrap-requested"
+                    }
+                  },
+                  "required": [
+                    "phase"
+                  ]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "outcome": {
+          "const": "PREFLIGHT_PASS"
+        },
+        "successor": {
+          "type": "null"
+        },
+        "proofs": {
+          "$ref": "#/$defs/preflightProofs"
+        },
+        "rollbackPacketSha256": {
+          "type": "null"
+        },
+        "holdReason": {
+          "type": "null"
+        },
+        "operations": {
+          "$ref": "#/$defs/zeroOperations"
+        },
+        "ledger": {
+          "$ref": "#/$defs/emptyLedger"
+        }
+      }
+    },
+    {
+      "properties": {
+        "outcome": {
+          "const": "ACTIVATED_VERIFIED"
+        },
+        "successor": {
+          "$ref": "#/$defs/successor"
+        },
+        "proofs": {
+          "$ref": "#/$defs/activationProofs"
+        },
+        "ledger": {
+          "$ref": "#/$defs/activatedLedger"
+        },
+        "rollbackPacketSha256": {
+          "type": "null"
+        },
+        "holdReason": {
+          "type": "null"
+        },
+        "operations": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/operations"
+            },
+            {
+              "properties": {
+                "disableCount": {
+                  "const": 1
+                },
+                "enableCount": {
+                  "const": 1
+                },
+                "bootoutCount": {
+                  "const": 1
+                },
+                "bootstrapCount": {
+                  "const": 1
+                },
+                "restartCount": {
+                  "const": 1
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "outcome": {
+          "const": "HOLD"
+        },
+        "successor": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/successor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proofs": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/observedSuccessorProofs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ledger": {
+          "$ref": "#/$defs/heldLedger"
+        },
+        "rollbackPacketSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "holdReason": {
+          "$ref": "#/$defs/nonempty"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "successor": {
+              "$ref": "#/$defs/successor"
+            },
+            "proofs": {
+              "$ref": "#/$defs/observedSuccessorProofs"
+            },
+            "ledger": {
+              "$ref": "#/$defs/observedHeldLedger"
+            }
+          }
+        },
+        {
+          "properties": {
+            "successor": {
+              "type": "null"
+            },
+            "proofs": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "noAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "grants",
+        "reusable"
+      ],
+      "properties": {
+        "kind": {
+          "const": "none"
+        },
+        "grants": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "reusable": {
+          "const": false
+        }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disableCount",
+        "enableCount",
+        "bootoutCount",
+        "bootstrapCount",
+        "restartCount",
+        "automaticRollbackCount",
+        "automaticSecondRestartCount"
+      ],
+      "properties": {
+        "disableCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "enableCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "bootoutCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "bootstrapCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "restartCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "automaticRollbackCount": {
+          "const": 0
+        },
+        "automaticSecondRestartCount": {
+          "const": 0
+        }
+      }
+    },
+    "zeroOperations": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/operations"
+        },
+        {
+          "properties": {
+            "disableCount": {
+              "const": 0
+            },
+            "enableCount": {
+              "const": 0
+            },
+            "bootoutCount": {
+              "const": 0
+            },
+            "bootstrapCount": {
+              "const": 0
+            },
+            "restartCount": {
+              "const": 0
+            }
+          }
+        }
+      ]
+    },
+    "predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "tree",
+        "pid",
+        "runCount",
+        "cliSha256",
+        "runtimeSha256",
+        "gatewayEntrypointSha256",
+        "wrapperSha256",
+        "environmentFileSha256",
+        "runtimeStampSha256",
+        "buildManifestSha256",
+        "servicePlistSha256",
+        "configSha256",
+        "processCommand"
+      ],
+      "properties": {
+        "commit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "tree": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cliSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtimeSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "gatewayEntrypointSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "wrapperSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "environmentFileSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtimeStampSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "buildManifestSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "servicePlistSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "configSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "processCommand": {
+          "$ref": "#/$defs/nonempty"
+        }
+      }
+    },
+    "successor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "runCount",
+        "commit",
+        "tree",
+        "cliSha256",
+        "runtimeSha256",
+        "gatewayEntrypointSha256",
+        "wrapperSha256",
+        "environmentFileSha256",
+        "runtimeStampSha256",
+        "buildManifestSha256",
+        "servicePlistSha256",
+        "configSha256",
+        "processCommand"
+      ],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "commit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "tree": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "cliSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtimeSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "gatewayEntrypointSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "wrapperSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "environmentFileSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtimeStampSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "buildManifestSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "servicePlistSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "configSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "processCommand": {
+          "$ref": "#/$defs/nonempty"
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "tree"
+      ],
+      "properties": {
+        "commit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "tree": {
+          "$ref": "#/$defs/gitObject"
+        }
+      }
+    },
+    "quiescence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeTasks",
+        "activeRuns"
+      ],
+      "properties": {
+        "activeTasks": {
+          "const": 0
+        },
+        "activeRuns": {
+          "const": 0
+        }
+      }
+    },
+    "atJobSafety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checked",
+        "marker",
+        "enabledAtJobCount",
+        "unsafeEnabledAtJobIds",
+        "disposition"
+      ],
+      "properties": {
+        "checked": {
+          "const": true
+        },
+        "marker": {
+          "const": "state.startupInterruptedRunAtMs:absent"
+        },
+        "enabledAtJobCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsafeEnabledAtJobIds": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "disposition": {
+          "const": "safe_or_refused_before_lifecycle"
+        }
+      }
+    },
+    "proofBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quiescence",
+        "healthSha256",
+        "channelsStatusSha256",
+        "slackAccessSha256",
+        "atJobSafety",
+        "portOwnerPid",
+        "processCommand"
+      ],
+      "properties": {
+        "quiescence": {
+          "$ref": "#/$defs/quiescence"
+        },
+        "healthSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "channelsStatusSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "slackAccessSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "atJobSafety": {
+          "$ref": "#/$defs/atJobSafety"
+        },
+        "portOwnerPid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "processCommand": {
+          "$ref": "#/$defs/nonempty"
+        }
+      }
+    },
+    "preflightProofs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predecessorBuild",
+        "quiescence",
+        "healthSha256",
+        "channelsStatusSha256",
+        "slackAccessSha256",
+        "atJobSafety",
+        "portOwnerPid",
+        "processCommand"
+      ],
+      "properties": {
+        "predecessorBuild": {
+          "$ref": "#/$defs/build"
+        },
+        "quiescence": {
+          "$ref": "#/$defs/quiescence"
+        },
+        "healthSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "channelsStatusSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "slackAccessSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "atJobSafety": {
+          "$ref": "#/$defs/atJobSafety"
+        },
+        "portOwnerPid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "processCommand": {
+          "$ref": "#/$defs/nonempty"
+        }
+      }
+    },
+    "activationProofs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quiescence",
+        "healthSha256",
+        "channelsStatusSha256",
+        "slackAccessSha256",
+        "atJobSafety",
+        "portOwnerPid",
+        "processCommand",
+        "stabilityWindowMs"
+      ],
+      "properties": {
+        "quiescence": {
+          "$ref": "#/$defs/quiescence"
+        },
+        "healthSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "channelsStatusSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "slackAccessSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "atJobSafety": {
+          "$ref": "#/$defs/atJobSafety"
+        },
+        "portOwnerPid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "processCommand": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "stabilityWindowMs": {
+          "const": 60000
+        }
+      }
+    },
+    "observedSuccessorProofs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quiescence",
+        "healthSha256",
+        "channelsStatusSha256",
+        "slackAccessSha256",
+        "atJobSafety",
+        "portOwnerPid",
+        "processCommand",
+        "observedAt"
+      ],
+      "properties": {
+        "quiescence": {
+          "$ref": "#/$defs/quiescence"
+        },
+        "healthSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "channelsStatusSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "slackAccessSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "atJobSafety": {
+          "$ref": "#/$defs/atJobSafety"
+        },
+        "portOwnerPid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "processCommand": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "observedAt": {
+          "$ref": "#/$defs/instant"
+        }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "phase",
+        "sha256"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "phase": {
+          "enum": [
+            "claim",
+            "predecessor-plist-preserved",
+            "suspension-prepared",
+            "disable-requested",
+            "disabled-proven",
+            "bootout-requested",
+            "bootout-invocation-started",
+            "predecessor-stopped-proven",
+            "successor-plist-installed",
+            "enable-requested",
+            "enabled-proven",
+            "bootstrap-requested",
+            "bootstrap-returned",
+            "successor-suspension-prepared",
+            "postflight-initial-proven",
+            "stability-window-proven",
+            "successor-suspension-held-proven",
+            "pre-bootout-service-loaded-proven",
+            "pre-bootout-reenable-requested",
+            "pre-bootout-reenabled-same-predecessor-proven",
+            "pre-bootout-service-unloaded-proven",
+            "pre-bootout-label-enabled-unloaded-proven",
+            "pre-bootout-suspension-resume-requested",
+            "pre-bootout-suspension-resumed",
+            "pre-bootout-durable-suspension-retained",
+            "interrupted-attempt-recovered"
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phases",
+        "recoveryPhases",
+        "terminalPhase"
+      ],
+      "properties": {
+        "phases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/phase"
+          }
+        },
+        "recoveryPhases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/phase"
+          }
+        },
+        "terminalPhase": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "phase",
+                "sha256"
+              ],
+              "properties": {
+                "phase": {
+                  "const": "hold"
+                },
+                "sha256": {
+                  "$ref": "#/$defs/sha256"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "emptyLedger": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ledger"
+        },
+        {
+          "properties": {
+            "phases": {
+              "maxItems": 0
+            },
+            "recoveryPhases": {
+              "maxItems": 0
+            },
+            "terminalPhase": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "claimedLedger": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ledger"
+        },
+        {
+          "properties": {
+            "phases": {
+              "minItems": 1,
+              "maxItems": 17,
+              "prefixItems": [
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/phase"
+                    },
+                    {
+                      "properties": {
+                        "sequence": {
+                          "const": 0
+                        },
+                        "phase": {
+                          "const": "claim"
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 1
+                    },
+                    "phase": {
+                      "const": "predecessor-plist-preserved"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 2
+                    },
+                    "phase": {
+                      "const": "suspension-prepared"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 3
+                    },
+                    "phase": {
+                      "const": "disable-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 4
+                    },
+                    "phase": {
+                      "const": "disabled-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 5
+                    },
+                    "phase": {
+                      "const": "bootout-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 6
+                    },
+                    "phase": {
+                      "const": "bootout-invocation-started"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 7
+                    },
+                    "phase": {
+                      "const": "predecessor-stopped-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 8
+                    },
+                    "phase": {
+                      "const": "successor-plist-installed"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 9
+                    },
+                    "phase": {
+                      "const": "enable-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 10
+                    },
+                    "phase": {
+                      "const": "enabled-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 11
+                    },
+                    "phase": {
+                      "const": "bootstrap-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 12
+                    },
+                    "phase": {
+                      "const": "bootstrap-returned"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 13
+                    },
+                    "phase": {
+                      "const": "successor-suspension-prepared"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 14
+                    },
+                    "phase": {
+                      "const": "postflight-initial-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 15
+                    },
+                    "phase": {
+                      "const": "stability-window-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 16
+                    },
+                    "phase": {
+                      "const": "successor-suspension-held-proven"
+                    }
+                  }
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      ]
+    },
+    "activatedLedger": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/claimedLedger"
+        },
+        {
+          "properties": {
+            "phases": {
+              "minItems": 17,
+              "maxItems": 17,
+              "prefixItems": [
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 0
+                    },
+                    "phase": {
+                      "const": "claim"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 1
+                    },
+                    "phase": {
+                      "const": "predecessor-plist-preserved"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 2
+                    },
+                    "phase": {
+                      "const": "suspension-prepared"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 3
+                    },
+                    "phase": {
+                      "const": "disable-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 4
+                    },
+                    "phase": {
+                      "const": "disabled-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 5
+                    },
+                    "phase": {
+                      "const": "bootout-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 6
+                    },
+                    "phase": {
+                      "const": "bootout-invocation-started"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 7
+                    },
+                    "phase": {
+                      "const": "predecessor-stopped-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 8
+                    },
+                    "phase": {
+                      "const": "successor-plist-installed"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 9
+                    },
+                    "phase": {
+                      "const": "enable-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 10
+                    },
+                    "phase": {
+                      "const": "enabled-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 11
+                    },
+                    "phase": {
+                      "const": "bootstrap-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 12
+                    },
+                    "phase": {
+                      "const": "bootstrap-returned"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 13
+                    },
+                    "phase": {
+                      "const": "successor-suspension-prepared"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 14
+                    },
+                    "phase": {
+                      "const": "postflight-initial-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 15
+                    },
+                    "phase": {
+                      "const": "stability-window-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 16
+                    },
+                    "phase": {
+                      "const": "successor-suspension-held-proven"
+                    }
+                  }
+                }
+              ]
+            },
+            "recoveryPhases": {
+              "maxItems": 0
+            },
+            "terminalPhase": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "heldLedger": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/claimedLedger"
+        },
+        {
+          "properties": {
+            "terminalPhase": {
+              "type": "object",
+              "properties": {
+                "phase": {
+                  "const": "hold"
+                }
+              },
+              "required": [
+                "phase"
+              ]
+            }
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "recoveryPhases": {
+                  "maxItems": 0
+                }
+              }
+            },
+            {
+              "properties": {
+                "recoveryPhases": {
+                  "minItems": 1,
+                  "maxItems": 1,
+                  "prefixItems": [
+                    {
+                      "properties": {
+                        "phase": {
+                          "const": "interrupted-attempt-recovered"
+                        }
+                      }
+                    }
+                  ],
+                  "items": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "phases": {
+                  "minItems": 2,
+                  "maxItems": 7
+                },
+                "recoveryPhases": {
+                  "$ref": "#/$defs/preBootoutRecoveryPhases"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "preBootoutRecoveryPhases": {
+      "type": "array",
+      "oneOf": [
+        {
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenabled-same-predecessor-proven"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resume-requested"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resume-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resumed"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resume-requested"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resume-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resumed"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenabled-same-predecessor-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resume-requested"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenabled-same-predecessor-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resume-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resumed"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-service-loaded-proven"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-service-loaded-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenabled-same-predecessor-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resume-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resumed"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-service-loaded-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenabled-same-predecessor-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resume-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-suspension-resumed"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-service-unloaded-proven"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-service-unloaded-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-label-enabled-unloaded-proven"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-service-unloaded-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-label-enabled-unloaded-proven"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-durable-suspension-retained"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-durable-suspension-retained"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenabled-same-predecessor-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-durable-suspension-retained"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-service-loaded-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenabled-same-predecessor-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-durable-suspension-retained"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        {
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-service-loaded-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenable-requested"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-reenabled-same-predecessor-proven"
+                }
+              }
+            },
+            {
+              "properties": {
+                "phase": {
+                  "const": "pre-bootout-durable-suspension-retained"
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "observedHeldLedger": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/heldLedger"
+        },
+        {
+          "properties": {
+            "phases": {
+              "minItems": 15,
+              "maxItems": 17,
+              "prefixItems": [
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 0
+                    },
+                    "phase": {
+                      "const": "claim"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 1
+                    },
+                    "phase": {
+                      "const": "predecessor-plist-preserved"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 2
+                    },
+                    "phase": {
+                      "const": "suspension-prepared"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 3
+                    },
+                    "phase": {
+                      "const": "disable-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 4
+                    },
+                    "phase": {
+                      "const": "disabled-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 5
+                    },
+                    "phase": {
+                      "const": "bootout-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 6
+                    },
+                    "phase": {
+                      "const": "bootout-invocation-started"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 7
+                    },
+                    "phase": {
+                      "const": "predecessor-stopped-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 8
+                    },
+                    "phase": {
+                      "const": "successor-plist-installed"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 9
+                    },
+                    "phase": {
+                      "const": "enable-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 10
+                    },
+                    "phase": {
+                      "const": "enabled-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 11
+                    },
+                    "phase": {
+                      "const": "bootstrap-requested"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 12
+                    },
+                    "phase": {
+                      "const": "bootstrap-returned"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 13
+                    },
+                    "phase": {
+                      "const": "successor-suspension-prepared"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 14
+                    },
+                    "phase": {
+                      "const": "postflight-initial-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 15
+                    },
+                    "phase": {
+                      "const": "stability-window-proven"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 16
+                    },
+                    "phase": {
+                      "const": "successor-suspension-held-proven"
+                    }
+                  }
+                }
+              ]
+            },
+            "recoveryPhases": {
+              "maxItems": 0
+            }
+          }
+        }
+      ]
+    },
+    "nullableSha": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nonempty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instant": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "gitObject": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "sha256Pin": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "stateRelativePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/]+(?:/[^/]+)*$"
+    },
+    "gate7Authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "receiptRelativePath",
+        "receiptId",
+        "receiptHash",
+        "generation",
+        "sourceCommit",
+        "sourceTree",
+        "hostCommit",
+        "hostTree",
+        "authorityUseHash",
+        "hostFenceHash",
+        "issuedAt",
+        "expiresAt",
+        "reusable"
+      ],
+      "properties": {
+        "kind": {
+          "const": "gate7_rc17_host_activation"
+        },
+        "receiptRelativePath": {
+          "$ref": "#/$defs/stateRelativePath"
+        },
+        "receiptId": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "receiptHash": {
+          "$ref": "#/$defs/sha256Pin"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sourceCommit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "sourceTree": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "hostCommit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "hostTree": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "authorityUseHash": {
+          "$ref": "#/$defs/sha256Pin"
+        },
+        "hostFenceHash": {
+          "$ref": "#/$defs/sha256Pin"
+        },
+        "issuedAt": {
+          "$ref": "#/$defs/instant"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/instant"
+        },
+        "reusable": {
+          "const": false
+        }
+      }
+    }
+  }
+}
