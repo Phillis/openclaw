@@ -136,7 +136,7 @@ describe("createSlackBoltApp", () => {
     }
   }
 
-  it("uses SocketModeReceiver with native reconnects and shared client options", () => {
+  it("uses SocketModeReceiver with OpenClaw-owned reconnects and shared client options", () => {
     const clientOptions = { teamId: "T1" };
     const { app, receiver } = createSlackBoltApp({
       interop: {
@@ -158,7 +158,7 @@ describe("createSlackBoltApp", () => {
     expect(receiverLogger.warn).toBeTypeOf("function");
     expect(receiverArgs).toEqual({
       appToken: "xapp-test",
-      autoReconnectEnabled: true,
+      autoReconnectEnabled: false,
       clientPingTimeout: 15_000,
       logger: receiverLogger,
       installerOptions: {
@@ -219,6 +219,41 @@ describe("createSlackBoltApp", () => {
     } finally {
       warn.mockRestore();
       error.mockRestore();
+    }
+  });
+
+  it("suppresses undici ping/pong diagnostics-format warnings that storm when multiple undici copies coexist", () => {
+    // Slack's bundled @slack/socket-mode loads its own undici copy and rejects
+    // ping/pong diagnostics messages whose `websocket` fails `instanceof
+    // undici.WebSocket`. Any process that also runs undici WebSockets from a
+    // different install (or Node's built-in) sees a steady stream of these
+    // warnings; the SDK heartbeat against its own socket still works, so we
+    // treat the warnings as noise and drop them before they reach the gateway.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { socketModeLogger } = createSlackBoltApp({
+        interop: {
+          App: FakeApp as never,
+          HTTPReceiver: FakeHTTPReceiver as never,
+          SocketModeReceiver: FakeSocketModeReceiver as never,
+        } as never,
+        slackMode: "socket",
+        token: "xoxb-test",
+        appToken: "xapp-test",
+        slackWebhookPath: "/slack/events",
+        clientOptions: {},
+      });
+
+      socketModeLogger.setName("SlackWebSocket:1");
+      socketModeLogger.warn("Received unexpected ping diagnostics message format");
+      socketModeLogger.warn("Received unexpected pong diagnostics message format");
+      // Genuine SDK warnings must still flow through.
+      socketModeLogger.warn("another socket warning");
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("socket-mode:SlackWebSocket:1", "another socket warning");
+    } finally {
+      warn.mockRestore();
     }
   });
 
@@ -300,62 +335,6 @@ describe("createSlackBoltApp", () => {
     }
   });
 
-  it("routes native reconnect start failures through the socket disconnect event", async () => {
-    const startError = new Error("invalid_auth");
-    class FakeSocketModeClient {
-      emitted: unknown[][] = [];
-      clientPingTimeoutMS = 0;
-      numOfConsecutiveReconnectionFailures = 0;
-      logger = { debug: () => undefined };
-      shuttingDown = false;
-      start = async () => {
-        throw startError;
-      };
-
-      delayReconnectAttempt(callback: (this: FakeSocketModeClient) => Promise<unknown>) {
-        return Promise.resolve(callback.call(this));
-      }
-
-      emit(event: string, ...args: unknown[]) {
-        this.emitted.push([event, ...args]);
-      }
-    }
-    class FakeObservedSocketModeReceiver {
-      args: Record<string, unknown>;
-      client = new FakeSocketModeClient();
-
-      constructor(args: Record<string, unknown>) {
-        this.args = args;
-      }
-    }
-    const { receiver } = createSlackBoltApp({
-      interop: {
-        App: FakeApp as never,
-        HTTPReceiver: FakeHTTPReceiver as never,
-        SocketModeReceiver: FakeObservedSocketModeReceiver as never,
-      },
-      slackMode: "socket",
-      token: "xoxb-test",
-      appToken: "xapp-test",
-      slackWebhookPath: "/slack/events",
-      clientOptions: {},
-    });
-
-    const client = (receiver as unknown as FakeObservedSocketModeReceiver).client;
-
-    await expect(client.delayReconnectAttempt(client.start)).resolves.toBeUndefined();
-    await expect(
-      client.delayReconnectAttempt(async () => {
-        throw new Error("transient");
-      }),
-    ).rejects.toThrow("transient");
-    expect(client.emitted).toEqual([
-      ["reconnecting"],
-      ["unable_to_socket_mode_start", startError],
-      ["reconnecting"],
-    ]);
-  });
-
   it("uses Slack's fixed Socket Mode receiver policy", () => {
     const clientOptions = { teamId: "T1" };
     const { receiver } = createSlackBoltApp({
@@ -377,7 +356,7 @@ describe("createSlackBoltApp", () => {
     expect(receiverLogger.warn).toBeTypeOf("function");
     expect(receiverArgs).toEqual({
       appToken: "xapp-test",
-      autoReconnectEnabled: true,
+      autoReconnectEnabled: false,
       clientPingTimeout: 15_000,
       logger: receiverLogger,
       installerOptions: {

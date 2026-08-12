@@ -20,10 +20,20 @@ type SlackSocketModeLogger = SlackSdkLogger & {
 type SlackSocketDisconnect = Awaited<ReturnType<typeof waitForSlackSocketDisconnect>>;
 
 const OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS = 15_000;
-const OPENCLAW_SLACK_SOCKET_START_FAILED_EVENT = "unable_to_socket_mode_start";
-const OPENCLAW_SLACK_NATIVE_RECONNECT_OBSERVER_KEY = "__openclawNativeReconnectFailureObserver";
 const SLACK_SOCKET_PONG_TIMEOUT_WARNING_PREFIX = "A pong wasn't received from the server";
 const SLACK_SOCKET_PING_TIMEOUT_WARNING_PREFIX = "A ping wasn't received from the server";
+// Slack SDK's SlackWebSocket filters undici:websocket:ping via an
+// `instanceof undici.WebSocket` check, but the bundled @slack/socket-mode
+// loads its own undici copy. In any process that also creates undici
+// WebSockets from a different undici install (or Node's built-in), every
+// ping on those sockets hits this guard and floods `socket-mode` with
+// `Received unexpected ping/pong diagnostics message format`. The SDK still
+// runs the heartbeat against its own socket; the warning is noise, not
+// signal, so suppress it before the message leaves the channel adapter.
+const SLACK_SOCKET_PING_DIAGNOSTICS_FORMAT_WARNING_PREFIX =
+  "Received unexpected ping diagnostics message format";
+const SLACK_SOCKET_PONG_DIAGNOSTICS_FORMAT_WARNING_PREFIX =
+  "Received unexpected pong diagnostics message format";
 const SLACK_SOCKET_LOG_LEVEL_IGNORED_WARNING_RE =
   /^The logLevel given to .+ was ignored as you also gave logger$/;
 
@@ -53,66 +63,6 @@ function isConstructorFunction<
   T extends Constructor,
 >(value: unknown): value is T {
   return typeof value === "function";
-}
-
-function installSlackNativeReconnectFailureObserver(receiver: unknown) {
-  if (!receiver || typeof receiver !== "object") {
-    return;
-  }
-  const client = Reflect.get(receiver, "client");
-  if (!client || typeof client !== "object") {
-    return;
-  }
-  if (Reflect.get(client, OPENCLAW_SLACK_NATIVE_RECONNECT_OBSERVER_KEY)) {
-    return;
-  }
-  const delayReconnectAttempt = Reflect.get(client, "delayReconnectAttempt");
-  const emit = Reflect.get(client, "emit");
-  if (typeof delayReconnectAttempt !== "function" || typeof emit !== "function") {
-    return;
-  }
-
-  Reflect.set(client, OPENCLAW_SLACK_NATIVE_RECONNECT_OBSERVER_KEY, true);
-  Reflect.set(
-    client,
-    "delayReconnectAttempt",
-    function patchedDelayReconnectAttempt(this: object, callback: unknown) {
-      if (typeof callback !== "function") {
-        return delayReconnectAttempt.call(this, callback);
-      }
-      const failureCount = Number(Reflect.get(this, "numOfConsecutiveReconnectionFailures") ?? 0);
-      const nextFailureCount = failureCount + 1;
-      Reflect.set(this, "numOfConsecutiveReconnectionFailures", nextFailureCount);
-      const pingTimeoutMs = Number(Reflect.get(this, "clientPingTimeoutMS"));
-      const delayMs =
-        (Number.isFinite(pingTimeoutMs) && pingTimeoutMs >= 0
-          ? pingTimeoutMs
-          : OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS) * nextFailureCount;
-      const logger = Reflect.get(this, "logger") as { debug?: (message: string) => void };
-      logger?.debug?.(
-        `Before trying to reconnect, this client will wait for ${delayMs} milliseconds`,
-      );
-      return new Promise((resolve, reject) => {
-        setTimeout(() => {
-          if (Reflect.get(this, "shuttingDown")) {
-            logger?.debug?.("Client shutting down, will not attempt reconnect.");
-            resolve(undefined);
-            return;
-          }
-          logger?.debug?.("Continuing with reconnect...");
-          emit.call(this, "reconnecting");
-          Promise.resolve(callback.call(this)).then(resolve, (error: unknown) => {
-            if (callback === Reflect.get(this, "start")) {
-              emit.call(this, OPENCLAW_SLACK_SOCKET_START_FAILED_EVENT, error);
-              resolve(undefined);
-              return;
-            }
-            reject(toErrorObject(error, "Non-Error rejection"));
-          });
-        }, delayMs);
-      });
-    },
-  );
 }
 
 function createSlackRelayReceiver(): SlackReceiver {
@@ -245,6 +195,14 @@ function isSlackSocketSelfInflictedLoggerWarning(args: readonly unknown[]) {
   return typeof args[0] === "string" && SLACK_SOCKET_LOG_LEVEL_IGNORED_WARNING_RE.test(args[0]);
 }
 
+function isSlackSocketDiagnosticsFormatWarning(args: readonly unknown[]) {
+  return (
+    typeof args[0] === "string" &&
+    (args[0].startsWith(SLACK_SOCKET_PING_DIAGNOSTICS_FORMAT_WARNING_PREFIX) ||
+      args[0].startsWith(SLACK_SOCKET_PONG_DIAGNOSTICS_FORMAT_WARNING_PREFIX))
+  );
+}
+
 function formatSlackSdkLogArgs(args: readonly unknown[]) {
   return args
     .map((arg) => formatUnknownError(arg, ""))
@@ -271,7 +229,8 @@ function createSlackSocketModeLogger(
     warn: (...args: unknown[]) => {
       if (
         isSlackSocketHeartbeatTimeoutWarning(args) ||
-        isSlackSocketSelfInflictedLoggerWarning(args)
+        isSlackSocketSelfInflictedLoggerWarning(args) ||
+        isSlackSocketDiagnosticsFormatWarning(args)
       ) {
         return;
       }
@@ -335,7 +294,11 @@ export function createSlackBoltApp(params: {
   const socketModeLogger = createSlackSocketModeLogger();
   const socketModeReceiverOptions: SlackSocketModeReceiverOptions = {
     appToken: params.appToken ?? "",
-    autoReconnectEnabled: true,
+    // OpenClaw's custom native-reconnect observer replaced the SDK's
+    // delayReconnectAttempt with bare setTimeout calls that were never assigned
+    // back to `client.reconnectionTimer`, so SDK `disconnect()` could not cancel
+    // them. Make the outer OpenClaw loop the sole canonical owner.
+    autoReconnectEnabled: false,
     clientPingTimeout: OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS,
     logger: socketModeLogger,
     ...(params.dispatcher ? { dispatcher: params.dispatcher } : {}),
@@ -352,7 +315,6 @@ export function createSlackBoltApp(params: {
     | undefined;
   if (params.slackMode === "socket") {
     receiver = new params.interop.SocketModeReceiver(socketModeReceiverOptions);
-    installSlackNativeReconnectFailureObserver(receiver);
   } else if (params.slackMode === "http") {
     receiver = new params.interop.HTTPReceiver({
       signingSecret: params.signingSecret ?? "",

@@ -294,31 +294,16 @@ describe("slack socket reconnect helpers", () => {
     ).rejects.toThrow("status sink failed");
 
     expect(client.listenerCount("disconnected")).toBe(0);
-    expect(client.listenerCount("unable_to_socket_mode_start")).toBe(0);
     expect(client.listenerCount("error")).toBe(0);
   });
 
-  it("preserves error payload from unable_to_socket_mode_start event", async () => {
-    const client = new FakeEmitter();
-    const app = { receiver: { client } };
-    const err = new Error("invalid_auth");
-
-    const waiter = waitForSlackSocketDisconnect(app as never);
-    client.emit("unable_to_socket_mode_start", err);
-
-    await expect(waiter).resolves.toEqual({
-      event: "unable_to_socket_mode_start",
-      error: err,
-    });
-  });
-
-  it("uses socket start event error when Bolt rejects without detail", async () => {
+  it("preserves error payload from socket error event when Bolt rejects without detail", async () => {
     const client = new FakeEmitter();
     const err = new Error("missing_scope");
     const app = {
       receiver: { client },
       start: vi.fn().mockImplementation(() => {
-        client.emit("unable_to_socket_mode_start", err);
+        client.emit("error", err);
         throw new Error();
       }),
     };
@@ -328,7 +313,6 @@ describe("slack socket reconnect helpers", () => {
     );
 
     expect(client.listenerCount("disconnected")).toBe(0);
-    expect(client.listenerCount("unable_to_socket_mode_start")).toBe(0);
     expect(client.listenerCount("error")).toBe(0);
   });
 
