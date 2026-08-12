@@ -6,6 +6,7 @@ import {
   isThinkingLevelSupportedMock,
   loadModelCatalogMock,
   loadRunCronIsolatedAgentTurn,
+  logWarnMock,
   makeCronSession,
   makeCronSessionEntry,
   resolveAgentConfigMock,
@@ -356,5 +357,70 @@ describe("runCronIsolatedAgentTurn runtime model thinking", () => {
       "off",
       "medium",
     ]);
+  });
+
+  it("forwards a configured high thinking level to runEmbeddedAgent without prepare-time clamping", async () => {
+    resolveAllowedModelRefMock.mockReturnValue({
+      ref: { provider: "openai", model: "gpt-5.6-sol" },
+    });
+    loadModelCatalogMock.mockResolvedValue([
+      { provider: "openai", id: "gpt-5.6-sol", reasoning: true },
+    ]);
+    runWithModelFallbackMock.mockImplementation(async ({ provider, model, run }) => ({
+      result: await run(provider, model),
+      provider,
+      model,
+      attempts: [],
+    }));
+
+    await runCronIsolatedAgentTurn({
+      cfg: {
+        agents: {
+          defaults: {
+            thinkingDefault: "high",
+            models: {
+              "openai/gpt-5.6-sol": {},
+            },
+          },
+        },
+      },
+      deps: {} as never,
+      job: {
+        id: "configured-high-thinking-job",
+        name: "Configured High Thinking Test",
+        schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+        sessionTarget: "isolated",
+        payload: {
+          kind: "agentTurn",
+          message: "summarize",
+          model: "openai/gpt-5.6-sol",
+        },
+      } as never,
+      message: "summarize",
+      sessionKey: "cron:configured-high-thinking",
+    });
+
+    const embeddedCall = firstMockArg(runEmbeddedAgentMock);
+    expect(embeddedCall.provider).toBe("openai");
+    expect(embeddedCall.model).toBe("gpt-5.6-sol");
+    expect(embeddedCall.thinkLevel).toBe("high");
+
+    // The obsolete prepare-time support/clamp was the only call site that
+    // invoked these mocks during preparation; with it removed, the
+    // per-candidate resolver is the sole caller.
+    expect(isThinkingLevelSupportedMock).toHaveBeenCalledTimes(1);
+    expect(resolveSupportedThinkingLevelMock).not.toHaveBeenCalled();
+
+    // The prepare-time clamp emitted "is not supported ... using ... for
+    // this candidate" when it downgraded a configured level. With the
+    // clamp removed, no such warning reaches logWarn.
+    const warningMessages = logWarnMock.mock.calls
+      .map((call) => call[0])
+      .filter((value): value is string => typeof value === "string");
+    expect(
+      warningMessages.some(
+        (message) => message.includes("is not supported") && message.includes("for this candidate"),
+      ),
+    ).toBe(false);
   });
 });
