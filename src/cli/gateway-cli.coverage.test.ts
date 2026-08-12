@@ -150,6 +150,57 @@ describe("gateway-cli coverage", () => {
     expect(runtimeLogs.join("\n")).toContain('"ok": true');
   });
 
+  it("can constrain an unclassified Gateway call to exactly operator.read", async () => {
+    await runGatewayCommand([
+      "gateway",
+      "call",
+      "slack.access.verify",
+      "--operator-read-only",
+      "--params",
+      "{}",
+      "--json",
+    ]);
+
+    expect(callGateway).toHaveBeenCalledTimes(1);
+    expect(firstMockArg(callGateway)).toMatchObject({
+      method: "slack.access.verify",
+      scopes: ["operator.read"],
+    });
+  });
+
+  it("does not claim a read-only scope constraint when the explicit flag is absent", async () => {
+    await runGatewayCommand(["gateway", "call", "slack.access.verify", "--json"]);
+
+    expect(callGateway).toHaveBeenCalledTimes(1);
+    expect(firstMockArg(callGateway).scopes).toBeUndefined();
+  });
+
+  it.each([
+    ["a value-bearing flag", "--operator-read-only=operator.write"],
+    ["a trailing scope argument", "--operator-read-only operator.write"],
+  ])("rejects %s instead of widening the read-only constraint", async (_label, fragment) => {
+    const injected = fragment.split(" ");
+    await expect(
+      runGatewayCommand(["gateway", "call", "slack.access.verify", ...injected, "--json"]),
+    ).rejects.toThrow();
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("keeps a repeated read-only flag constrained to operator.read", async () => {
+    await runGatewayCommand([
+      "gateway",
+      "call",
+      "slack.access.verify",
+      "--operator-read-only",
+      "--operator-read-only",
+      "--json",
+    ]);
+
+    expect(firstMockArg(callGateway)).toMatchObject({
+      scopes: ["operator.read"],
+    });
+  });
+
   it("rejects invalid gateway call timeout before calling Gateway", async () => {
     callGateway.mockClear();
 
