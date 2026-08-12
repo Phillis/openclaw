@@ -327,6 +327,7 @@ function buildCoreDistEntries(): Record<string, string> {
     ),
     "telegram/audit": bundledPluginFile("telegram", "src/audit.ts"),
     "telegram/token": bundledPluginFile("telegram", "src/token.ts"),
+    "codex/app-server/run-attempt": bundledPluginFile("codex", "src/app-server/run-attempt.ts"),
     "plugins/build-smoke-entry": "src/plugins/build-smoke-entry.ts",
     "plugins/runtime/index": "src/plugins/runtime/index.ts",
     "llm-slug-generator": "src/hooks/llm-slug-generator.ts",

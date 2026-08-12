@@ -93,6 +93,10 @@ function readAgentAuthDiscoverySource(): string {
   return readFileSync(new URL("../agents/agent-auth-discovery.ts", import.meta.url), "utf8");
 }
 
+function readCodexHarnessSource(): string {
+  return readFileSync(new URL("../../extensions/codex/harness.ts", import.meta.url), "utf8");
+}
+
 describe("tsdown config", () => {
   it.each([
     {
@@ -256,6 +260,18 @@ describe("tsdown config", () => {
     ].map((match) => match[1]);
 
     expect(new Set(importSpecifiers)).toEqual(new Set(["./lifecycle.runtime.js"]));
+  });
+
+  it("keeps Codex app-server run-attempt behind one stable dist entry", () => {
+    const distGraph = requireUnifiedDistGraph();
+    const importSpecifiers = [
+      ...readCodexHarnessSource().matchAll(/import\(["']([^"']*run-attempt\.js)["']\)/gu),
+    ].map((match) => match[1]);
+
+    expect(importSpecifiers).toContain("./src/app-server/run-attempt.js");
+    expect(entrySources(distGraph)["codex/app-server/run-attempt"]).toBe(
+      "extensions/codex/src/app-server/run-attempt.ts",
+    );
   });
 
   it("keeps bundled plugins out of separate dependency-staging graphs", () => {
