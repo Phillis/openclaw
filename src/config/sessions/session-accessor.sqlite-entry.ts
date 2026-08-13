@@ -1,5 +1,8 @@
 import type { MsgContext } from "../../auto-reply/templating.js";
-import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+} from "../../infra/kysely-sync.js";
 import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
@@ -25,6 +28,7 @@ import type {
 } from "./session-accessor.sqlite-contract.js";
 import {
   readSqliteSessionEntryCache,
+  type SqliteSessionEntryCacheProjection,
   type SqliteSessionEntryCacheSnapshot,
 } from "./session-accessor.sqlite-entry-cache.js";
 import {
@@ -185,13 +189,19 @@ export function loadExactSqliteSessionEntry(
     : undefined;
 }
 
-/** Lists persisted session keys from the data-version-validated entry snapshot. */
+/** Lists persisted session keys without parsing entry_json or warming the entry cache. */
 export function listSqliteSessionEntryKeysReadOnly(
   scope: Partial<Omit<SessionAccessScope, "sessionKey">> = {},
 ): string[] {
   const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
   const result = withOpenClawAgentDatabaseReadOnly((database) => {
-    return [...readSessionEntrySnapshot(database, resolved, scope.readConsistency).keys];
+    const db = getSessionKysely(database.db);
+    return [
+      ...executeSqliteQuerySync(
+        database.db,
+        db.selectFrom("session_nodes").select("session_key").orderBy("session_key"),
+      ).rows.map((row) => row.session_key),
+    ];
   }, toDatabaseOptions(resolved));
   return result.found ? result.value : [];
 }
@@ -223,7 +233,7 @@ export function listSqliteSessionChildEntriesReadOnly(
 ): SessionEntrySummary[] {
   const resolved = resolveSqliteScope(scope);
   const result = withOpenClawAgentDatabaseReadOnly((database) => {
-    const snapshot = readSessionEntrySnapshot(database, resolved, scope.readConsistency);
+    const snapshot = readSessionEntrySnapshot(database, resolved, scope.readConsistency, "full");
     const childKeys = getChildSessionKeysByParent(snapshot.entries).get(resolved.sessionKey) ?? [];
     return childKeys.flatMap((sessionKey) => {
       if (isInternalSessionEffectsKey(sessionKey)) {
@@ -332,7 +342,12 @@ function listSqliteSessionEntriesFromDatabase(
   scope: SessionEntryListScope,
 ): SessionEntrySummary[] {
   assertCanonicalSqliteSessionKeysCurrent(database);
-  const snapshot = readSessionEntrySnapshot(database, resolved, scope.readConsistency);
+  const snapshot = readSessionEntrySnapshot(
+    database,
+    resolved,
+    scope.readConsistency,
+    scope.projection ?? "full",
+  );
   const entries = scope.projection === "list" ? snapshot.listEntries : snapshot.entries;
   return snapshot.keys.flatMap((sessionKey) => {
     if (isInternalSessionEffectsKey(sessionKey)) {
@@ -361,6 +376,7 @@ function readSessionEntrySnapshot(
   database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
   resolved: ResolvedSqliteScope,
   readConsistency: SessionAccessScope["readConsistency"],
+  projection: SqliteSessionEntryCacheProjection,
 ): SqliteSessionEntryCacheSnapshot {
   const cache = !isIncognitoOpenClawAgentSqlitePath(database.path, {
     agentId: database.agentId,
@@ -369,6 +385,7 @@ function readSessionEntrySnapshot(
   return readSqliteSessionEntryCache(database, {
     cache,
     latest: readConsistency === "latest",
+    projection,
   });
 }
 

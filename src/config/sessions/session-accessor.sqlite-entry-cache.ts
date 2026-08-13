@@ -10,6 +10,8 @@ import type { SessionEntry } from "./types.js";
 
 type SessionEntryCacheDatabase = Pick<OpenClawAgentDatabase, "agentId" | "db">;
 
+export type SqliteSessionEntryCacheProjection = "full" | "list";
+
 export type SqliteSessionEntryCacheSnapshot = {
   entries: Map<string, SessionEntry>;
   keys: string[];
@@ -18,12 +20,14 @@ export type SqliteSessionEntryCacheSnapshot = {
 
 type SqliteSessionEntryCache = SqliteSessionEntryCacheSnapshot & {
   listProjections: Map<string, SessionEntry>;
+  projection: SqliteSessionEntryCacheProjection;
   updatedAtByKey: Map<string, number>;
   validityToken: SqliteSessionEntryCacheValidityToken;
 };
 
 type LoadedSessionEntrySnapshot = SqliteSessionEntryCacheSnapshot & {
   listProjections: Map<string, SessionEntry>;
+  projection: SqliteSessionEntryCacheProjection;
   updatedAtByKey: Map<string, number>;
 };
 
@@ -72,6 +76,16 @@ function cacheValidityTokensEqual(
   return left.dataVersion === right.dataVersion && left.totalChanges === right.totalChanges;
 }
 
+// A full cache still has every entry_json field, so list readers can reuse it through
+// the lazy projection. A list cache has already discarded systemPromptReport and
+// skillsSnapshot via json_remove, so only list readers can reuse it.
+function cacheAnswersProjection(
+  cached: SqliteSessionEntryCache,
+  projection: SqliteSessionEntryCacheProjection,
+): boolean {
+  return cached.projection === "full" || projection === "list";
+}
+
 function createListProjection(entry: SessionEntry): SessionEntry {
   // clone:false list consumers treat entries and their nested values as immutable.
   // Share those nested values instead of deep-cloning large snapshots only to discard them.
@@ -104,14 +118,33 @@ function createLazyListProjections(
   };
 }
 
-function loadSessionEntrySnapshot(database: SessionEntryCacheDatabase): LoadedSessionEntrySnapshot {
+function loadSessionEntrySnapshot(
+  database: SessionEntryCacheDatabase,
+  projection: SqliteSessionEntryCacheProjection,
+): LoadedSessionEntrySnapshot {
   const db = getSessionKysely(database.db);
+  const baseQuery = db.selectFrom("session_nodes").select("session_key");
+  const entryJsonQuery =
+    projection === "list"
+      ? baseQuery.select((eb) =>
+          eb
+            .case()
+            .when(eb.fn<number>("json_valid", [eb.ref("entry_json")]), "=", 1)
+            .then(
+              eb.fn<string>("json_remove", [
+                eb.ref("entry_json"),
+                eb.val("$.systemPromptReport"),
+                eb.val("$.skillsSnapshot"),
+              ]),
+            )
+            .else(eb.ref("entry_json"))
+            .end()
+            .as("entry_json"),
+        )
+      : baseQuery.select("entry_json");
   const rows = executeSqliteQuerySync(
     database.db,
-    db
-      .selectFrom("session_nodes")
-      .select(["session_key", "entry_json", "updated_at"])
-      .orderBy("session_key"),
+    entryJsonQuery.select("updated_at").orderBy("session_key"),
   ).rows;
   const entries = new Map<string, SessionEntry>();
   for (const row of rows) {
@@ -127,6 +160,7 @@ function loadSessionEntrySnapshot(database: SessionEntryCacheDatabase): LoadedSe
     keys: rows.map((row) => row.session_key),
     listEntries: createLazyListProjections(entries, listProjections),
     listProjections,
+    projection,
     updatedAtByKey: new Map(rows.map((row) => [row.session_key, row.updated_at])),
   };
 }
@@ -155,7 +189,7 @@ function incrementallyRevalidateSessionEntrySnapshot(
   // Keep the parameterized IN probe below SQLite variable limits. A bulk change is
   // already cheaper to reload than to preserve individual parsed identities.
   if (changedKeys.length > MAX_INCREMENTAL_ENTRY_READ_KEYS) {
-    const loaded = loadSessionEntrySnapshot(database);
+    const loaded = loadSessionEntrySnapshot(database, cached.projection);
     return { ...loaded, validityToken };
   }
 
@@ -166,12 +200,28 @@ function incrementallyRevalidateSessionEntrySnapshot(
     listProjections.delete(sessionKey);
   }
   if (changedKeys.length > 0) {
+    const changedBaseQuery = db.selectFrom("session_nodes").select("session_key");
+    const changedEntryJsonQuery =
+      cached.projection === "list"
+        ? changedBaseQuery.select((eb) =>
+            eb
+              .case()
+              .when(eb.fn<number>("json_valid", [eb.ref("entry_json")]), "=", 1)
+              .then(
+                eb.fn<string>("json_remove", [
+                  eb.ref("entry_json"),
+                  eb.val("$.systemPromptReport"),
+                  eb.val("$.skillsSnapshot"),
+                ]),
+              )
+              .else(eb.ref("entry_json"))
+              .end()
+              .as("entry_json"),
+          )
+        : changedBaseQuery.select("entry_json");
     const changedRows = executeSqliteQuerySync(
       database.db,
-      db
-        .selectFrom("session_nodes")
-        .select(["session_key", "entry_json"])
-        .where("session_key", "in", changedKeys),
+      changedEntryJsonQuery.where("session_key", "in", changedKeys),
     ).rows;
     for (const row of changedRows) {
       const entry = parseSqliteSessionEntryJson(row);
@@ -185,6 +235,7 @@ function incrementallyRevalidateSessionEntrySnapshot(
     keys: versions.map((row) => row.session_key).toSorted(),
     listEntries: createLazyListProjections(entries, listProjections),
     listProjections,
+    projection: cached.projection,
     updatedAtByKey,
     validityToken,
   };
@@ -192,39 +243,42 @@ function incrementallyRevalidateSessionEntrySnapshot(
 
 export function readSqliteSessionEntryCache(
   database: SessionEntryCacheDatabase,
-  options: { cache: boolean; latest?: boolean },
+  options: { cache: boolean; latest?: boolean; projection?: SqliteSessionEntryCacheProjection },
 ): SqliteSessionEntryCacheSnapshot {
+  const projection = options.projection ?? "full";
   if (!options.cache || options.latest || database.db.isTransaction) {
-    return loadSessionEntrySnapshot(database);
+    return loadSessionEntrySnapshot(database, projection);
   }
   const validityToken = readCacheValidityToken(database.db);
   const cached = sessionEntryCaches.get(database.db);
-  if (cached && cacheValidityTokensEqual(cached.validityToken, validityToken)) {
-    return cached;
-  }
-  if (cached && cached.validityToken.dataVersion === validityToken.dataVersion) {
-    // updated_at is entry-controlled, not a rowversion. Other connections can rewrite entry_json
-    // without advancing it, so data_version changes must fully reload or same-ms rewrites go stale.
-    // Tracked single-row upserts patch their row but retain this old token; unrelated local writes
-    // and any other same-connection changes are still discovered by this incremental diff.
-    const revalidated = incrementallyRevalidateSessionEntrySnapshot(
-      database,
-      cached,
-      validityToken,
-    );
-    if (readDataVersion(database.db) !== validityToken.dataVersion) {
-      // An external commit raced the two incremental reads. Reload from one row snapshot;
-      // publishing their mixed result could temporarily omit or retain the wrong keys.
-      const reloadToken = readCacheValidityToken(database.db);
-      const loaded = loadSessionEntrySnapshot(database);
-      const next = { ...loaded, validityToken: reloadToken };
-      sessionEntryCaches.set(database.db, next);
-      return next;
+  if (cached && cacheAnswersProjection(cached, projection)) {
+    if (cacheValidityTokensEqual(cached.validityToken, validityToken)) {
+      return cached;
     }
-    sessionEntryCaches.set(database.db, revalidated);
-    return revalidated;
+    if (cached.validityToken.dataVersion === validityToken.dataVersion) {
+      // updated_at is entry-controlled, not a rowversion. Other connections can rewrite entry_json
+      // without advancing it, so data_version changes must fully reload or same-ms rewrites go stale.
+      // Tracked single-row upserts patch their row but retain this old token; unrelated local writes
+      // and any other same-connection changes are still discovered by this incremental diff.
+      const revalidated = incrementallyRevalidateSessionEntrySnapshot(
+        database,
+        cached,
+        validityToken,
+      );
+      if (readDataVersion(database.db) !== validityToken.dataVersion) {
+        // An external commit raced the two incremental reads. Reload from one row snapshot;
+        // publishing their mixed result could temporarily omit or retain the wrong keys.
+        const reloadToken = readCacheValidityToken(database.db);
+        const loaded = loadSessionEntrySnapshot(database, cached.projection);
+        const next = { ...loaded, validityToken: reloadToken };
+        sessionEntryCaches.set(database.db, next);
+        return next;
+      }
+      sessionEntryCaches.set(database.db, revalidated);
+      return revalidated;
+    }
   }
-  const loaded = loadSessionEntrySnapshot(database);
+  const loaded = loadSessionEntrySnapshot(database, projection);
   const next = { ...loaded, validityToken };
   sessionEntryCaches.set(database.db, next);
   return next;
@@ -280,8 +334,19 @@ function publishSqliteSessionEntryCacheUpsert(
     if (!cached) {
       return;
     }
+    // List-mode tracked writes only carry the projected shape that the SQL-side
+    // json_remove would have produced; storing the full entry would mislead a
+    // later full read into skipping its reload.
+    if (cached.projection === "list") {
+      // This freshly parsed row is cache-owned and has not escaped. Strip the heavy
+      // fields in place so accessors and other descriptor-backed metadata keep their
+      // identity until the lazy list projection is requested.
+      delete entry.skillsSnapshot;
+      delete entry.systemPromptReport;
+    }
+    const storedEntry = entry;
     const entries = new Map(cached.entries);
-    entries.set(row.session_key, entry);
+    entries.set(row.session_key, storedEntry);
     const listProjections = new Map(cached.listProjections);
     listProjections.delete(row.session_key);
     const updatedAtByKey = new Map(cached.updatedAtByKey);
@@ -295,6 +360,7 @@ function publishSqliteSessionEntryCacheUpsert(
       keys: knownKey ? cached.keys : [...cached.keys, row.session_key].toSorted(),
       listEntries: createLazyListProjections(entries, listProjections),
       listProjections,
+      projection: cached.projection,
       updatedAtByKey,
       validityToken: cached.validityToken,
     });
