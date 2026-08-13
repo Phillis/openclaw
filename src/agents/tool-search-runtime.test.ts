@@ -616,6 +616,212 @@ describe("Tool Search XML-style array arguments", () => {
   });
 });
 
+describe("Tool Search XML-style numeric coercion", () => {
+  const progressTool = () =>
+    fakeTool(
+      "ewt_v2_result_submit",
+      Type.Object(
+        {
+          progress_percent: Type.Number({ minimum: 0, maximum: 100 }),
+          attempt_index: Type.Integer({ minimum: 0 }),
+          note: Type.String(),
+        },
+        { additionalProperties: false },
+      ),
+    );
+
+  it.each([
+    { label: "an integer literal", input: "10", expected: 10 },
+    { label: "a decimal literal", input: "10.5", expected: 10.5 },
+    { label: "an exponent literal", input: "1.5e1", expected: 15 },
+  ])("coerces $label at a number schema location", async ({ input, expected }) => {
+    const target = progressTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("ewt_v2_result_submit", {
+        progress_percent: input,
+        attempt_index: 0,
+        note: "ok",
+      }),
+    ).resolves.toMatchObject({
+      result: { details: { input: { progress_percent: expected } } },
+    });
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      progress_percent: expected,
+      attempt_index: 0,
+      note: "ok",
+    });
+  });
+
+  it.each([
+    { label: "an integer literal", input: "3", expected: 3 },
+    { label: "a zero", input: "0", expected: 0 },
+  ])("coerces $label at an integer schema location", async ({ input, expected }) => {
+    const target = progressTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("ewt_v2_result_submit", {
+        progress_percent: 0,
+        attempt_index: input,
+        note: "ok",
+      }),
+    ).resolves.toMatchObject({
+      result: { details: { input: { attempt_index: expected } } },
+    });
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      progress_percent: 0,
+      attempt_index: expected,
+      note: "ok",
+    });
+  });
+
+  it("preserves a native number unchanged at a number schema location", async () => {
+    const target = progressTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("ewt_v2_result_submit", {
+        progress_percent: 42,
+        attempt_index: 1,
+        note: "ok",
+      }),
+    ).resolves.toBeDefined();
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      progress_percent: 42,
+      attempt_index: 1,
+      note: "ok",
+    });
+  });
+
+  it("leaves a quoted number as text at a string schema location", async () => {
+    const target = fakeTool(
+      "titled_note",
+      Type.Object(
+        {
+          heading: Type.String(),
+          body: Type.String(),
+        },
+        { additionalProperties: false },
+      ),
+    );
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("titled_note", { heading: "10", body: "greeting" }),
+    ).resolves.toBeDefined();
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      heading: "10",
+      body: "greeting",
+    });
+  });
+
+  it.each([
+    { label: "leading whitespace", input: " 10" },
+    { label: "trailing whitespace", input: "10 " },
+    { label: "an empty string", input: "" },
+    { label: "hexadecimal", input: "0x10" },
+    { label: "leading zero on integer literal", input: "010" },
+    { label: "an exponent overflow", input: "1e1000" },
+    { label: "a nonnumeric string", input: "ten" },
+    { label: "an unsafe integer", input: "9007199254740993" },
+  ])("still rejects $label at a numeric schema location", async ({ input }) => {
+    const target = progressTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("ewt_v2_result_submit", {
+        progress_percent: input,
+        attempt_index: 0,
+        note: "ok",
+      }),
+    ).rejects.toThrow("progress_percent");
+    expect(target.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects canonicalized numbers that violate minimum", async () => {
+    const target = progressTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("ewt_v2_result_submit", {
+        progress_percent: "-1",
+        attempt_index: 0,
+        note: "ok",
+      }),
+    ).rejects.toThrow("progress_percent");
+    expect(target.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects canonicalized numbers that violate maximum", async () => {
+    const target = progressTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("ewt_v2_result_submit", {
+        progress_percent: "150",
+        attempt_index: 0,
+        note: "ok",
+      }),
+    ).rejects.toThrow("progress_percent");
+    expect(target.execute).not.toHaveBeenCalled();
+  });
+
+  it("gives the before_tool_call hook and target the normalized numeric input", async () => {
+    const hookParams: unknown[] = [];
+    const hook = vi.fn(async (input: unknown) => {
+      hookParams.push((input as { params?: unknown }).params);
+      return undefined;
+    });
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: hook }]),
+    );
+    const target = progressTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("ewt_v2_result_submit", {
+        progress_percent: "37.5",
+        attempt_index: "2",
+        note: "ok",
+      }),
+    ).resolves.toBeDefined();
+
+    expect(hookParams).toEqual([{ progress_percent: 37.5, attempt_index: 2, note: "ok" }]);
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      progress_percent: 37.5,
+      attempt_index: 2,
+      note: "ok",
+    });
+  });
+
+  it("coerces string-quoted numbers inside an unwrapped array path", async () => {
+    const target = fakeTool(
+      "evidence_batch",
+      Type.Object(
+        {
+          scores: Type.Array(Type.Number({ minimum: 0 })),
+          tags: Type.Array(Type.Integer({ minimum: 0 })),
+        },
+        { additionalProperties: false },
+      ),
+    );
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("evidence_batch", {
+        scores: { item: ["1", "2.5", "3"] },
+        tags: { item: ["1", "2", "3"] },
+      }),
+    ).resolves.toBeDefined();
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      scores: [1, 2.5, 3],
+      tags: [1, 2, 3],
+    });
+  });
+});
+
 describe("Tool Search catalog indexing", () => {
   it("keeps other ranked results when an exact match allows multiple hits", async () => {
     const { runtime } = createRuntime([fakeTool("orchard"), fakeTool("orchard_records")]);

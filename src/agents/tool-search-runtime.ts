@@ -28,6 +28,7 @@ import {
   resolveCatalog,
   visibleCatalogEntries,
 } from "./tool-search-catalog.js";
+import { normalizeToolSearchTargetInput } from "./tool-search-input-arguments.js";
 import {
   buildLexicalIndex,
   scoreLexical,
@@ -47,7 +48,6 @@ import type {
   UnknownToolErrorOptions,
   UnknownToolRecoverySurface,
 } from "./tool-search-types.js";
-import { normalizeXmlItemArrayArguments } from "./tool-search-xml-item-arguments.js";
 import { asToolParamsRecord, jsonResult, ToolInputError } from "./tools/common.js";
 
 function describeEntry(entry: ToolSearchCatalogEntry) {
@@ -624,12 +624,13 @@ export class ToolSearchRuntime {
     catalog.callCount += 1;
     const targetInput = input ?? {};
     // The generic tool_call wrapper has no target schema, so provider-side XML-style
-    // `{item: ...}` array wrappers survive into the target arguments. Repair them once
-    // here so hooks, schema validation, and execution all see the same value; untrusted
-    // schemas stay untraversed and every other value reaches fail-closed validation as sent.
+    // `{item: ...}` array wrappers and string-quoted scalars survive into the target
+    // arguments. Repair only at schema locations that declare them, once, so hooks,
+    // validation, and execution see the same value. Untrusted schemas stay untraversed
+    // and every noncanonical value reaches fail-closed validation as sent.
     const normalizedInput =
       entry.source === "openclaw"
-        ? normalizeXmlItemArrayArguments(targetInput, entry.parameters)
+        ? normalizeToolSearchTargetInput(targetInput, entry.parameters)
         : targetInput;
     await assertCatalogOutputSchemaIsValid(entry);
     const parentId = sanitizeToolCallIdPart(options?.parentToolCallId ?? "direct");
