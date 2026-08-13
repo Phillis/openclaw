@@ -14,7 +14,7 @@ import {
   resolveSessionResetPolicy,
   type SessionFreshness,
 } from "../../config/sessions/reset-policy.js";
-import { listSessionEntries, loadSessionEntry } from "../../config/sessions/session-accessor.js";
+import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
@@ -147,16 +147,24 @@ export function resolveCronSession(params: {
   const storePath = resolveStorePath(sessionCfg?.store, {
     agentId: params.agentId,
   });
-  const store =
-    params.store ??
-    Object.fromEntries(
-      listSessionEntries({ agentId: params.agentId, storePath }).map(({ sessionKey, entry }) => [
-        sessionKey,
-        entry,
-      ]),
-    );
   const sourceSessionKey = params.sourceSessionKey?.trim();
   const sourceSessionDiffers = Boolean(sourceSessionKey && sourceSessionKey !== params.sessionKey);
+  const store: Record<string, SessionEntry> = params.store ?? {};
+  if (!params.store) {
+    // Isolated runs need only the exact target row plus the exact source row
+    // when it differs. Listing the full agent store here retains unrelated
+    // heavy session metadata for the lifetime of the run.
+    const loadInto = (key: string) => {
+      const entry = loadSessionEntry({ agentId: params.agentId, sessionKey: key, storePath });
+      if (entry) {
+        store[key] = entry;
+      }
+    };
+    loadInto(params.sessionKey);
+    if (sourceSessionDiffers && sourceSessionKey) {
+      loadInto(sourceSessionKey);
+    }
+  }
   const targetEntry = store[params.sessionKey];
   const entry = store[sourceSessionKey || params.sessionKey];
   // Guard the run's target row: archived sessions stay read-only even when a
