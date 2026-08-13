@@ -413,11 +413,11 @@ describe("memory-core dreaming phases", () => {
         valid: { ...entry, key: "valid", lastRecalledAt: "2026-04-14T12:00:00.000Z" },
       },
     });
-    expect(
-      Object.keys(
-        (await shortTermTesting.readRecallStore(workspaceDir, now.toISOString())).entries,
-      ),
-    ).toEqual(["invalid", "valid"]);
+    const seededKeys = Object.keys(
+      (await shortTermTesting.readRecallStore(workspaceDir, now.toISOString())).entries,
+    );
+    expect(seededKeys).toHaveLength(2);
+    expect(seededKeys).toEqual(expect.arrayContaining(["invalid", "valid"]));
     const { beforeAgentReply, logger } = createHarness(
       {
         plugins: {

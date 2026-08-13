@@ -1,6 +1,7 @@
 // Memory Core dreaming state lives in SQLite-backed plugin state.
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type {
   OpenKeyedStoreOptions,
   PluginStateKeyedStore,
@@ -18,7 +19,7 @@ export const SHORT_TERM_PHASE_SIGNAL_NAMESPACE = "short-term-phase-signals";
 export const SHORT_TERM_META_NAMESPACE = "short-term-meta";
 export const SHORT_TERM_LOCK_NAMESPACE = "short-term-locks";
 
-const DREAMING_WORKSPACE_STATE_MAX_ENTRIES = 50_000;
+export const DREAMING_WORKSPACE_STATE_MAX_ENTRIES = 50_000;
 export const SHORT_TERM_LOCK_MAX_ENTRIES = 4_096;
 export const SESSION_SEEN_HASHES_PER_CHUNK = 512;
 
@@ -115,32 +116,133 @@ export async function readMemoryCoreWorkspaceEntry<T>(
 }
 
 // Caller owns typed encoding for values written to plugin state.
+// Skip register() when the canonical workspace value is unchanged so Dreaming
+// does not rewrite every row (and stall the gateway) on a no-op second pass.
+//
+// Capacity retention policy (explicit): skipping register() also skips the
+// keyed store's created_at refresh. Under DREAMING_WORKSPACE_STATE_MAX_ENTRIES
+// pressure the store evicts oldest created_at first, so stable/unchanged rows
+// age toward eviction instead of being retained via rewrite-based recency.
+// Write-amplification reduction takes precedence over refresh-based retention.
+//
+// When a register can trigger capacity eviction, a previously skipped equal
+// desired row may disappear mid-pass. After any write, reread authoritative
+// state and restore missing/changed desired rows. True no-op passes stay at
+// zero register() calls.
+//
+// Capacity contract (explicit): the unique desired set must fit inside the
+// namespace cap. Batches that exceed DREAMING_WORKSPACE_STATE_MAX_ENTRIES
+// cannot be reconciled because eviction will always drop a desired row no
+// matter how the bounded rounds reorder re-registrations. Reject such
+// batches up front with a clear RangeError so callers see the failure
+// instead of a silently truncated namespace.
 export function writeMemoryCoreWorkspaceEntries<T>(
   params: WriteMemoryCoreWorkspaceEntriesParams<T>,
 ): Promise<void>;
 export async function writeMemoryCoreWorkspaceEntries(
   params: WriteMemoryCoreWorkspaceEntriesParams<unknown>,
 ): Promise<void> {
-  const store = openWorkspaceStore<unknown>(params.namespace);
   const workspaceKey = memoryCoreWorkspaceStateKey(params.workspaceDir);
+  const workspaceDir = path.resolve(params.workspaceDir);
   const prefix = `${workspaceKey}:`;
-  const replacementKeys = new Set<string>();
+  // Collapse duplicate logical keys before touching the store. The final value
+  // still wins, without manufacturing transient SQLite writes for earlier values.
+  const desiredByStateKey = new Map<string, WorkspaceValue<unknown>>();
   for (const entry of params.entries) {
     const stateKey = memoryCoreWorkspaceEntryKey(params.workspaceDir, entry.key);
-    replacementKeys.add(stateKey);
-    await store.register(stateKey, {
+    desiredByStateKey.set(stateKey, {
       version: 1,
       workspaceKey,
-      workspaceDir: path.resolve(params.workspaceDir),
+      workspaceDir,
       key: entry.key,
       value: entry.value,
     });
   }
-  for (const entry of await store.entries()) {
-    if (entry.key.startsWith(prefix) && !replacementKeys.has(entry.key)) {
-      await store.delete(entry.key);
+  if (desiredByStateKey.size > DREAMING_WORKSPACE_STATE_MAX_ENTRIES) {
+    throw new RangeError(
+      `memory-core workspace entries: ${desiredByStateKey.size} unique rows exceeds namespace capacity ${DREAMING_WORKSPACE_STATE_MAX_ENTRIES}; reduce workspace state cardinality`,
+    );
+  }
+  const store = openWorkspaceStore<unknown>(params.namespace);
+  const existingByKey = new Map(
+    (await store.entries())
+      .filter((entry) => entry.key.startsWith(prefix))
+      .map((entry) => [entry.key, entry.value] as const),
+  );
+  let wrote = false;
+  for (const [stateKey, nextValue] of desiredByStateKey) {
+    const current = existingByKey.get(stateKey);
+    if (current !== undefined && isDeepStrictEqual(current, nextValue)) {
+      continue;
+    }
+    await store.register(stateKey, nextValue);
+    wrote = true;
+  }
+  for (const stateKey of existingByKey.keys()) {
+    if (!desiredByStateKey.has(stateKey)) {
+      await store.delete(stateKey);
     }
   }
+  // Only reconcile after real writes. A pure equal pass must not touch the store.
+  if (wrote) {
+    await reconcileDesiredWorkspaceEntries({
+      store,
+      prefix,
+      desiredByStateKey,
+    });
+  }
+}
+
+async function reconcileDesiredWorkspaceEntries(params: {
+  store: PluginStateKeyedStore<WorkspaceValue<unknown>>;
+  prefix: string;
+  desiredByStateKey: Map<string, WorkspaceValue<unknown>>;
+}): Promise<void> {
+  const desiredSize = params.desiredByStateKey.size;
+  if (desiredSize === 0) {
+    return;
+  }
+  // Each capacity register can re-evict another desired row. Bound rounds by
+  // unique desired size so we cannot thrash forever when desired > maxEntries.
+  const maxRounds = desiredSize;
+  for (let round = 0; round < maxRounds; round += 1) {
+    const liveByKey = new Map(
+      (await params.store.entries())
+        .filter((entry) => entry.key.startsWith(params.prefix))
+        .map((entry) => [entry.key, entry.value] as const),
+    );
+    let missingCount = 0;
+    for (const [stateKey, nextValue] of params.desiredByStateKey) {
+      const current = liveByKey.get(stateKey);
+      if (current !== undefined && isDeepStrictEqual(current, nextValue)) {
+        continue;
+      }
+      await params.store.register(stateKey, nextValue);
+      missingCount += 1;
+    }
+    if (missingCount === 0) {
+      return;
+    }
+  }
+  // Bound exhausted with desired rows still missing; verify and report.
+  const finalLiveByKey = new Map(
+    (await params.store.entries())
+      .filter((entry) => entry.key.startsWith(params.prefix))
+      .map((entry) => [entry.key, entry.value] as const),
+  );
+  const stillMissing: string[] = [];
+  for (const [stateKey, nextValue] of params.desiredByStateKey) {
+    const current = finalLiveByKey.get(stateKey);
+    if (current === undefined || !isDeepStrictEqual(current, nextValue)) {
+      stillMissing.push(stateKey);
+    }
+  }
+  if (stillMissing.length === 0) {
+    return;
+  }
+  throw new Error(
+    `memory-core workspace reconcile failed to converge after ${maxRounds} rounds; ${stillMissing.length} of ${desiredSize} desired rows still missing (namespace capacity may be exceeded by desired set)`,
+  );
 }
 
 // Caller owns typed encoding for values written to plugin state.
