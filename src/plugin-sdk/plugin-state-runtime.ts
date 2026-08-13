@@ -28,6 +28,7 @@ export {
 export type {
   OpenKeyedStoreOptions,
   PluginStateEntry,
+  PluginStateKeyRangeQuery,
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
 } from "../plugin-state/plugin-state-store.js";

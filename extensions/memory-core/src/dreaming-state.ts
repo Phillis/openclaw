@@ -1,9 +1,11 @@
 // Memory Core dreaming state lives in SQLite-backed plugin state.
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { scheduler } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
   OpenKeyedStoreOptions,
+  PluginStateEntry,
   PluginStateKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 
@@ -83,6 +85,57 @@ export function memoryCoreStateReference(namespace: string, workspaceDir: string
   return `plugin-state:${MEMORY_CORE_PLUGIN_ID}/${namespace}/${memoryCoreWorkspaceStateKey(workspaceDir)}`;
 }
 
+// Bounded key range covering a single workspace's rows. `';'` is the next
+// ASCII code point after ':' so the range claims every key that starts with
+// `${workspaceKey}:` and excludes any other workspace whose hash sorts
+// between adjacent values.
+function resolveWorkspaceKeyRange(workspaceDir: string): {
+  keyStartInclusive: string;
+  keyEndExclusive: string;
+} {
+  const workspaceKey = memoryCoreWorkspaceStateKey(workspaceDir);
+  return {
+    keyStartInclusive: `${workspaceKey}:`,
+    // Exclusive upper bound: ';' is the immediate ASCII successor of ':', so
+    // every key starting with `${workspaceKey}:` sorts strictly less than
+    // this bound and any other workspace key sorts either below or above it.
+    keyEndExclusive: `${workspaceKey};`,
+  };
+}
+
+async function readWorkspaceEntriesInRange<T>(
+  store: PluginStateKeyedStore<WorkspaceValue<T>>,
+  workspaceDir: string,
+): Promise<PluginStateEntry<WorkspaceValue<T>>[]> {
+  const { keyStartInclusive, keyEndExclusive } = resolveWorkspaceKeyRange(workspaceDir);
+  if (store.entriesInKeyRange) {
+    return store.entriesInKeyRange({
+      keyStartInclusive,
+      keyEndExclusive,
+      limit: DREAMING_WORKSPACE_STATE_MAX_ENTRIES,
+    });
+  }
+  // Test-only fallback for store mocks that do not implement the range
+  // method. Production memory-core always takes the range path.
+  return (await store.entries()).filter(
+    (entry) => entry.key >= keyStartInclusive && entry.key < keyEndExclusive,
+  );
+}
+
+async function deleteWorkspaceEntries(
+  store: PluginStateKeyedStore<WorkspaceValue<unknown>>,
+  stateKeys: Iterable<string>,
+): Promise<void> {
+  let deleted = 0;
+  for (const stateKey of stateKeys) {
+    await store.delete(stateKey);
+    deleted += 1;
+    if (deleted % 256 === 0) {
+      await scheduler.yield();
+    }
+  }
+}
+
 function openWorkspaceStore<T>(namespace: string): PluginStateKeyedStore<WorkspaceValue<T>> {
   return openMemoryCoreStateStore<WorkspaceValue<T>>({
     namespace,
@@ -98,10 +151,12 @@ export async function readMemoryCoreWorkspaceEntries(
   params: MemoryCoreWorkspaceParams,
 ): Promise<Array<MemoryCoreWorkspaceEntry<unknown>>> {
   const workspaceKey = memoryCoreWorkspaceStateKey(params.workspaceDir);
-  const prefix = `${workspaceKey}:`;
-  const entries = await openWorkspaceStore<unknown>(params.namespace).entries();
+  const entries = await readWorkspaceEntriesInRange<unknown>(
+    openWorkspaceStore<unknown>(params.namespace),
+    params.workspaceDir,
+  );
   return entries
-    .filter((entry) => entry.key.startsWith(prefix) && entry.value.workspaceKey === workspaceKey)
+    .filter((entry) => entry.value.workspaceKey === workspaceKey)
     .map((entry) => ({ key: entry.value.key, value: entry.value.value }));
 }
 
@@ -144,7 +199,6 @@ export async function writeMemoryCoreWorkspaceEntries(
 ): Promise<void> {
   const workspaceKey = memoryCoreWorkspaceStateKey(params.workspaceDir);
   const workspaceDir = path.resolve(params.workspaceDir);
-  const prefix = `${workspaceKey}:`;
   // Collapse duplicate logical keys before touching the store. The final value
   // still wins, without manufacturing transient SQLite writes for earlier values.
   const desiredByStateKey = new Map<string, WorkspaceValue<unknown>>();
@@ -165,9 +219,9 @@ export async function writeMemoryCoreWorkspaceEntries(
   }
   const store = openWorkspaceStore<unknown>(params.namespace);
   const existingByKey = new Map(
-    (await store.entries())
-      .filter((entry) => entry.key.startsWith(prefix))
-      .map((entry) => [entry.key, entry.value] as const),
+    (await readWorkspaceEntriesInRange(store, params.workspaceDir)).map(
+      (entry) => [entry.key, entry.value] as const,
+    ),
   );
   let wrote = false;
   for (const [stateKey, nextValue] of desiredByStateKey) {
@@ -178,16 +232,15 @@ export async function writeMemoryCoreWorkspaceEntries(
     await store.register(stateKey, nextValue);
     wrote = true;
   }
-  for (const stateKey of existingByKey.keys()) {
-    if (!desiredByStateKey.has(stateKey)) {
-      await store.delete(stateKey);
-    }
-  }
+  await deleteWorkspaceEntries(
+    store,
+    existingByKey.keys().filter((stateKey) => !desiredByStateKey.has(stateKey)),
+  );
   // Only reconcile after real writes. A pure equal pass must not touch the store.
   if (wrote) {
     await reconcileDesiredWorkspaceEntries({
       store,
-      prefix,
+      workspaceDir: params.workspaceDir,
       desiredByStateKey,
     });
   }
@@ -195,7 +248,7 @@ export async function writeMemoryCoreWorkspaceEntries(
 
 async function reconcileDesiredWorkspaceEntries(params: {
   store: PluginStateKeyedStore<WorkspaceValue<unknown>>;
-  prefix: string;
+  workspaceDir: string;
   desiredByStateKey: Map<string, WorkspaceValue<unknown>>;
 }): Promise<void> {
   const desiredSize = params.desiredByStateKey.size;
@@ -207,9 +260,9 @@ async function reconcileDesiredWorkspaceEntries(params: {
   const maxRounds = desiredSize;
   for (let round = 0; round < maxRounds; round += 1) {
     const liveByKey = new Map(
-      (await params.store.entries())
-        .filter((entry) => entry.key.startsWith(params.prefix))
-        .map((entry) => [entry.key, entry.value] as const),
+      (await readWorkspaceEntriesInRange(params.store, params.workspaceDir)).map(
+        (entry) => [entry.key, entry.value] as const,
+      ),
     );
     let missingCount = 0;
     for (const [stateKey, nextValue] of params.desiredByStateKey) {
@@ -226,9 +279,9 @@ async function reconcileDesiredWorkspaceEntries(params: {
   }
   // Bound exhausted with desired rows still missing; verify and report.
   const finalLiveByKey = new Map(
-    (await params.store.entries())
-      .filter((entry) => entry.key.startsWith(params.prefix))
-      .map((entry) => [entry.key, entry.value] as const),
+    (await readWorkspaceEntriesInRange(params.store, params.workspaceDir)).map(
+      (entry) => [entry.key, entry.value] as const,
+    ),
   );
   const stillMissing: string[] = [];
   for (const [stateKey, nextValue] of params.desiredByStateKey) {
@@ -270,13 +323,11 @@ export async function clearMemoryCoreWorkspaceNamespace(params: {
   workspaceDir: string;
 }): Promise<void> {
   const store = openWorkspaceStore(params.namespace);
-  const workspaceKey = memoryCoreWorkspaceStateKey(params.workspaceDir);
-  const prefix = `${workspaceKey}:`;
-  for (const entry of await store.entries()) {
-    if (entry.key.startsWith(prefix)) {
-      await store.delete(entry.key);
-    }
-  }
+  const entries = await readWorkspaceEntriesInRange(store, params.workspaceDir);
+  await deleteWorkspaceEntries(
+    store,
+    entries.map((entry) => entry.key),
+  );
 }
 
 export async function deleteMemoryCoreWorkspaceEntry(params: {

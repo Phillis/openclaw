@@ -1,4 +1,6 @@
 // Memory Core plugin module implements dreaming shared behavior.
+import { scheduler } from "node:timers/promises";
+
 export { asNullableRecord as asRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 export { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 
@@ -30,4 +32,13 @@ export function includesSystemEventToken(cleanedBody: string, eventText: string)
     // message embedding the token surface as a dream cron firing).
     return trimmed.replace(/^\[cron:[^\]]+\]\s*/, "") === normalizedEventText;
   });
+}
+
+/**
+ * Lets queued timers/immediates run between sequential dreaming phases and
+ * workspaces so the gateway event loop stays responsive while a multi-workspace
+ * sweep holds the CPU. Mirrors the manager-search fallback batch yield.
+ */
+export function yieldToEventLoop(): Promise<void> {
+  return scheduler.yield();
 }

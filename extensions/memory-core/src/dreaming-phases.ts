@@ -29,7 +29,7 @@ import {
   type NarrativePhaseData,
   runDreamNarrative,
 } from "./dreaming-narrative.js";
-import { formatErrorMessage } from "./dreaming-shared.js";
+import { formatErrorMessage, yieldToEventLoop } from "./dreaming-shared.js";
 import {
   DREAMING_DAILY_INGESTION_NAMESPACE,
   DREAMING_DAILY_PROVENANCE_NAMESPACE,
@@ -1523,11 +1523,14 @@ export async function runDreamingSweepPhases(params: {
   subagent?: DreamNarrativeRequest["subagent"];
   detachNarratives?: boolean;
   nowMs?: number;
+  /** Test seam for proving cooperative phase scheduling. */
+  yieldControl?: () => Promise<void>;
 }): Promise<DreamingSweepPhaseResult> {
   // Normalize nowMs once so all phase timestamps and narrative session keys are consistent.
   const sweepNowMs: number = Number.isFinite(params.nowMs) ? (params.nowMs as number) : Date.now();
   let degradedPhases = 0;
   let pendingNarratives = 0;
+  const yieldControl = params.yieldControl ?? yieldToEventLoop;
   const recordNarrativeOutcome = (outcome: DreamNarrativeOutcome): void => {
     if (outcome.status === "degraded") {
       degradedPhases += 1;
@@ -1540,6 +1543,7 @@ export async function runDreamingSweepPhases(params: {
     pluginConfig: params.pluginConfig,
     cfg: params.cfg as Parameters<typeof resolveMemoryLightDreamingConfig>[0]["cfg"],
   });
+  let lightRan = false;
   if (light.enabled && light.limit > 0) {
     try {
       recordNarrativeOutcome(
@@ -1554,6 +1558,7 @@ export async function runDreamingSweepPhases(params: {
           detachNarratives: params.detachNarratives,
         }),
       );
+      lightRan = true;
     } catch (err) {
       await appendFailedDreamingEvent({
         workspaceDir: params.workspaceDir,
@@ -1571,7 +1576,15 @@ export async function runDreamingSweepPhases(params: {
     pluginConfig: params.pluginConfig,
     cfg: params.cfg as Parameters<typeof resolveMemoryRemDreamingConfig>[0]["cfg"],
   });
+  let remRan = false;
   if (rem.enabled && rem.limit > 0) {
+    // Yield once between light and REM work so a queued timer / immediate
+    // receives a turn before the next phase starts swapping in a new SQLite
+    // transaction set. Skip when light was skipped so empty triggers stay
+    // cheap.
+    if (lightRan) {
+      await yieldControl();
+    }
     try {
       recordNarrativeOutcome(
         await runRemDreaming({
@@ -1585,6 +1598,7 @@ export async function runDreamingSweepPhases(params: {
           detachNarratives: params.detachNarratives,
         }),
       );
+      remRan = true;
     } catch (err) {
       await appendFailedDreamingEvent({
         workspaceDir: params.workspaceDir,
@@ -1596,6 +1610,9 @@ export async function runDreamingSweepPhases(params: {
       });
       throw err;
     }
+  }
+  if (lightRan || remRan) {
+    await yieldControl();
   }
   return { degradedPhases, pendingNarratives };
 }

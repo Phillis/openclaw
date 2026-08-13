@@ -29,6 +29,7 @@ import {
   formatErrorMessage,
   includesSystemEventToken,
   normalizeTrimmedString,
+  yieldToEventLoop,
 } from "./dreaming-shared.js";
 
 const RUNTIME_CRON_RECONCILE_INTERVAL_MS = 60_000;
@@ -646,7 +647,12 @@ async function runShortTermDreamingPromotionIfTriggered(params: {
     import("./dreaming-phases.js"),
     import("./short-term-promotion.js"),
   ]);
-  for (const { agentId, workspaceDir } of workspaces) {
+  for (const [index, { agentId, workspaceDir }] of workspaces.entries()) {
+    // Yield before every workspace after the first, including after a failed
+    // prior sweep whose catch path continues directly to this iteration.
+    if (index > 0) {
+      await yieldToEventLoop();
+    }
     const sweepNowMs = Date.now();
     try {
       const phaseResult = await runDreamingSweepPhases({
@@ -815,6 +821,22 @@ async function runShortTermDreamingPromotionIfTriggered(params: {
 }
 
 export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void {
+  type DreamingPromotionOutcome = { handled: true; reason: string } | undefined;
+  let inFlightDreamingPromotion: Promise<DreamingPromotionOutcome> | null = null;
+  const runSingleFlightDreamingPromotion = (
+    run: () => Promise<DreamingPromotionOutcome>,
+  ): Promise<DreamingPromotionOutcome> => {
+    if (inFlightDreamingPromotion) {
+      return inFlightDreamingPromotion;
+    }
+    const task = run().finally(() => {
+      if (inFlightDreamingPromotion === task) {
+        inFlightDreamingPromotion = null;
+      }
+    });
+    inFlightDreamingPromotion = task;
+    return task;
+  };
   let resolveStartupCron: (() => CronServiceLike | null) | null = null;
   // Hold a live reference to the gateway context so we can retry cron resolution at runtime.
   // The startup capture may fail if the cron service isn't available yet (race condition in
@@ -1155,16 +1177,18 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
         if (!shouldHandleManagedDreaming) {
           return undefined;
         }
-        return await runShortTermDreamingPromotionIfTriggered({
-          cleanedBody: event.cleanedBody,
-          trigger: ctx.trigger,
-          agentId: ctx.agentId,
-          workspaceDir: ctx.workspaceDir,
-          cfg: currentConfig,
-          config,
-          logger: api.logger,
-          subagent: config.enabled ? api.runtime?.subagent : undefined,
-        });
+        return await runSingleFlightDreamingPromotion(() =>
+          runShortTermDreamingPromotionIfTriggered({
+            cleanedBody: event.cleanedBody,
+            trigger: ctx.trigger,
+            agentId: ctx.agentId,
+            workspaceDir: ctx.workspaceDir,
+            cfg: currentConfig,
+            config,
+            logger: api.logger,
+            subagent: config.enabled ? api.runtime?.subagent : undefined,
+          }),
+        );
       } catch (err) {
         api.logger.error(`memory-core: dreaming trigger failed: ${formatErrorMessage(err)}`);
         return undefined;

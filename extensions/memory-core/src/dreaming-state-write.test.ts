@@ -27,12 +27,23 @@ type WriteCounts = {
   delete: number;
 };
 
+type RangeCounts = {
+  entriesInKeyRange: number;
+  entries: number;
+  rangeCalls: Array<{
+    keyStartInclusive: string;
+    keyEndExclusive: string;
+  }>;
+};
+
 let writeCounts: WriteCounts = { register: 0, delete: 0 };
 const writeCountsByNamespace = new Map<string, WriteCounts>();
+let rangeCounts: RangeCounts = { entriesInKeyRange: 0, entries: 0, rangeCalls: [] };
 
 function resetWriteCounts(): void {
   writeCounts = { register: 0, delete: 0 };
   writeCountsByNamespace.clear();
+  rangeCounts = { entriesInKeyRange: 0, entries: 0, rangeCalls: [] };
 }
 
 function incrementNamespaceWriteCount(namespace: string, operation: keyof WriteCounts): void {
@@ -60,6 +71,27 @@ function wrapStoreWithWriteCounts<T>(
       writeCounts.delete += 1;
       incrementNamespaceWriteCount(namespace, "delete");
       return store.delete(key);
+    },
+    entries: async () => {
+      rangeCounts.entries += 1;
+      return store.entries();
+    },
+    entriesInKeyRange: async (query) => {
+      rangeCounts.entriesInKeyRange += 1;
+      rangeCounts.rangeCalls.push({
+        keyStartInclusive: query.keyStartInclusive,
+        keyEndExclusive: query.keyEndExclusive,
+      });
+      return store.entriesInKeyRange
+        ? store.entriesInKeyRange(query)
+        : store
+            .entries()
+            .then((entries) =>
+              entries.filter(
+                (entry) =>
+                  entry.key >= query.keyStartInclusive && entry.key < query.keyEndExclusive,
+              ),
+            );
     },
   };
 }
@@ -516,5 +548,138 @@ describe("writeMemoryCoreWorkspaceEntries", () => {
       workspaceDir,
     });
     expect(stored).toHaveLength(3);
+  });
+});
+
+describe("readMemoryCoreWorkspaceEntries key-range isolation", () => {
+  it("excludes other-workspace rows from the result set", async () => {
+    const workspaceA = await createWorkspace();
+    const workspaceB = await createWorkspace();
+    await writeMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir: workspaceA,
+      entries: [
+        { key: "a.txt", value: { path: "a.txt", mtime: 1 } },
+        { key: "shared.txt", value: { path: "shared.txt", mtime: 1 } },
+      ],
+    });
+    await writeMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir: workspaceB,
+      entries: [
+        { key: "b.txt", value: { path: "b.txt", mtime: 2 } },
+        { key: "shared.txt", value: { path: "shared.txt", mtime: 9 } },
+      ],
+    });
+
+    const storedA = await readMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir: workspaceA,
+    });
+    expect(storedA).toHaveLength(2);
+    expect(storedA.map((entry) => entry.key).toSorted()).toEqual(["a.txt", "shared.txt"]);
+    // Other-workspace values must never leak into the read for this workspace.
+    expect(storedA.find((entry) => entry.key === "shared.txt")?.value).toEqual({
+      path: "shared.txt",
+      mtime: 1,
+    });
+  });
+
+  it("uses the bounded key-range method instead of full namespace scans", async () => {
+    const workspaceDir = await createWorkspace();
+    await writeMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir,
+      entries: [{ key: "a.txt", value: { path: "a.txt", mtime: 1 } }],
+    });
+    await writeMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir: await createWorkspace(),
+      entries: [{ key: "b.txt", value: { path: "b.txt", mtime: 2 } }],
+    });
+    await writeMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir: await createWorkspace(),
+      entries: [{ key: "c.txt", value: { path: "c.txt", mtime: 3 } }],
+    });
+
+    resetWriteCounts();
+    await readMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir,
+    });
+
+    expect(rangeCounts.entriesInKeyRange).toBe(1);
+    expect(rangeCounts.entries).toBe(0);
+    // Every range covers one workspace's row band; bounds never encroach on
+    // another workspace's hash.
+    expect(
+      rangeCounts.rangeCalls.every(
+        (call) =>
+          /^[a-f0-9]{64}:$/u.test(call.keyStartInclusive) &&
+          call.keyEndExclusive === `${call.keyStartInclusive.slice(0, -1)};`,
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to a prefix filter when the store lacks the range method", async () => {
+    // Synthetic store that mirrors an alternate compat shape: it does not
+    // implement entriesInKeyRange, so dreaming-state must still produce the
+    // correct per-workspace rows via the entries() prefix filter.
+    const workspaceA = await createWorkspace();
+    const workspaceB = await createWorkspace();
+    const namespace = "compat-no-range";
+    const fullStore = createPluginStateKeyedStoreForTests<{
+      workspaceKey: string;
+      workspaceDir: string;
+      key: string;
+      value: { tag: string };
+    }>(MEMORY_CORE_PLUGIN_ID, {
+      namespace,
+      maxEntries: 100,
+    });
+    const noRangeStore: PluginStateKeyedStore<{
+      workspaceKey: string;
+      workspaceDir: string;
+      key: string;
+      value: { tag: string };
+    }> = {
+      register: fullStore.register.bind(fullStore),
+      registerIfAbsent: fullStore.registerIfAbsent.bind(fullStore),
+      lookup: fullStore.lookup.bind(fullStore),
+      consume: fullStore.consume.bind(fullStore),
+      delete: fullStore.delete.bind(fullStore),
+      entries: fullStore.entries.bind(fullStore),
+      clear: fullStore.clear.bind(fullStore),
+    };
+    configureMemoryCoreDreamingState(
+      <T>(_options: OpenKeyedStoreOptions) => noRangeStore as PluginStateKeyedStore<T>,
+    );
+    try {
+      await writeMemoryCoreWorkspaceEntries({
+        namespace,
+        workspaceDir: workspaceA,
+        entries: [{ key: "a.txt", value: { tag: "a" } }],
+      });
+      await writeMemoryCoreWorkspaceEntries({
+        namespace,
+        workspaceDir: workspaceB,
+        entries: [{ key: "b.txt", value: { tag: "b" } }],
+      });
+      const storedA = await readMemoryCoreWorkspaceEntries({
+        namespace,
+        workspaceDir: workspaceA,
+      });
+      expect(storedA).toHaveLength(1);
+      expect(storedA[0]?.key).toBe("a.txt");
+      const storedB = await readMemoryCoreWorkspaceEntries({
+        namespace,
+        workspaceDir: workspaceB,
+      });
+      expect(storedB).toHaveLength(1);
+      expect(storedB[0]?.key).toBe("b.txt");
+    } finally {
+      configureCountedDreamingState();
+    }
   });
 });

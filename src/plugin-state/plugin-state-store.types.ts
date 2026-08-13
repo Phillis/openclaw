@@ -7,6 +7,13 @@ export type PluginStateEntry<T> = {
   expiresAt?: number;
 };
 
+export type PluginStateKeyRangeQuery = {
+  keyStartInclusive: string;
+  keyEndExclusive: string;
+  limit: number;
+  order?: "asc" | "desc";
+};
+
 /** Async plugin state API exposed to plugin runtimes. */
 export type PluginStateKeyedStore<T> = {
   register(key: string, value: T, opts?: { ttlMs?: number }): Promise<void>;
@@ -22,6 +29,13 @@ export type PluginStateKeyedStore<T> = {
   consume(key: string): Promise<T | undefined>;
   delete(key: string): Promise<boolean>;
   entries(): Promise<PluginStateEntry<T>[]>;
+  /**
+   * Bounded key-range read for owners with sortable keys. Production stores
+   * provide this; owner code must treat absence as a fallback to `entries()`
+   * with prefix filtering. Start is inclusive, end is exclusive, and end must
+   * sort strictly greater than start.
+   */
+  entriesInKeyRange?: (query: PluginStateKeyRangeQuery) => Promise<PluginStateEntry<T>[]>;
   clear(): Promise<void>;
 };
 
@@ -40,6 +54,8 @@ export type PluginStateSyncKeyedStore<T> = {
   consume(key: string): T | undefined;
   delete(key: string): boolean;
   entries(): PluginStateEntry<T>[];
+  /** Bounded key-range read; same contract as the async variant. */
+  entriesInKeyRange?: (query: PluginStateKeyRangeQuery) => PluginStateEntry<T>[];
   clear(): void;
 };
 
