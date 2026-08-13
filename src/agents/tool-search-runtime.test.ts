@@ -468,6 +468,154 @@ describe("Tool Search input schemas", () => {
   );
 });
 
+describe("Tool Search XML-style array arguments", () => {
+  const lineageTool = () =>
+    fakeTool(
+      "evidence_submit",
+      Type.Object(
+        {
+          lineage: Type.Object(
+            {
+              inputs: Type.Array(Type.String()),
+              toolchain: Type.String(),
+            },
+            { additionalProperties: false },
+          ),
+        },
+        { additionalProperties: false },
+      ),
+    );
+
+  it.each([
+    {
+      label: "an array under item",
+      inputs: { item: ["fixture:a", "fixture:b"] },
+      expected: ["fixture:a", "fixture:b"],
+    },
+    { label: "a single item", inputs: { item: "fixture:a" }, expected: ["fixture:a"] },
+    {
+      label: "repeated item nesting",
+      inputs: { item: { item: ["fixture:a", "fixture:b"] } },
+      expected: ["fixture:a", "fixture:b"],
+    },
+    {
+      label: "repeated item nesting around a single value",
+      inputs: { item: { item: { item: "fixture:a" } } },
+      expected: ["fixture:a"],
+    },
+    {
+      label: "a plain array",
+      inputs: ["fixture:a", "fixture:b"],
+      expected: ["fixture:a", "fixture:b"],
+    },
+  ])("normalizes $label at an array schema location", async ({ inputs, expected }) => {
+    const target = lineageTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("evidence_submit", {
+        lineage: { inputs, toolchain: "node-crypto-sha256" },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        details: { input: { lineage: { inputs: expected, toolchain: "node-crypto-sha256" } } },
+      },
+    });
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      lineage: { inputs: expected, toolchain: "node-crypto-sha256" },
+    });
+  });
+
+  it("normalizes wrapped arrays nested inside array elements", async () => {
+    const target = fakeTool(
+      "evidence_batch",
+      Type.Object(
+        {
+          claims: Type.Array(
+            Type.Object({ tags: Type.Array(Type.String()) }, { additionalProperties: false }),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+    );
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("evidence_batch", { claims: { item: { tags: { item: "fixture:a" } } } }),
+    ).resolves.toBeDefined();
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      claims: [{ tags: ["fixture:a"] }],
+    });
+  });
+
+  it.each([
+    {
+      label: "an object at a non-array location",
+      input: { payload: { item: ["fixture:a"] } },
+      expected: { payload: { item: ["fixture:a"] } },
+    },
+    {
+      label: "an object whose item property is declared",
+      input: { payload: { item: "fixture:a" } },
+      expected: { payload: { item: "fixture:a" } },
+    },
+  ])("preserves $label", async ({ input, expected }) => {
+    const target = fakeTool(
+      "evidence_payload",
+      Type.Object(
+        { payload: Type.Object({ item: Type.Unknown() }, { additionalProperties: false }) },
+        { additionalProperties: false },
+      ),
+    );
+    const { runtime } = createRuntime([target]);
+
+    await expect(runtime.call("evidence_payload", input)).resolves.toBeDefined();
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual(expected);
+  });
+
+  it.each([
+    { label: "a misspelled wrapper key", inputs: { items: ["fixture:a"] } },
+    { label: "a wrapper with extra keys", inputs: { item: ["fixture:a"], extra: 1 } },
+    { label: "wrapped values of the wrong type", inputs: { item: [7] } },
+  ])("still rejects $label", async ({ inputs }) => {
+    const target = lineageTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("evidence_submit", {
+        lineage: { inputs, toolchain: "node-crypto-sha256" },
+      }),
+    ).rejects.toThrow("inputs");
+    expect(target.execute).not.toHaveBeenCalled();
+  });
+
+  it("gives the before_tool_call hook the normalized target input", async () => {
+    const hookParams: unknown[] = [];
+    const hook = vi.fn(async (input: unknown) => {
+      hookParams.push((input as { params?: unknown }).params);
+      return undefined;
+    });
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: hook }]),
+    );
+    const target = lineageTool();
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("evidence_submit", {
+        lineage: { inputs: { item: "fixture:a" }, toolchain: "node-crypto-sha256" },
+      }),
+    ).resolves.toBeDefined();
+
+    expect(hookParams).toEqual([
+      { lineage: { inputs: ["fixture:a"], toolchain: "node-crypto-sha256" } },
+    ]);
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      lineage: { inputs: ["fixture:a"], toolchain: "node-crypto-sha256" },
+    });
+  });
+});
+
 describe("Tool Search catalog indexing", () => {
   it("keeps other ranked results when an exact match allows multiple hits", async () => {
     const { runtime } = createRuntime([fakeTool("orchard"), fakeTool("orchard_records")]);
