@@ -1563,6 +1563,59 @@ describe("loadGatewayPlugins", () => {
     expect(params.deliver).toBe(false);
   });
 
+  test("forwards explicit empty toolsAllow on subagent run", async () => {
+    const serverPlugins = serverPluginsModule;
+    const runtime = await createSubagentRuntime(serverPlugins);
+    serverPlugins.setFallbackGatewayContext(createTestContext("tools-allow-empty-forward"));
+
+    await runtime.run({
+      sessionKey: "s-tools-allow-empty",
+      message: "diary entry",
+      lightContext: true,
+      lane: "dreaming-narrative:s-tools-allow-empty",
+      deliver: false,
+      toolsAllow: [],
+    });
+
+    const params = getRequiredLastDispatchedParams();
+    expect(params.toolsAllow).toEqual([]);
+    expect(getLastDispatchedClientInternal().runtimePluginToolGrant).toBeUndefined();
+  });
+
+  test("forwards a finite toolsAllow on subagent run", async () => {
+    const serverPlugins = serverPluginsModule;
+    const runtime = await createSubagentRuntime(serverPlugins);
+    serverPlugins.setFallbackGatewayContext(createTestContext("tools-allow-finite-forward"));
+
+    await runtime.run({
+      sessionKey: "s-tools-allow-finite",
+      message: "narrow work",
+      deliver: false,
+      toolsAllow: ["message"],
+    });
+
+    const params = getRequiredLastDispatchedParams();
+    expect(params.toolsAllow).toEqual(["message"]);
+    expect(getLastDispatchedClientInternal().runtimePluginToolGrant).toBeUndefined();
+  });
+
+  test("omits toolsAllow when the plugin subagent caller does not request one", async () => {
+    const serverPlugins = serverPluginsModule;
+    const runtime = await createSubagentRuntime(serverPlugins);
+    serverPlugins.setFallbackGatewayContext(createTestContext("tools-allow-default"));
+
+    await runtime.run({
+      sessionKey: "s-tools-allow-default",
+      message: "default surface",
+      deliver: false,
+    });
+
+    const params = getRequiredLastDispatchedParams();
+    // Default surface must not accidentally carry an empty allowlist, which
+    // would suppress every tool and break ordinary subagent workflows.
+    expect(params).not.toHaveProperty("toolsAllow");
+  });
+
   test("generates a non-empty idempotencyKey when the caller omits it", async () => {
     const serverPlugins = serverPluginsModule;
     const runtime = await createSubagentRuntime(serverPlugins);

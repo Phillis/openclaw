@@ -403,7 +403,10 @@ export function startAgentRunExecution(params: {
           extraSystemPrompt: params.request.extraSystemPrompt,
           bootstrapContextMode: params.request.bootstrapContextMode,
           bootstrapContextRunKind: params.effectiveBootstrapContextRunKind,
-          toolsAllow: params.restoredCronContinuation?.toolsAllow,
+          // A restored cron continuation carries server-stamped authority and
+          // must not be broadened by request input. Ordinary runs may supply a
+          // request-local restriction, including an explicit tool-free list.
+          toolsAllow: params.restoredCronContinuation?.toolsAllow ?? params.request.toolsAllow,
           runtimePluginToolGrant,
           trustedInternalHandoff: prepared.trustedInternalHandoff,
           toolsAllowIsDefault: params.restoredCronContinuation?.toolsAllowIsDefault,

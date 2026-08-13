@@ -234,7 +234,7 @@ export async function writeMemoryCoreWorkspaceEntries(
   }
   await deleteWorkspaceEntries(
     store,
-    existingByKey.keys().filter((stateKey) => !desiredByStateKey.has(stateKey)),
+    Array.from(existingByKey.keys()).filter((stateKey) => !desiredByStateKey.has(stateKey)),
   );
   // Only reconcile after real writes. A pure equal pass must not touch the store.
   if (wrote) {

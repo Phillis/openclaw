@@ -33,6 +33,12 @@ export type AgentRunRequest = {
   modelRun?: boolean;
   promptMode?: "full" | "minimal" | "none";
   bootstrapContextMode?: "full" | "lightweight";
+  /**
+   * Restrict this run to the listed tool names. Omitted keeps the default
+   * surface; an explicit `[]` disables every tool. Existing profile and
+   * operator policies remain authoritative.
+   */
+  toolsAllow?: string[];
   // Commitment fan-out scope is scheduler-internal and cannot be selected over Gateway RPC.
   bootstrapContextRunKind?: "default" | "heartbeat" | "cron";
   acpTurnSource?: "manual_spawn";

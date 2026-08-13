@@ -30,6 +30,11 @@ export type SubagentSurface = {
     lane?: string;
     lightContext?: boolean;
     deliver?: boolean;
+    /**
+     * Restrict the worker to the listed tools. `undefined` keeps the
+     * default tool surface; an explicit `[]` disables every tool.
+     */
+    toolsAllow?: string[];
   }) => Promise<{ runId: string }>;
   waitForRun: (params: {
     runId: string;
@@ -248,6 +253,9 @@ async function startNarrativeRunOrFallback(params: {
       lane: `dreaming-narrative:${params.sessionKey}`,
       lightContext: true,
       deliver: false,
+      // Diary text needs no tools. The empty restriction lets the runtime skip
+      // core/plugin tool construction, bundle MCP/LSP, and tool-search controls.
+      toolsAllow: [],
     });
     return run.runId;
   } catch (runErr) {

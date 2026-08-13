@@ -315,6 +315,9 @@ export const AgentParamsSchema = closedObject({
   bootstrapContextMode: Type.Optional(
     Type.Union([Type.Literal("full"), Type.Literal("lightweight")]),
   ),
+  // Restrict this run to the listed tool names. Omitted keeps the default
+  // surface; an explicit empty list disables every tool.
+  toolsAllow: Type.Optional(Type.Array(Type.String())),
   // Commitment fan-out scope is scheduler-internal and cannot be selected over Gateway RPC.
   bootstrapContextRunKind: Type.Optional(
     Type.Union([Type.Literal("default"), Type.Literal("heartbeat"), Type.Literal("cron")]),

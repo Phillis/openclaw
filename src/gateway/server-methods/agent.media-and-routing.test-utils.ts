@@ -423,6 +423,30 @@ describe("gateway agent handler", () => {
     });
   });
 
+  it("forwards a plugin subagent's explicit tool-free restriction", async () => {
+    primeMainAgentRun();
+
+    await invokeAgent(
+      {
+        message: "write a narrative",
+        sessionKey: "agent:main:subagent:dreaming-narrative",
+        toolsAllow: [],
+        idempotencyKey: "plugin-tools-allow-empty",
+      },
+      {
+        client: {
+          internal: {
+            agentRunTracking: "plugin_subagent",
+            pluginRuntimeOwnerId: "memory-core",
+          },
+        } as never,
+      },
+    );
+
+    const call = await waitForAgentCommandCall<{ toolsAllow?: string[] }>();
+    expect(call.toolsAllow).toEqual([]);
+  });
+
   it("forwards trusted delegated policy handoffs only from internal client metadata", async () => {
     primeMainAgentRun();
     const handoffId = registerSubagentCompletionToolHandoff({
@@ -1459,6 +1483,7 @@ describe("gateway agent handler", () => {
       {
         message: "image generation finished",
         sessionKey,
+        toolsAllow: ["*"],
         internalEvents: [cronMediaCompletionEvent()],
         idempotencyKey: "cron-media-continuation",
       },
@@ -1500,6 +1525,76 @@ describe("gateway agent handler", () => {
     });
     expect(callArgs.allowModelOverride).toBe(true);
     expect(callArgs.senderIsOwner).toBe(true);
+  });
+
+  // Companion regression to the prior test: when a restored cron continuation
+  // exists but carries no toolsAllow cap of its own, the request-local
+  // finite toolsAllow must still reach agentCommand. Guards the
+  // `??`-fallback path in agent-run-execution-phase.ts against a future
+  // change that broadens/restores the continuation's undefined cap.
+  it("falls back to request toolsAllow when restored cron continuation has no toolsAllow", async () => {
+    mocks.agentCommand.mockClear();
+    const sessionKey = "agent:main:cron:job-1:run:run-1";
+    const baseSessionKey = "agent:main:cron:job-1";
+    const entry: SessionEntry = {
+      sessionId: "run-1",
+      updatedAt: Date.now(),
+      lifecycleRevision: "revision-1",
+      modelProvider: "claude-cli",
+      model: "claude-opus-4-8",
+      cliSessionBindings: {
+        "claude-cli": { sessionId: "native-claude-session" },
+      },
+      cronRunContinuation: {
+        lifecycleRevision: "revision-1",
+        phase: "ready" as const,
+        basePersisted: true,
+        // No toolsAllow / toolsAllowIsDefault — the request must own the cap.
+        cliSessionBindingFacts: {
+          sourceReplyDeliveryMode: "automatic" as const,
+          requireExplicitMessageTarget: true,
+        },
+      },
+    };
+    mocks.loadSessionEntry.mockReturnValue({
+      cfg: {},
+      storePath: "/tmp/sessions.json",
+      canonicalKey: sessionKey,
+      entry,
+    });
+    const { cronRunContinuation: _cronRunContinuation, ...baseEntry } = structuredClone(entry);
+    const store: Record<string, SessionEntry> = {
+      [baseSessionKey]: baseEntry,
+      [sessionKey]: structuredClone(entry),
+    };
+    mocks.updateSessionStore.mockImplementation(async (_path, updater) => await updater(store));
+    mocks.agentCommand.mockResolvedValue({
+      payloads: [{ text: "continued" }],
+      meta: { durationMs: 100 },
+    });
+
+    await invokeAgent(
+      {
+        message: "image generation finished",
+        sessionKey,
+        toolsAllow: ["image_generate"],
+        internalEvents: [cronMediaCompletionEvent()],
+        idempotencyKey: "cron-media-continuation-fallback-tools",
+      },
+      {
+        reqId: "cron-media-continuation-fallback-tools",
+        client: cronContinuationGatewayClient(),
+      },
+    );
+
+    const callArgs = await waitForAgentCommandCall<{
+      bootstrapContextRunKind?: string;
+      toolsAllow?: string[];
+      toolsAllowIsDefault?: boolean;
+    }>();
+    expect(callArgs.bootstrapContextRunKind).toBe("cron");
+    expect(callArgs.toolsAllow).toEqual(["image_generate"]);
+    expect(callArgs.toolsAllowIsDefault).toBeUndefined();
   });
 
   it.each([

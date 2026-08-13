@@ -418,6 +418,8 @@ export function createGatewaySubagentRuntime(): PluginRuntime["subagent"] {
           ...(params.lane && { lane: params.lane }),
           ...(params.cwd && { cwd: params.cwd }),
           ...(params.lightContext === true && { bootstrapContextMode: "lightweight" }),
+          // Preserve omission versus an explicit tool-free restriction.
+          ...(params.toolsAllow !== undefined && { toolsAllow: params.toolsAllow }),
           // The gateway `agent` schema requires `idempotencyKey: NonEmptyString`,
           // so fall back to a generated UUID when the caller omits it. Without
           // this, plugin subagent runs (for example memory-core dreaming

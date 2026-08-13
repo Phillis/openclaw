@@ -439,6 +439,7 @@ describe("runDreamNarrative", () => {
     expect(runOptions.lightContext).toBe(true);
     expect(runOptions.deliver).toBe(false);
     expect(runOptions.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(runOptions.toolsAllow).toEqual([]);
     expect(subagent.waitForRun).toHaveBeenCalledOnce();
     expect(subagent.deleteSession).toHaveBeenCalledTimes(2);
     expect(outcome).toEqual({ status: "completed" });
@@ -626,9 +627,13 @@ describe("runDreamNarrative", () => {
     const configuredRunOptions = mockObjectArg(subagent.run, "subagent run");
     expect(configuredRunOptions.sessionKey).toBe(expectedSessionKey);
     expect(configuredRunOptions.model).toBe("ollama/missing-model");
+    // The empty allowlist must survive the configured-model → session-default
+    // retry so a tool-free prompt never re-enters the default tool surface.
+    expect(configuredRunOptions.toolsAllow).toEqual([]);
     const retryRunOptions = mockObjectArg(subagent.run, "subagent run", 1);
     expect(retryRunOptions.sessionKey).toBe(retrySessionKey);
     expect(retryRunOptions).not.toHaveProperty("model");
+    expect(retryRunOptions.toolsAllow).toEqual([]);
     expect(subagent.getSessionMessages).toHaveBeenCalledWith({
       sessionKey: retrySessionKey,
       limit: 5,
