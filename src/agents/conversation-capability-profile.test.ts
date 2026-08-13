@@ -11,6 +11,7 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { resolveConversationCapabilityProfile } from "./conversation-capability-profile.js";
+import { projectConversationToolNames } from "./conversation-tool-policy-pipeline.js";
 import { isToolAllowedByPolicyName } from "./tool-policy-match.js";
 
 describe("resolveConversationCapabilityProfile", () => {
@@ -231,6 +232,43 @@ describe("resolveConversationCapabilityProfile", () => {
 
     expect(profile.policy.explicitToolAllowlist).toContain("image_generate");
     expect(profile.policy.explicitToolOverrideAllowlist).toEqual(["pdf"]);
+  });
+
+  it("widens a restrictive agent profile via alsoAllow without broadening the boundary", () => {
+    // Regression: a config declaring tools.allow + tools.alsoAllow at the same
+    // agent scope must widen the profile (so the coding profile keeps the
+    // optional plugin tool that the agent calls out) while keeping the agent
+    // allowlist as the restrictive boundary.
+    const cfg = {
+      tools: {
+        profile: "coding",
+      },
+      agents: {
+        defaults: {},
+        list: [
+          {
+            id: "sparky",
+            tools: {
+              allow: ["read", "ewt_v2_result_submit"],
+              alsoAllow: ["ewt_v2_result_submit"],
+            },
+          },
+        ],
+      },
+    } as unknown as OpenClawConfig;
+    const profile = resolveConversationCapabilityProfile({
+      config: cfg,
+      agentId: "sparky",
+      sessionKey: "agent:sparky:main",
+    });
+
+    const projected = projectConversationToolNames({
+      capabilityProfile: profile,
+      toolNames: ["read", "exec", "ewt_v2_result_submit", "unrelated_optional"],
+      warn: () => {},
+    });
+
+    expect(projected).toEqual(["read", "ewt_v2_result_submit"]);
   });
 
   it("adds runtime tools without replacing the configured tool surface", () => {

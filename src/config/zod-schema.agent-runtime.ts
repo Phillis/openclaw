@@ -299,15 +299,7 @@ const ToolPolicyBaseSchema = z
   })
   .strict();
 
-export const ToolPolicySchema = ToolPolicyBaseSchema.superRefine((value, ctx) => {
-  if (value.allow && value.allow.length > 0 && value.alsoAllow && value.alsoAllow.length > 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message:
-        "tools policy cannot set both allow and alsoAllow in the same scope (merge alsoAllow into allow, or remove allow and use profile + alsoAllow)",
-    });
-  }
-}).optional();
+export const ToolPolicySchema = ToolPolicyBaseSchema.optional();
 
 const ToolPolicyBySenderSchema = z.record(z.string(), ToolPolicySchema).optional();
 
@@ -450,24 +442,6 @@ const ToolProfileSchema = z
   .union([z.literal("minimal"), z.literal("coding"), z.literal("messaging"), z.literal("full")])
   .optional();
 
-type AllowlistPolicy = {
-  allow?: string[];
-  alsoAllow?: string[];
-};
-
-function addAllowAlsoAllowConflictIssue(
-  value: AllowlistPolicy,
-  ctx: z.RefinementCtx,
-  message: string,
-): void {
-  if (value.allow && value.allow.length > 0 && value.alsoAllow && value.alsoAllow.length > 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message,
-    });
-  }
-}
-
 const ToolPolicyWithProfileSchema = z
   .object({
     allow: z.array(z.string()).optional(),
@@ -475,14 +449,7 @@ const ToolPolicyWithProfileSchema = z
     deny: z.array(z.string()).optional(),
     profile: ToolProfileSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addAllowAlsoAllowConflictIssue(
-      value,
-      ctx,
-      "tools.byProvider policy cannot set both allow and alsoAllow in the same scope (merge alsoAllow into allow, or remove allow and use profile + alsoAllow)",
-    );
-  });
+  .strict();
 
 // Provider docking: allowlists keyed by provider id (no schema updates when adding providers).
 export const ElevatedAllowFromSchema = z
@@ -738,13 +705,6 @@ const AgentToolsSchema = z
       .optional(),
   })
   .strict()
-  .superRefine((value, ctx) => {
-    addAllowAlsoAllowConflictIssue(
-      value,
-      ctx,
-      "agent tools cannot set both allow and alsoAllow in the same scope (merge alsoAllow into allow, or remove allow and use profile + alsoAllow)",
-    );
-  })
   .optional();
 
 export const MemorySearchSchema = z
@@ -1018,12 +978,5 @@ export const ToolsSchema = z
     updatePlan: z.boolean().optional(),
   })
   .strict()
-  .superRefine((value, ctx) => {
-    addAllowAlsoAllowConflictIssue(
-      value,
-      ctx,
-      "tools cannot set both allow and alsoAllow in the same scope (merge alsoAllow into allow, or remove allow and use profile + alsoAllow)",
-    );
-  })
   .optional();
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
