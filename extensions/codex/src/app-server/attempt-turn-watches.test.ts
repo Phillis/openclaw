@@ -161,6 +161,40 @@ describe("Codex app-server attempt turn watches", () => {
     expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_TIMER_TIMEOUT_MS);
   });
 
+  it("preserves the post-tool completion override across notification touchActivity", () => {
+    // Regression: every current-turn notification routes through touchActivity,
+    // and the post-tool continuation path arms a longer conservative guard via
+    // armCompletionIdleWatch({ timeoutMs }). Clearing the override in
+    // touchActivity reverted the watch to the default 60s timeout the moment
+    // the next notification arrived, so the 5-minute post-tool guard was
+    // silently shortened to one minute and a Handoff turn was killed at the
+    // wrong deadline.
+    const harness = createController({
+      turnCompletionIdleTimeoutMs: 10,
+    });
+
+    harness.controller.armCompletionIdleWatch({ timeoutMs: 80 });
+
+    harness.controller.touchActivity("notification:item/agentMessage/delta");
+
+    vi.advanceTimersByTime(10);
+    expect(harness.timeouts).toEqual([]);
+
+    vi.advanceTimersByTime(70);
+    expect(harness.timeouts).toMatchObject([{ kind: "completion", timeoutMs: 80 }]);
+  });
+
+  it("uses the default completion idle timeout when activity arms without an override", () => {
+    const harness = createController({
+      turnCompletionIdleTimeoutMs: 30,
+    });
+
+    harness.controller.touchActivity("turn:start", { arm: true });
+    vi.advanceTimersByTime(30);
+
+    expect(harness.timeouts).toMatchObject([{ kind: "completion", timeoutMs: 30 }]);
+  });
+
   it("does not fire completion idle timeout after terminal notification is queued", () => {
     const harness = createController();
 

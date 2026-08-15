@@ -401,7 +401,10 @@ export function createCodexAttemptTurnWatchController(params: {
       completionLastActivityAt = Date.now();
       completionLastActivityReason = reason;
       completionLastActivityDetails = options?.details;
-      completionIdleTimeoutOverrideMs = undefined;
+      // Do not clear completionIdleTimeoutOverrideMs here: the post-tool
+      // continuation path arms a longer conservative guard, and every current
+      // turn notification calls touchActivity. armCompletionIdleWatch sets
+      // and clears the override explicitly when its timeout argument changes.
       if (options?.attemptProgress) {
         recordAttemptProgress(reason, options);
       }
