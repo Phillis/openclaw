@@ -19,7 +19,6 @@ const nativeSkillIsolationByClient = new WeakMap<
     key: string;
     result: Promise<CodexNativeSkillIsolation | undefined>;
     settled: boolean;
-    signal?: AbortSignal;
   }
 >();
 
@@ -219,24 +218,54 @@ export async function resolveCodexNativeSkillIsolation(params: {
     params.userProfile?.trim() || process.env.USERPROFILE?.trim() || "",
   ]);
   const cached = nativeSkillIsolationByClient.get(params.client);
-  if (cached?.key === key && (cached.settled || cached.signal === params.signal)) {
-    const isolation = await cached.result;
-    params.signal?.throwIfAborted();
-    return isolation;
+  if (cached?.key === key) {
+    // Same client + key share one in-flight Codex reload regardless of caller signal;
+    // duplicate concurrent forceReload calls amplify clear-and-rebuild work in
+    // codex-rs/app-server/src/request_processors/catalog_processor.rs::skills_list_response.
+    // Per-caller cancellation stays scoped to this promise so other waiters still see the result.
+    return await awaitWithCallerSignal(cached.result, params.signal);
   }
   const result = resolveUncachedCodexNativeSkillIsolation(params);
-  const entry = { key, result, settled: false, signal: params.signal };
+  const entry = { key, result, settled: false };
   nativeSkillIsolationByClient.set(params.client, entry);
+  // Settled/eviction are managed here so cache-hit callers do not own the lifecycle.
+  // Each live caller still chains its own await via awaitWithCallerSignal below.
+  result.then(
+    () => {
+      entry.settled = true;
+    },
+    () => {
+      if (nativeSkillIsolationByClient.get(params.client)?.result === result) {
+        nativeSkillIsolationByClient.delete(params.client);
+      }
+    },
+  );
+  return await awaitWithCallerSignal(result, params.signal);
+}
+
+async function awaitWithCallerSignal<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
   try {
-    const isolation = await result;
-    entry.settled = true;
-    params.signal?.throwIfAborted();
-    return isolation;
-  } catch (error) {
-    if (nativeSkillIsolationByClient.get(params.client)?.result === result) {
-      nativeSkillIsolationByClient.delete(params.client);
+    return await Promise.race([promise, aborted]);
+  } finally {
+    if (onAbort) {
+      signal.removeEventListener("abort", onAbort);
     }
-    throw error;
   }
 }
 
@@ -246,11 +275,14 @@ async function resolveUncachedCodexNativeSkillIsolation(
   if (await usesDefaultStateDir()) {
     return undefined;
   }
-  const response = await params.client.request(
-    "skills/list",
-    { cwds: [params.cwd], forceReload: true },
-    { signal: params.signal },
-  );
+  // params.signal is intentionally not forwarded: concurrent callers may share this
+  // promise with different AbortSignals, and aborting the underlying scan from one
+  // caller would strand the others. Per-caller cancellation lives in the wrapping
+  // awaitWithCallerSignal on the public entrypoint.
+  const response = await params.client.request("skills/list", {
+    cwds: [params.cwd],
+    forceReload: true,
+  });
   const effectiveHome =
     params.home?.trim() ||
     process.env.HOME?.trim() ||

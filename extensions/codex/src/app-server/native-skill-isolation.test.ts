@@ -68,7 +68,7 @@ it("retries a failed native skill reload instead of caching its rejection", asyn
   }
 });
 
-it("does not share native skill reloads across independently cancellable turns", async () => {
+it("shares one in-flight native skill reload across concurrent turns with different signals", async () => {
   const tempHome = await createTempHomeEnv("openclaw-codex-native-skills-cache-signals-");
   try {
     const home = await fs.realpath(tempHome.home);
@@ -82,17 +82,18 @@ it("does not share native skill reloads across independently cancellable turns",
     await withEnvAsync(
       { HOME: home, OPENCLAW_STATE_DIR: path.join(home, "scratch-state") },
       async () => {
-        await Promise.all([
+        const [first, second] = await Promise.all([
           resolveCodexNativeSkillIsolation({ client, cwd: home, signal: firstSignal.signal }),
           resolveCodexNativeSkillIsolation({ client, cwd: home, signal: secondSignal.signal }),
         ]);
-        expect(request).toHaveBeenCalledTimes(2);
+        expect(second).toBe(first);
+        expect(request).toHaveBeenCalledTimes(1);
         await resolveCodexNativeSkillIsolation({
           client,
           cwd: home,
           signal: new AbortController().signal,
         });
-        expect(request).toHaveBeenCalledTimes(2);
+        expect(request).toHaveBeenCalledTimes(1);
       },
     );
   } finally {
@@ -230,11 +231,7 @@ it("disables native user-scope skills only for non-default state directories", a
           home,
         }),
     );
-    expect(request).toHaveBeenCalledWith(
-      "skills/list",
-      { cwds: [workspace], forceReload: true },
-      { signal: undefined },
-    );
+    expect(request).toHaveBeenCalledWith("skills/list", { cwds: [workspace], forceReload: true });
     expect(
       applyCodexNativeSkillIsolation(
         { "skills.config": [{ path: projectSkillRealPath, enabled: true }] },
