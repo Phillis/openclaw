@@ -632,13 +632,22 @@ export function rewrapToolWithBeforeToolCallHook(
   const taggedTool = tool as unknown as Record<symbol, unknown>;
   const source = taggedTool[BEFORE_TOOL_CALL_SOURCE_TOOL];
   const wrappedContext = taggedTool[BEFORE_TOOL_CALL_HOOK_CONTEXT];
+  // Carry the stored option bag (approvalMode + emitDiagnostics) forward so
+  // context re-binds (e.g. dynamic tool bridges) do not silently drop options.
+  const storedOptions = taggedTool[BEFORE_TOOL_CALL_DIAGNOSTIC_OPTIONS] as
+    | { approvalMode?: "request" | "report" | "deny"; emitDiagnostics?: boolean }
+    | undefined;
   const preservedContext =
     wrappedContext && typeof wrappedContext === "object"
       ? (wrappedContext as HookContext)
       : undefined;
+  const rewrapOptions = {
+    ...(storedOptions ?? {}),
+    ...options,
+  };
   const sourceTool = source && typeof source === "object" ? (source as AnyAgentTool) : tool;
   if (sourceTool === tool) {
-    return wrapToolWithBeforeToolCallHook(tool, ctx ?? preservedContext, options);
+    return wrapToolWithBeforeToolCallHook(tool, ctx ?? preservedContext, rewrapOptions);
   }
   // Preserve post-wrap schema/metadata while restoring the source execute function.
   const rewrapSource: AnyAgentTool = {
@@ -649,7 +658,7 @@ export function rewrapToolWithBeforeToolCallHook(
   copyPluginToolMeta(tool, rewrapSource);
   copyChannelAgentToolMeta(tool as never, rewrapSource as never);
   copyToolTerminalPresentation(tool, rewrapSource);
-  return wrapToolWithBeforeToolCallHook(rewrapSource, ctx ?? preservedContext, options);
+  return wrapToolWithBeforeToolCallHook(rewrapSource, ctx ?? preservedContext, rewrapOptions);
 }
 
 function recordPreExecutionBlockedToolCall(toolCallId?: string, runId?: string): void {

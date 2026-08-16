@@ -432,6 +432,7 @@ export {
   hasBeforeToolCallPolicy,
   isToolWrappedWithBeforeToolCallHook,
   requestDeferredPluginToolApproval,
+  rewrapToolWithBeforeToolCallHook,
   runBeforeToolCallHook,
   setBeforeToolCallDiagnosticsEnabled,
   wrapToolWithBeforeToolCallHook,

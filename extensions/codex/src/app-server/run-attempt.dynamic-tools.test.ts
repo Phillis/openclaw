@@ -1,6 +1,10 @@
 // Codex tests cover run attemptynamic tools plugin behavior.
 import path from "node:path";
-import { onAgentEvent, type AgentEventPayload } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  onAgentEvent,
+  wrapToolWithBeforeToolCallHook,
+  type AgentEventPayload,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   emitTrustedDiagnosticEvent,
   onInternalDiagnosticEvent,
@@ -687,5 +691,76 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
         toolCallId: "call-echo-1",
       }),
     );
+  });
+
+  it("rewraps already-wrapped plugin tools with the current hookContext so before_tool_call sees current identity exactly once", async () => {
+    const sessionKey = "agent:current:session-current";
+    const channelId = "telegram:-100-current";
+    const staleContext = {
+      agentId: "stale-agent",
+      sessionId: "stale-session",
+      sessionKey: "agent:stale:session-stale",
+      runId: "run-stale",
+      channelId: "telegram:-100-stale",
+      requester: { channel: "discord", accountId: "stale", senderId: "stale-sender" },
+    };
+    const currentRequester = {
+      channel: "telegram",
+      accountId: "ops",
+      senderId: "maintainer",
+      senderIsOwner: false,
+      roleIds: ["maintainer-role"],
+    };
+    const beforeToolCall = vi.fn();
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        { hookName: "before_tool_call", handler: beforeToolCall, pluginId: "stale-plugin" },
+      ]),
+    );
+    const execute = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: "ok" }],
+      details: { status: "ok" },
+    }));
+    const prewrapped = wrapToolWithBeforeToolCallHook(
+      {
+        name: "stale_tool",
+        description: "stale",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute,
+      } as never,
+      staleContext,
+      { emitDiagnostics: false },
+    );
+    const bridge = createCodexDynamicToolBridge({
+      tools: [prewrapped],
+      signal: new AbortController().signal,
+      hookContext: {
+        agentId: "current-agent",
+        sessionId: "session-current",
+        sessionKey,
+        runId: "run-current",
+        channelId,
+        requester: currentRequester,
+      },
+    });
+    const response = await bridge.handleToolCall({
+      threadId: "t-1",
+      turnId: "turn-1",
+      callId: "stale-call-1",
+      namespace: null,
+      tool: "stale_tool",
+      arguments: {},
+    });
+    expect(response.success).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(beforeToolCall).toHaveBeenCalledTimes(1);
+    expect(beforeToolCall.mock.calls[0]?.[1]).toMatchObject({
+      agentId: "current-agent",
+      sessionKey,
+      sessionId: "session-current",
+      runId: "run-current",
+      channelId,
+      requester: currentRequester,
+    });
   });
 });

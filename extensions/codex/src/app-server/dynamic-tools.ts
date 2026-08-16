@@ -34,11 +34,11 @@ import {
   resolveToolResultFailureKind,
   runAgentHarnessAfterToolCallHook,
   sanitizeToolResult,
-  setBeforeToolCallDiagnosticsEnabled,
   type AnyAgentTool,
   type HeartbeatToolResponse,
   type MessagingToolSend,
   type MessagingToolSourceReplyPayload,
+  rewrapToolWithBeforeToolCallHook,
   wrapToolWithBeforeToolCallHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
@@ -56,6 +56,7 @@ import {
   resolveLiveToolResultMaxChars,
   sliceToolResultTextToBudget,
 } from "openclaw/plugin-sdk/text-utility-runtime";
+import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import type { CodexDynamicToolsLoading } from "./config.js";
 import {
   createFailedDynamicToolResponse,
@@ -92,6 +93,8 @@ type CodexDynamicToolHookContext = {
   sessionKey?: string;
   runId?: string;
   channelId?: string;
+  /** Host-proven message requester so before_tool_call plugins see the same identity the native relay already forwards. */
+  requester?: PluginHookToolContext["requester"];
   currentChannelProvider?: string;
   contextWindowTokens?: number;
   currentChannelId?: string;
@@ -973,8 +976,12 @@ function wrapProjectedCodexDynamicTools(
   for (const entry of tools) {
     try {
       if (isToolWrappedWithBeforeToolCallHook(entry.tool)) {
-        setBeforeToolCallDiagnosticsEnabled(entry.tool, false);
-        wrappedTools.push(entry);
+        wrappedTools.push({
+          ...entry,
+          tool: rewrapToolWithBeforeToolCallHook(entry.tool, hookContext, {
+            emitDiagnostics: false,
+          }),
+        });
         continue;
       }
       wrappedTools.push({

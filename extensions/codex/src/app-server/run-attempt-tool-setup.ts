@@ -15,6 +15,7 @@ import {
   resolveCodexDynamicToolsLoadingForRuntime,
 } from "./dynamic-tool-profile.js";
 import { createCodexDynamicToolBridge } from "./dynamic-tools.js";
+import { buildCodexHookRequester } from "./hook-requester.js";
 import { emitCodexAppServerEvent } from "./run-attempt-lifecycle.js";
 import type { CodexAttemptRuntime } from "./run-attempt-runtime.js";
 import { resolveCodexDynamicToolDirectNames } from "./run-attempt-tools.js";
@@ -214,6 +215,9 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   const toolsWithScopedMcp = scopedExecutable.length > 0 ? [...tools, ...scopedExecutable] : tools;
   const registeredWithScopedMcp =
     scopedAdvertised.length > 0 ? [...registeredTools, ...scopedAdvertised] : registeredTools;
+  // Cache the requester once per attempt; native hook relay uses the same
+  // identity so dynamic plugin tools see the same context as Codex-routed tool calls.
+  const hookRequester = buildCodexHookRequester(params);
   const toolBridge = createCodexDynamicToolBridge({
     tools: toolsWithScopedMcp,
     registeredTools: registeredWithScopedMcp,
@@ -237,6 +241,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
       sessionKey: sandboxSessionKey,
       runId: params.runId,
       channelId: hookChannelId,
+      ...(hookRequester ? { requester: hookRequester } : {}),
       currentChannelProvider: resolveCodexMessageToolProvider(params),
       currentChannelId: params.currentChannelId,
       currentMessagingTarget: params.currentMessagingTarget,
