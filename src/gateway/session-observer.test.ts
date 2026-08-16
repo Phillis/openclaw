@@ -531,6 +531,56 @@ describe("session observer", () => {
     harness.observer.dispose();
   });
 
+  it("re-prepares after a transient prepared-runtime owner-not-published error", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    class OwnerNotPublishedError extends Error {
+      constructor() {
+        super("prepared model runtime owner was not published");
+      }
+    }
+    let attempt = 0;
+    const prepareModel = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw new OwnerNotPublishedError();
+      }
+      return preparedModel();
+    });
+    const completeModel = vi.fn(async () =>
+      modelMessage({ headline: "After owner published", health: "on-track" }),
+    );
+    const harness = createHarness({ prepareModel, completeModel });
+    startAndAddToolNotes(harness.observer);
+
+    // First attempt: prepareModel rejects with the transient owner error.
+    await vi.advanceTimersByTimeAsync(12_000);
+    await flushObserver();
+    expect(prepareModel).toHaveBeenCalledTimes(1);
+    expect(completeModel).not.toHaveBeenCalled();
+    expect(harness.broadcastToConnIds).not.toHaveBeenCalled();
+
+    // The owner is now published; the next observer attempt must re-prepare
+    // instead of replaying the cached rejected promise.
+    for (let index = 0; index < 4; index += 1) {
+      harness.observer.handleEvent(
+        event({
+          stream: "tool",
+          data: { phase: "start", name: "read", args: { path: `next-${index}` } },
+        }),
+      );
+    }
+    await vi.advanceTimersByTimeAsync(12_000);
+    await flushObserver();
+
+    expect(prepareModel).toHaveBeenCalledTimes(2);
+    expect(completeModel).toHaveBeenCalledOnce();
+    expect(harness.broadcastToConnIds.mock.calls.at(-1)?.[1]).toMatchObject({
+      headline: "After owner published",
+    });
+    harness.observer.dispose();
+  });
+
   it("times out stalled model preparation", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
