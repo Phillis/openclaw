@@ -2076,6 +2076,9 @@ importers:
 
   extensions/workboard:
     dependencies:
+      '@openclaw/workboard-contract':
+        specifier: workspace:*
+        version: link:../../packages/workboard-contract
       typebox:
         specifier: 1.3.6
         version: 1.3.6
@@ -2083,9 +2086,6 @@ importers:
       '@openclaw/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
-      '@openclaw/workboard-contract':
-        specifier: workspace:*
-        version: link:../../packages/workboard-contract
       openclaw:
         specifier: workspace:*
         version: link:../..
