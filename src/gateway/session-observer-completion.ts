@@ -25,14 +25,27 @@ export function createSessionObserverCompletion(params: {
     if (!modelRef) {
       throw new Error("session observer utility model is unavailable");
     }
-    state.preparedPromise ??= params.prepareModel({
-      cfg: params.getConfig(),
-      agentId: state.agentId,
-      modelRef,
-      useUtilityModel: true,
-      allowMissingApiKeyModes: ["aws-sdk"],
-    });
-    return await state.preparedPromise;
+    if (!state.preparedPromise) {
+      state.preparedPromise = params.prepareModel({
+        cfg: params.getConfig(),
+        agentId: state.agentId,
+        modelRef,
+        useUtilityModel: true,
+        allowMissingApiKeyModes: ["aws-sdk"],
+      });
+    }
+    const promise = state.preparedPromise;
+    try {
+      return await promise;
+    } catch (error) {
+      // Transient prepareModel failures (e.g. owner not yet published) must not
+      // poison the slot: clear the rejected promise only if it is still the
+      // current cached one, then rethrow so the next observer attempt re-prepares.
+      if (state.preparedPromise === promise) {
+        state.preparedPromise = undefined;
+      }
+      throw error;
+    }
   };
 
   return async (state: SessionObserverState, notes: readonly string[]) => {
