@@ -238,6 +238,7 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["sessions.create", "sessions-create", "dynamic", "<=2026.7", { startup: true }],
   ["sessions.recover", "sessions-recover", "operator.write", "2026.8", { startup: true }],
   ["sessions.send", "sessions-messaging", "operator.write", "<=2026.7", { startup: true }],
+  ["sessions.sendReconcile", "sessions-read", "operator.read", "<=2026.7", { advertise: false }],
   ["sessions.abort", "sessions-abort", "operator.write", "<=2026.7", { startup: true }],
   // Dynamic mutation scope policy, including write-scoped model overrides, lives
   // in shared/session-method-scopes.ts. The admin-only sticky configured-default
