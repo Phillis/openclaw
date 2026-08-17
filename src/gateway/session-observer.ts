@@ -11,7 +11,10 @@ import { resolveUtilityModelRefForAgent } from "../agents/utility-model.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createSessionObserverAudience } from "./session-observer-audience.js";
-import { createSessionObserverCompletion } from "./session-observer-completion.js";
+import {
+  SessionObserverPrepareTransientError,
+  createSessionObserverCompletion,
+} from "./session-observer-completion.js";
 import type {
   SessionObserverCompanionSnapshot,
   SessionObserverEvent,
@@ -423,6 +426,18 @@ export function createSessionObserver(deps: SessionObserverDeps): SessionObserve
           dormantRuns.delete(state.runId);
         }
       } catch (error) {
+        if (error instanceof SessionObserverPrepareTransientError) {
+          // Lifecycle owner not yet published (or publication superseded) is a
+          // recoverable prepare state, not a model failure. Skip the disable
+          // counter so the next observer cycle can re-prepare when the owner
+          // becomes available.
+          observerLog.info("session observer prepare transiently unavailable", {
+            sessionKey: state.sessionKey,
+            runId: state.runId,
+            agentId: state.agentId,
+          });
+          return;
+        }
         const stale =
           !modelStateIsCurrent(state) ||
           !modelSlots.requestIsCurrent(state, requestGeneration) ||
