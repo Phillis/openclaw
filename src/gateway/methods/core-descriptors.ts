@@ -242,6 +242,7 @@ const CORE_GATEWAY_METHOD_SPECS = [
   // Params-aware: explicit cwd can point at any host checkout and requires admin.
   ["sessions.create", "sessions-create", "dynamic", "<=2026.7", { startup: true }],
   ["sessions.send", "sessions-messaging", "operator.write", "<=2026.7", { startup: true }],
+  ["sessions.sendReconcile", "sessions-read", "operator.read", "<=2026.7", { advertise: false }],
   ["sessions.abort", "sessions-abort", "operator.write", "<=2026.7", { startup: true }],
   // Params-aware: write scope may mutate chat-organization fields
   // (label/category/icon/pinned/archived/unread); every other patch field stays

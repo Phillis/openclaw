@@ -237,6 +237,8 @@ export {
   SessionsReclaimParamsSchema,
   SessionsReclaimResultSchema,
   SessionsSendParamsSchema,
+  SessionsSendReconcileParamsSchema,
+  SessionsSendReconcileResultSchema,
   SessionsAbortParamsSchema,
   SessionsPatchParamsSchema,
   SessionsPluginPatchParamsSchema,

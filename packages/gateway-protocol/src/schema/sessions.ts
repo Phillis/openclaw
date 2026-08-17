@@ -463,6 +463,25 @@ export const SessionsSendParamsSchema = closedObject({
   idempotencyKey: Type.Optional(NonEmptyString),
 });
 
+/**
+ * Reconciles one client-issued send against the live run registry and the durable
+ * transcript. Reports whether the run is currently in flight, already durably
+ * applied to the transcript (so a retry would duplicate), or absent from both
+ * (so a retry is safe because no agent execution side effect could have happened).
+ */
+export const SessionsSendReconcileParamsSchema = closedObject({
+  key: NonEmptyString,
+  agentId: Type.Optional(NonEmptyString),
+  runId: NonEmptyString,
+});
+
+export const SessionsSendReconcileResultSchema = closedObject({
+  key: NonEmptyString,
+  agentId: NonEmptyString,
+  runId: NonEmptyString,
+  status: Type.Union([Type.Literal("active"), Type.Literal("applied"), Type.Literal("not_found")]),
+});
+
 /** Subscribes a client to live message updates for one session. */
 export const SessionsMessagesSubscribeParamsSchema = closedObject({
   key: NonEmptyString,
@@ -867,6 +886,8 @@ export type SessionWorktreeInfo = Static<typeof SessionWorktreeInfoSchema>;
 export type SessionsCreateParams = Static<typeof SessionsCreateParamsSchema>;
 export type SessionsCreateResult = Static<typeof SessionsCreateResultSchema>;
 export type SessionsSendParams = Static<typeof SessionsSendParamsSchema>;
+export type SessionsSendReconcileParams = Static<typeof SessionsSendReconcileParamsSchema>;
+export type SessionsSendReconcileResult = Static<typeof SessionsSendReconcileResultSchema>;
 export type SessionsMessagesSubscribeParams = Static<typeof SessionsMessagesSubscribeParamsSchema>;
 export type SessionsMessagesUnsubscribeParams = Static<
   typeof SessionsMessagesUnsubscribeParamsSchema

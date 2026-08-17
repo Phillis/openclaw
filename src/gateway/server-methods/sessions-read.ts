@@ -10,6 +10,7 @@ import {
   validateSessionsPreviewParams,
   validateSessionsResolveParams,
   validateSessionsSearchParams,
+  validateSessionsSendReconcileParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import {
@@ -22,7 +23,10 @@ import {
   serializeSessionCleanupResult,
   type SessionEntry,
 } from "../../config/sessions.js";
-import { listSessionEntriesReadOnly } from "../../config/sessions/session-accessor.js";
+import {
+  listSessionEntriesReadOnly,
+  loadTranscriptEvents,
+} from "../../config/sessions/session-accessor.js";
 import { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
 import { buildProjectedAgentRunIndex } from "../../infra/agent-run-registry.js";
 import {
@@ -35,6 +39,7 @@ import {
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
+import { buildRunUserTurnIdempotencyKey } from "../../sessions/user-turn-transcript.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import {
   canAccessIncognitoSession,
@@ -715,4 +720,108 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     );
     respond(true, { messages }, undefined);
   },
+  "sessions.sendReconcile": async ({ params, respond, context }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateSessionsSendReconcileParams,
+        "sessions.sendReconcile",
+        respond,
+      )
+    ) {
+      return;
+    }
+    const p = params as { key: string; agentId?: string; runId: string };
+    const key = requireSessionKey(p.key, respond);
+    if (!key) {
+      return;
+    }
+    const cfg = context.getRuntimeConfig();
+    const requestedAgent = resolveRequestedGlobalAgentId(
+      cfg,
+      key,
+      normalizeOptionalString(p.agentId),
+    );
+    if (!requestedAgent.ok) {
+      respond(false, undefined, requestedAgent.error);
+      return;
+    }
+    const { target, storePath, entry } = loadSessionEntriesForTarget({
+      key,
+      cfg,
+      agentId: requestedAgent.agentId,
+    });
+    const canonicalKey = target.canonicalKey;
+    const resolvedAgentId = target.agentId ?? resolveDefaultAgentId(cfg);
+    const sessionId = entry?.sessionId;
+    const resultBase = {
+      key: canonicalKey,
+      agentId: resolvedAgentId,
+      runId: p.runId,
+    };
+
+    // (1) Live run registry: exact runId must own this session.
+    const trackedActiveRuns = collectTrackedActiveSessionRuns(context);
+    const liveEntry = trackedActiveRuns.find((run) => run.runId === p.runId);
+    if (
+      liveEntry &&
+      liveEntry.sessionKey === canonicalKey &&
+      isLiveEntryAgentMatch(liveEntry.agentId, resolvedAgentId)
+    ) {
+      respond(true, { ...resultBase, status: "active" }, undefined);
+      return;
+    }
+
+    // (2) Durable transcript: exact `${runId}:user` user turn must be present.
+    if (!sessionId) {
+      respond(true, { ...resultBase, status: "not_found" }, undefined);
+      return;
+    }
+    const idempotencyKey = buildRunUserTurnIdempotencyKey(p.runId);
+    let found = false;
+    try {
+      const events = await loadTranscriptEvents({
+        agentId: resultBase.agentId,
+        sessionId,
+        ...(canonicalKey ? { sessionKey: canonicalKey } : {}),
+        storePath,
+      });
+      found = events.some((event) => {
+        if (!event || typeof event !== "object" || Array.isArray(event)) {
+          return false;
+        }
+        const message = (event as { message?: unknown }).message;
+        if (!message || typeof message !== "object" || Array.isArray(message)) {
+          return false;
+        }
+        const record = message as Record<string, unknown>;
+        return record.role === "user" && record.idempotencyKey === idempotencyKey;
+      });
+    } catch (error) {
+      // Projection unavailable is a transient rebuild state, not authoritative
+      // not_found. Surface it so callers can retry instead of misclassifying.
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error), {
+          retryable: true,
+        }),
+      );
+      return;
+    }
+    if (found) {
+      respond(true, { ...resultBase, status: "applied" }, undefined);
+      return;
+    }
+
+    // (3) Neither live nor durable proof.
+    respond(true, { ...resultBase, status: "not_found" }, undefined);
+  },
 };
+
+function isLiveEntryAgentMatch(liveAgentId: string | undefined, resolvedAgentId: string): boolean {
+  if (liveAgentId === undefined) {
+    return true;
+  }
+  return normalizeAgentId(liveAgentId) === normalizeAgentId(resolvedAgentId);
+}
