@@ -4,6 +4,7 @@ import {
   SessionObserverDigestSchema,
   type SessionObserverDigest,
 } from "../../packages/gateway-protocol/src/schema/sessions.js";
+import { PreparedModelRuntimeOwnerNotPublishedError } from "../agents/prepared-model-runtime.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeSessionObserverModelOutput } from "./session-observer-model.js";
 import {
@@ -578,6 +579,68 @@ describe("session observer", () => {
     expect(harness.broadcastToConnIds.mock.calls.at(-1)?.[1]).toMatchObject({
       headline: "After owner published",
     });
+    harness.observer.dispose();
+  });
+
+  it("does not disable the observer when the prepared-runtime owner stays unpublished", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const prepareModel = vi.fn(async () => {
+      throw new PreparedModelRuntimeOwnerNotPublishedError(
+        "prepared model runtime owner was not published for /agents/main",
+      );
+    });
+    const completeModel = vi.fn(async () =>
+      modelMessage({ headline: "Should never run", health: "on-track" }),
+    );
+    const harness = createHarness({ prepareModel, completeModel });
+    startAndAddToolNotes(harness.observer);
+
+    // Run five cycles; prepareModel keeps failing with the transient lifecycle error.
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      await vi.advanceTimersByTimeAsync(12_000);
+      await flushObserver();
+      for (let index = 0; index < 4; index += 1) {
+        harness.observer.handleEvent(
+          event({
+            stream: "tool",
+            data: {
+              phase: "start",
+              name: "read",
+              args: { path: `cycle-${cycle}-${index}` },
+            },
+          }),
+        );
+      }
+    }
+    await vi.advanceTimersByTimeAsync(12_000);
+    await flushObserver();
+
+    // prepareModel retried every cycle; the observer did not retire the run.
+    expect(prepareModel.mock.calls.length).toBeGreaterThanOrEqual(5);
+    expect(completeModel).not.toHaveBeenCalled();
+    expect(harness.broadcastToConnIds).not.toHaveBeenCalled();
+    harness.observer.dispose();
+  });
+
+  it("still disables after persistent non-transient prepare failures", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const prepareModel = vi.fn(async () => {
+      throw new Error("Auth lookup failed for provider openai: missing api key");
+    });
+    const completeModel = vi.fn(async () =>
+      modelMessage({ headline: "Should never run", health: "on-track" }),
+    );
+    const harness = createHarness({ prepareModel, completeModel });
+    startAndAddToolNotes(harness.observer);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flushObserver();
+
+    // Real auth/config errors must still retire the model after the threshold.
+    expect(prepareModel.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(completeModel).not.toHaveBeenCalled();
     harness.observer.dispose();
   });
 
