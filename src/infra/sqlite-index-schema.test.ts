@@ -51,12 +51,33 @@ function tracePreparedSql(database: DatabaseSync): {
 }
 
 describe("repairCanonicalSqliteIndexes", () => {
-  it("runs one whole-file integrity check for healthy indexes", () => {
+  it("runs one quick_check whole-file screen for healthy indexes by default", () => {
     const db = createDatabase();
     try {
       const traced = tracePreparedSql(db);
 
       verifyAndRepairCanonicalSqliteIndexes(traced.database, "test database", CANONICAL_SCHEMA);
+
+      const integrityStatements = traced.statements.filter((sql) =>
+        sql.startsWith("PRAGMA integrity_check"),
+      );
+      expect(integrityStatements).toEqual([]);
+      expect(traced.statements.filter((sql) => sql.startsWith("PRAGMA quick_check"))).toEqual([
+        "PRAGMA quick_check;",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("runs the full integrity_check when the caller opts into the full screen", () => {
+    const db = createDatabase();
+    try {
+      const traced = tracePreparedSql(db);
+
+      verifyAndRepairCanonicalSqliteIndexes(traced.database, "test database", CANONICAL_SCHEMA, {
+        screen: "full",
+      });
 
       expect(traced.statements.filter((sql) => sql.startsWith("PRAGMA integrity_check"))).toEqual([
         "PRAGMA integrity_check;",
@@ -199,7 +220,13 @@ describe("repairCanonicalSqliteIndexes", () => {
           .all(),
       ).toEqual([]);
 
-      verifyAndRepairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA);
+      // quick_check skips index content checks, so the synchronous open
+      // path's default physical-screen cannot detect this drift on its own.
+      // The repair path opts into the full screen so it still catches the
+      // mismatch and triggers the per-table integrity check.
+      verifyAndRepairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA, {
+        screen: "full",
+      });
 
       expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
       expect(
@@ -391,6 +418,48 @@ describe("repairCanonicalSqliteIndexes", () => {
       ).toEqual({
         sql: "CREATE UNIQUE INDEX idx_records_identity ON temp_records(id)",
       });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("verifyAndRepairCanonicalSqliteIndexes screen modes", () => {
+  it("physical-screen mode does not report drift hidden behind canonical schema text", () => {
+    // quick_check skips UNIQUE and index content checks; the schema
+    // fingerprint matches canonical schema text. The synchronous open path
+    // must not raise a false repair for drift it cannot see. Only full
+    // (full: "full") and the background integrity verifier catch it.
+    const db = createDatabase();
+    try {
+      db.exec(`
+        DROP INDEX idx_records_identity;
+        CREATE UNIQUE INDEX idx_records_identity ON records(id);
+        INSERT INTO records VALUES
+          (1, 'Tenant', NULL, 1),
+          (2, 'Other', NULL, 1);
+      `);
+      db.enableDefensive?.(false);
+      db.exec("PRAGMA writable_schema = ON;");
+      db.prepare("UPDATE sqlite_schema SET sql = ? WHERE name = 'idx_records_identity'").run(
+        `CREATE UNIQUE INDEX idx_records_identity
+           ON records(
+             tenant_id COLLATE NOCASE,
+             IFNULL(external_id, '')
+           )
+          WHERE active = 1`,
+      );
+      db.exec("PRAGMA writable_schema = OFF;");
+      const schemaVersion = db.prepare("PRAGMA schema_version").get() as {
+        schema_version?: unknown;
+      };
+      db.exec(`PRAGMA schema_version = ${Number(schemaVersion.schema_version) + 1};`);
+
+      expect(
+        verifyAndRepairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA, {
+          screen: "physical-screen",
+        }),
+      ).toEqual([]);
     } finally {
       db.close();
     }

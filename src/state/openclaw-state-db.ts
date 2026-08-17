@@ -578,10 +578,18 @@ function assertStateDatabaseIntegrityBeforeMutation(
   if (userVersion === OPENCLAW_STATE_SCHEMA_VERSION) {
     verifyAndRepairCanonicalSqliteIndexes(database, pathname, OPENCLAW_STATE_SCHEMA_SQL, {
       allowMissingColumns: true,
+      // Synchronous current-version open: rely on the quick_check physical
+      // screen plus the index fingerprint repair. Full integrity_check runs
+      // in the migration branch below, doctor repair, explicit schema
+      // ensure, readonly maintenance, backup/snapshot, and the background
+      // integrity verifier (src/state/openclaw-database-verify.ts,
+      // initial delay + daily cadence).
+      screen: "physical-screen",
       validateAfterRepair: () => assertCurrentStateRuntimeSchema(database, pathname),
     });
   } else {
-    // Every physical open proves the full file before schema mutation or exposure.
+    // Pending migration or unversioned database: prove the full file before
+    // any schema mutation or exposure.
     assertSqliteIntegrity(database, pathname);
   }
   if (userVersion === OPENCLAW_STATE_SCHEMA_VERSION) {

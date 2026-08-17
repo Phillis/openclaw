@@ -20,7 +20,7 @@ export type SqliteIntegrityConfirmation =
   | { status: "failed"; error: Error; generation: SqliteFileGeneration; terminal: true }
   | { status: "healthy"; generation: SqliteFileGeneration };
 
-type SqliteCheckPragma = "integrity_check";
+type SqliteCheckPragma = "integrity_check" | "quick_check";
 type SqliteForeignKeyViolation = {
   fkid: bigint;
   parent: string;
@@ -49,6 +49,30 @@ export function assertSqliteIntegrity(
   databaseLabel: string,
 ): SqliteIntegrityChecks {
   const integrityCheck = runSqliteCheck(database, databaseLabel, "integrity_check");
+  runSqliteForeignKeyCheck(database, databaseLabel);
+  return { integrityCheck };
+}
+
+/**
+ * Cheap synchronous open-time screen for structural damage.
+ *
+ * quick_check verifies page-level formatting, freelist integrity, missing
+ * pages, and misformatted records — the failure modes that justify refusing
+ * to open a file at all. It intentionally skips UNIQUE and row-vs-index
+ * content checks; those belong to {@link assertSqliteIntegrity} (migrations,
+ * repairs, doctor/backup/snapshot, explicit maintenance, readonly opens) and
+ * the background integrity verifier
+ * (`src/state/openclaw-database-verify.ts`, initial delay + daily cadence).
+ *
+ * Foreign-key check is also run: cheap relative to integrity_check and
+ * catches real referential corruption that would otherwise surface later as
+ * foreign-key violation errors during writes.
+ */
+export function assertSqlitePhysicalScreen(
+  database: DatabaseSync,
+  databaseLabel: string,
+): SqliteIntegrityChecks {
+  const integrityCheck = runSqliteCheck(database, databaseLabel, "quick_check");
   runSqliteForeignKeyCheck(database, databaseLabel);
   return { integrityCheck };
 }

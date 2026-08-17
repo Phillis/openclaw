@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { assertSqlitePhysicalScreen } from "../infra/sqlite-integrity.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import { configureSqlitePreSchemaPragmas } from "../infra/sqlite-wal.js";
 import {
@@ -68,7 +68,17 @@ export function withOpenClawStateStartupMigrationCheckpointDatabase<T>(
     configureSqlitePreSchemaPragmas(db, {
       busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
     });
-    assertSqliteIntegrity(db, pathname);
+    // Startup migration checkpoint runs synchronously inside the gateway
+    // boot path and is invoked multiple times per startup. The full
+    // integrity verification is owned by the regular
+    // openOpenClawStateDatabase physical-screen (current-version) or full
+    // check (migration pending), explicit schema ensure, doctor/backup,
+    // readonly maintenance, and the background integrity verifier (initial
+    // delay + daily cadence; src/state/openclaw-database-verify.ts). A
+    // quick_check screen here keeps a corrupt file from being treated as
+    // the checkpoint source of truth without paying for the full O(NlogN)
+    // sweep on every boot.
+    assertSqlitePhysicalScreen(db, pathname);
     ensureStartupMigrationCheckpointSchema(db, pathname);
     return callback(db);
   } finally {
