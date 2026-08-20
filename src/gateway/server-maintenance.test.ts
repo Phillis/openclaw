@@ -470,20 +470,32 @@ describe("startGatewayMaintenanceTimers", () => {
     await stopMaintenanceTimers(timers);
   });
 
-  it("refreshes automatic health snapshots without live channel probes", async () => {
+  it("refreshes changed health once without creating a periodic feedback loop", async () => {
     vi.useFakeTimers();
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
     const deps = createMaintenanceTimerDeps();
-    deps.refreshGatewayHealthSnapshot = vi.fn(async () => ({ ok: true }) as HealthSummary);
+    let healthVersion = 1;
+    deps.getHealthVersion = () => healthVersion;
+    deps.refreshGatewayHealthSnapshot = vi.fn(async () => {
+      healthVersion += 1;
+      return { ok: true } as HealthSummary;
+    });
 
     const timers = startGatewayMaintenanceTimers(deps);
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(deps.refreshGatewayHealthSnapshot).toHaveBeenCalledWith({ probe: false });
 
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(deps.refreshGatewayHealthSnapshot).toHaveBeenCalledTimes(1);
 
+    healthVersion += 1;
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(deps.refreshGatewayHealthSnapshot).toHaveBeenCalledTimes(2);
     expect(deps.refreshGatewayHealthSnapshot).toHaveBeenLastCalledWith({ probe: false });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(deps.refreshGatewayHealthSnapshot).toHaveBeenCalledTimes(2);
 
     await stopMaintenanceTimers(timers);
   });

@@ -141,21 +141,28 @@ export function startGatewayMaintenanceTimers(params: {
   // changed (getHealthVersion), which avoids re-traversing all sessions/channels
   // every 60s while idle.
   let lastPeriodicHealthVersion = params.getHealthVersion();
+  const refreshPeriodicHealthSnapshot = async () => {
+    await params.refreshGatewayHealthSnapshot({ probe: false });
+    // Publishing a health snapshot advances healthVersion. Acknowledge that
+    // self-generated version here so the delta gate does not retrigger the
+    // same expensive all-agent session scan every minute while idle.
+    lastPeriodicHealthVersion = params.getHealthVersion();
+  };
   const healthInterval = setInterval(() => {
     const currentVersion = params.getHealthVersion();
     if (currentVersion === lastPeriodicHealthVersion) {
       return;
     }
     lastPeriodicHealthVersion = currentVersion;
-    void params
-      .refreshGatewayHealthSnapshot({ probe: false })
-      .catch((err: unknown) => params.logHealth.error(`refresh failed: ${formatError(err)}`));
+    void refreshPeriodicHealthSnapshot().catch((err: unknown) =>
+      params.logHealth.error(`refresh failed: ${formatError(err)}`),
+    );
   }, HEALTH_REFRESH_INTERVAL_MS);
 
   // Prime cache so first client gets a snapshot without waiting.
-  void params
-    .refreshGatewayHealthSnapshot({ probe: false })
-    .catch((err: unknown) => params.logHealth.error(`initial refresh failed: ${formatError(err)}`));
+  void refreshPeriodicHealthSnapshot().catch((err: unknown) =>
+    params.logHealth.error(`initial refresh failed: ${formatError(err)}`),
+  );
 
   const runWorktreeGc =
     params.runWorktreeGc ??
