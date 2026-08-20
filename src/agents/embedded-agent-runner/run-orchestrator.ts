@@ -19,6 +19,7 @@ import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-m
 import {
   buildAgentHookContextChannelFields,
   buildAgentHookContextIdentityFields,
+  buildAgentHookContextLineageFields,
 } from "../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
@@ -330,6 +331,8 @@ async function runEmbeddedAgentInternal(
             log,
             runId: params.runId,
             sessionId: params.sessionId,
+            ...(params.agentHarnessId ? { agentHarnessId: params.agentHarnessId } : {}),
+            ...(params.agentHarnessEpoch ? { agentHarnessEpoch: params.agentHarnessEpoch } : {}),
             tracker: startupStages,
           });
           params.onExecutionStarted?.({ lifecycleGeneration });
@@ -369,9 +372,18 @@ async function runEmbeddedAgentInternal(
           const hookCtx = {
             runId: params.runId,
             jobId: params.jobId,
+            ...(params.sourcePromptHash ? { sourcePromptHash: params.sourcePromptHash } : {}),
             agentId: workspaceResolution.agentId,
             sessionKey: resolvedSessionKey,
             sessionId: params.sessionId,
+            ...(params.agentHarnessId ? { agentHarnessId: params.agentHarnessId } : {}),
+            ...(params.agentHarnessEpoch ? { agentHarnessEpoch: params.agentHarnessEpoch } : {}),
+            ...buildAgentHookContextLineageFields({
+              sessionKey: resolvedSessionKey,
+              sessionId: params.sessionId,
+              spawnedBy: params.spawnedBy,
+              trustedInternalHandoff: params.trustedInternalHandoff,
+            }),
             workspaceDir: resolvedWorkspace,
             activeProjectKeys: [...activeProjectKeys],
             modelProviderId: provider,

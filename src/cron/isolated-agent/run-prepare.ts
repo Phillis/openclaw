@@ -81,8 +81,6 @@ import {
   resolveAgentWorkspaceDir,
   resolveCronStyleNow,
   resolveHookExternalContentSource,
-  isThinkingLevelSupported,
-  resolveSupportedThinkingLevel,
   resolveEffectiveAgentRuntime,
   resolveSessionRuntimeOverrideForProvider,
   resolveThinkingDefault,
@@ -457,28 +455,6 @@ export async function prepareCronRunContext(params: {
         catalog: thinkingSelection.catalog,
         agentRuntime: effectiveAgentRuntime,
       });
-    }
-    if (
-      !isThinkingLevelSupported({
-        provider,
-        model,
-        level: requestedThinkLevel,
-        catalog: thinkingSelection.catalog,
-        agentRuntime: effectiveAgentRuntime,
-      })
-    ) {
-      const fallbackThinkLevel = resolveSupportedThinkingLevel({
-        provider,
-        model,
-        level: requestedThinkLevel,
-        catalog: thinkingSelection.catalog,
-        agentRuntime: effectiveAgentRuntime,
-      });
-      if (fallbackThinkLevel !== requestedThinkLevel) {
-        logWarn(
-          `[cron:${input.job.id}] Thinking level "${requestedThinkLevel}" is not supported for ${provider}/${model}; using "${fallbackThinkLevel}" for this candidate.`,
-        );
-      }
     }
 
     const explicitTimeoutSeconds =

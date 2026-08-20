@@ -1,3 +1,4 @@
+import type { FailoverReason } from "../agents/embedded-agent-helpers/types.js";
 import type { AgentMessage } from "../agents/runtime/index.js";
 import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
@@ -46,6 +47,7 @@ import type {
 export type {
   PluginHookBeforeModelResolveAttachment,
   PluginHookBeforeModelResolveEvent,
+  PluginHookBeforeModelResolveOverrideName,
   PluginHookBeforeModelResolveResult,
   PluginHookBeforePromptBuildEvent,
   PluginHookBeforePromptBuildResult,
@@ -301,10 +303,33 @@ export type PluginHookRegistrationOptions<K extends PluginHookName> = {
 export type PluginHookAgentContext = {
   runId?: string;
   jobId?: string;
+  /**
+   * Stable identity for a caller-owned source prompt before runtime wrapping.
+   *
+   * Currently populated for non-empty isolated cron `agentTurn` payloads as
+   * `sha256:` plus the full lowercase SHA-256 digest of the canonicalized
+   * stored message. The raw source prompt is never exposed through this field.
+   */
+  sourcePromptHash?: `sha256:${string}`;
   trace?: DiagnosticTraceContext;
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;
+  /** Host-owned sticky harness lane for this session generation. */
+  agentHarnessId?: string;
+  /** Opaque host-owned lane epoch; changes only after explicit migration/reset. */
+  agentHarnessEpoch?: string;
+  /** Versioned host contract for trusted session ancestry and internal handoffs. */
+  lineageContractVersion?: 1;
+  /** Host-owned lineage facts. Raw prompt provenance never populates this field. */
+  sessionLineage?: {
+    spawnedBySessionKey?: string;
+    internalHandoff?: {
+      kind: "subagent-completion";
+      sourceSessionKey: string;
+      sourceSessionId?: string;
+    };
+  };
   workspaceDir?: string;
   /** Run-prepared repository identities; empty when the turn is outside a repository. */
   activeProjectKeys?: string[];
@@ -369,10 +394,30 @@ type PluginHookModelCallBaseEvent = {
   callId: string;
   sessionKey?: string;
   sessionId?: string;
+  /** Host-owned sticky harness lane effective for this call. */
+  agentHarnessId?: string;
+  /** Opaque host-owned lane epoch for this session generation. */
+  agentHarnessEpoch?: string;
   provider: string;
   model: string;
+  /** Original primary provider requested before fallback selection. */
+  requestedProvider?: string;
+  /** Original primary model requested before fallback selection. */
+  requestedModel?: string;
+  /** Explicit effective provider; mirrors `provider` for unambiguous attribution. */
+  effectiveProvider?: string;
+  /** Explicit effective model; mirrors `model` for unambiguous attribution. */
+  effectiveModel?: string;
+  /** True when the effective call is running on a fallback selection. */
+  fallbackUsed?: boolean;
+  /** Closed causal code when the host can attribute the fallback. */
+  fallbackReason?: FailoverReason;
   api?: string;
   transport?: string;
+  /** Requested reasoning/think effort applied to this model call. */
+  reasoningEffort?: string;
+  /** Effective provider fast-mode state when this model call started. */
+  fastMode?: boolean;
   /** Resolved effective context-token budget after model/config/agent caps. */
   contextTokenBudget?: number;
   /** Source that supplied the resolved context-token budget. */
@@ -392,6 +437,16 @@ export type PluginHookModelCallEndedEvent = PluginHookModelCallBaseEvent & {
   responseStreamBytes?: number;
   timeToFirstByteMs?: number;
   upstreamRequestIdHash?: string;
+  /** Provider-reported usage for this individual call, when available. */
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    reasoningTokens?: number;
+    promptTokens?: number;
+    total?: number;
+  };
 };
 
 export type PluginHookLlmOutputEvent = {
@@ -399,6 +454,18 @@ export type PluginHookLlmOutputEvent = {
   sessionId: string;
   provider: string;
   model: string;
+  /** Original primary provider requested before fallback selection. */
+  requestedProvider?: string;
+  /** Original primary model requested before fallback selection. */
+  requestedModel?: string;
+  /** Explicit effective provider; mirrors `provider` for unambiguous attribution. */
+  effectiveProvider?: string;
+  /** Explicit effective model; mirrors `model` for unambiguous attribution. */
+  effectiveModel?: string;
+  /** True when the effective output came from a fallback selection. */
+  fallbackUsed?: boolean;
+  /** Closed causal code when the host can attribute the fallback. */
+  fallbackReason?: FailoverReason;
   /** Resolved effective context-token budget after model/config/agent caps. */
   contextTokenBudget?: number;
   /** Source that supplied the resolved context-token budget. */
@@ -427,6 +494,8 @@ export type PluginHookLlmOutputEvent = {
     output?: number;
     cacheRead?: number;
     cacheWrite?: number;
+    reasoningTokens?: number;
+    promptTokens?: number;
     total?: number;
   };
   /**
@@ -443,6 +512,13 @@ export type PluginHookAgentEndEvent = {
   runId?: string;
   messages: unknown[];
   success: boolean;
+  /**
+   * True only when this event is terminal for the complete outer run. Model
+   * fallback candidates that may be followed by another candidate emit false.
+   * New hosts always populate this field; it remains optional so existing
+   * third-party harness source continues to compile.
+   */
+  terminal?: boolean;
   error?: string;
   durationMs?: number;
 };

@@ -31,6 +31,9 @@ type RuntimeLifecycleSnapshot = {
   connected?: boolean | null;
   restartPending?: boolean | null;
   reconnectAttempts?: number | null;
+  socketModeConnectionCount?: number | null;
+  socketModeConnectionCountObservedAt?: number | null;
+  socketModeSharedConnection?: boolean | null;
   lastConnectedAt?: number | null;
   lastDisconnect?:
     | string
@@ -385,6 +388,15 @@ export function buildRuntimeAccountStatusSnapshot<TExtra extends StatusSnapshotE
       : {}),
     ...(typeof runtime?.reconnectAttempts === "number"
       ? { reconnectAttempts: runtime.reconnectAttempts }
+      : {}),
+    ...(typeof runtime?.socketModeConnectionCount === "number"
+      ? { socketModeConnectionCount: runtime.socketModeConnectionCount }
+      : {}),
+    ...(typeof runtime?.socketModeConnectionCountObservedAt === "number"
+      ? { socketModeConnectionCountObservedAt: runtime.socketModeConnectionCountObservedAt }
+      : {}),
+    ...(typeof runtime?.socketModeSharedConnection === "boolean"
+      ? { socketModeSharedConnection: runtime.socketModeSharedConnection }
       : {}),
     ...(typeof runtime?.lastConnectedAt === "number"
       ? { lastConnectedAt: runtime.lastConnectedAt }

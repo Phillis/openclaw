@@ -184,6 +184,9 @@ export type NativeHookRelayProviderAdapter = {
     reason: string,
     failureDisposition?: Exclude<BeforeToolCallFailureDisposition, "blocked">,
   ) => NativeHookRelayProcessResponse;
+  renderPreToolUseRewriteResponse: (
+    updatedInput: Record<string, JsonValue>,
+  ) => NativeHookRelayProcessResponse;
   renderBeforeAgentFinalizeReviseResponse: (reason: string) => NativeHookRelayProcessResponse;
   renderBeforeAgentFinalizeStopResponse: (reason?: string) => NativeHookRelayProcessResponse;
   renderPermissionDecisionResponse: (

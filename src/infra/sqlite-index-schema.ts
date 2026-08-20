@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   assertSqliteIntegrity,
+  assertSqlitePhysicalScreen,
   assertSqliteTableIntegrity,
   isTerminalSqliteIntegrityError,
 } from "./sqlite-integrity.js";
@@ -31,6 +32,23 @@ type RepairCanonicalSqliteIndexesOptions = {
 };
 
 /**
+ * Screening mode for the whole-file preflight before index fingerprint repair.
+ *
+ * - "physical-screen" (default): `PRAGMA quick_check` plus foreign-key check.
+ *   Catches page-level damage, freelist corruption, misformatted records,
+ *   missing pages, and referential corruption. Skips UNIQUE and row-vs-index
+ *   content checks; the index repair's schema fingerprint loop covers textual
+ *   drift. Physical index-content drift hidden behind canonical schema text
+ *   is caught only by "full" or the background integrity verifier
+ *   (`src/state/openclaw-database-verify.ts`). Used by synchronous
+ *   agent/state opens and the startup migration checkpoint.
+ * - "full": `PRAGMA integrity_check` plus foreign-key check. Reserved for
+ *   paths that must prove row-vs-index consistency: pending migrations,
+ *   explicit schema ensure/repair, readonly maintenance, doctor/backup/snapshot.
+ */
+export type VerifyCanonicalSqliteIndexesScreen = "physical-screen" | "full";
+
+/**
  * Verify the whole file once, then use table scans only to locate repairable
  * index damage. Healthy opens must not multiply integrity work by table count.
  */
@@ -38,11 +56,18 @@ export function verifyAndRepairCanonicalSqliteIndexes(
   db: DatabaseSync,
   databaseLabel: string,
   schemaSql: string,
-  options: Omit<RepairCanonicalSqliteIndexesOptions, "verifyPhysicalIntegrity"> = {},
+  options: Omit<RepairCanonicalSqliteIndexesOptions, "verifyPhysicalIntegrity"> & {
+    screen?: VerifyCanonicalSqliteIndexesScreen;
+  } = {},
 ): string[] {
+  const screen = options.screen ?? "physical-screen";
   let integrityFailure: Error | undefined;
   try {
-    assertSqliteIntegrity(db, databaseLabel);
+    if (screen === "full") {
+      assertSqliteIntegrity(db, databaseLabel);
+    } else {
+      assertSqlitePhysicalScreen(db, databaseLabel);
+    }
   } catch (error) {
     if (!(error instanceof Error) || !isTerminalSqliteIntegrityError(error)) {
       throw error;

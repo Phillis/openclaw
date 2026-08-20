@@ -1,4 +1,5 @@
 // Plugin state store tests cover per-plugin persisted state reads and writes.
+/* oxlint-disable max-lines -- Plugin-state behavior shares one isolated SQLite harness. */
 import { chmodSync, existsSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -157,6 +158,45 @@ describe("plugin state keyed store", () => {
         }),
       ).toMatchObject([{ key: "workspace:event:0002", value: { count: 2 } }]);
     });
+  });
+
+  it("validates bounded key-range parameters", async () => {
+    await expectPluginStateStoreError(
+      Promise.resolve().then(() =>
+        pluginStateEntriesInKeyRange({
+          pluginId: "memory-core",
+          namespace: "events",
+          keyStartInclusive: "a",
+          keyEndExclusive: "b",
+          limit: 0,
+        }),
+      ),
+      { code: "PLUGIN_STATE_INVALID_INPUT", operation: "entries" },
+    );
+    await expectPluginStateStoreError(
+      Promise.resolve().then(() =>
+        pluginStateEntriesInKeyRange({
+          pluginId: "memory-core",
+          namespace: "events",
+          keyStartInclusive: "a",
+          keyEndExclusive: "b",
+          limit: Number.MAX_SAFE_INTEGER + 1,
+        }),
+      ),
+      { code: "PLUGIN_STATE_INVALID_INPUT", operation: "entries" },
+    );
+    await expectPluginStateStoreError(
+      Promise.resolve().then(() =>
+        pluginStateEntriesInKeyRange({
+          pluginId: "memory-core",
+          namespace: "events",
+          keyStartInclusive: "b",
+          keyEndExclusive: "b",
+          limit: 1,
+        }),
+      ),
+      { code: "PLUGIN_STATE_INVALID_INPUT", operation: "entries" },
+    );
   });
 
   it("updates a key from the current stored value", async () => {

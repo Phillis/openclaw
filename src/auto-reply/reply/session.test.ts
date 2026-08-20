@@ -4596,6 +4596,44 @@ describe("persistSessionUsageUpdate", () => {
     expect(storedEntry2?.goal?.status).toBe("budget_limited");
   });
 
+  it("reuses independent harness lane epochs across ordinary tier switches", async () => {
+    const storePath = await createStorePath("openclaw-usage-harness-lanes-");
+    await seedSessionStore(storePath, sessionKey, {
+      sessionId: "s1",
+      updatedAt: 1,
+    });
+    const recordHarness = async (agentHarnessId: string) => {
+      const persisted = await persistSessionUsageUpdate({
+        storePath,
+        sessionKey,
+        usage: { input: 10, output: 1, total: 11 },
+        agentHarnessId,
+        providerUsed: agentHarnessId === "codex" ? "openai" : "minimax",
+        modelUsed: agentHarnessId === "codex" ? "gpt-test" : "m3-test",
+      });
+      expect(persisted).toEqual(readSessionStoreFast(storePath)[sessionKey]);
+      expect(loadSessionEntry({ storePath, sessionKey, readConsistency: "latest" })).toEqual(
+        persisted,
+      );
+      return persisted;
+    };
+
+    const codexFirst = await recordHarness("codex");
+    const codexEpoch = codexFirst?.agentHarnessLaneEpochs?.codex;
+    const openclaw = await recordHarness("openclaw");
+    const openclawEpoch = openclaw?.agentHarnessLaneEpochs?.openclaw;
+    const codexSecond = await recordHarness("codex");
+
+    expect(codexEpoch).toBeTruthy();
+    expect(openclawEpoch).toBeTruthy();
+    expect(openclawEpoch).not.toBe(codexEpoch);
+    expect(codexSecond?.agentHarnessEpoch).toBe(codexEpoch);
+    expect(codexSecond?.agentHarnessLaneEpochs).toEqual({
+      codex: codexEpoch,
+      openclaw: openclawEpoch,
+    });
+  });
+
   it.each([
     {
       name: "preserves the displayed session model when heartbeat usage uses a heartbeat model",

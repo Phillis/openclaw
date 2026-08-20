@@ -175,6 +175,7 @@ export async function resolveReplyDirectives(params: {
   opts?: GetReplyOptions;
   skillFilter?: string[];
   preparedModelCatalog?: ModelCatalogSnapshot;
+  loadPreparedModelCatalog?: () => Promise<ModelCatalogSnapshot>;
 }): Promise<ReplyDirectiveResult> {
   const {
     ctx,
@@ -460,6 +461,7 @@ export async function resolveReplyDirectives(params: {
           hasResolvedHeartbeatModelOverride,
           isHeartbeat: opts?.isHeartbeat === true,
           preparedModelCatalog: params.preparedModelCatalog,
+          loadPreparedModelCatalog: params.loadPreparedModelCatalog,
         });
   } catch (error) {
     if (error instanceof ModelSelectionLockedError) {

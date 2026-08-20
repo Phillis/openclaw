@@ -131,6 +131,27 @@ describe("buildBeforeModelResolveAttachments", () => {
     expect(buildBeforeModelResolveAttachments(undefined)).toBeUndefined();
     expect(buildBeforeModelResolveAttachments([])).toBeUndefined();
   });
+
+  it("maps all current-turn media modalities without exposing locations", () => {
+    expect(
+      buildBeforeModelResolveAttachments(
+        [{ mimeType: "image/png" }, { mimeType: "image/jpeg" }],
+        [
+          { kind: "image", contentType: "image/png", path: "/private/input.png" },
+          { kind: "audio", contentType: "audio/mpeg", url: "https://example.test/input.mp3" },
+          { kind: "video", contentType: "video/mp4" },
+          { kind: "document", path: "/private/report.pdf" },
+          { kind: "sticker", contentType: "image/webp" },
+        ],
+      ),
+    ).toEqual([
+      { kind: "image", mimeType: "image/png" },
+      { kind: "audio", mimeType: "audio/mpeg" },
+      { kind: "video", mimeType: "video/mp4" },
+      { kind: "document", mimeType: "application/pdf" },
+      { kind: "image", mimeType: "image/webp" },
+    ]);
+  });
 });
 
 describe("resolveHookModelSelection", () => {
@@ -164,6 +185,8 @@ describe("resolveHookModelSelection", () => {
       runBeforeModelResolve: vi.fn(async () => ({
         providerOverride: "vision-provider",
         modelOverride: "vision-model",
+        thinkingLevelOverride: "high" as const,
+        fastModeOverride: true,
       })),
     };
 
@@ -177,11 +200,27 @@ describe("resolveHookModelSelection", () => {
     });
 
     expect(hookRunner.runBeforeModelResolve).toHaveBeenCalledWith(
-      { prompt: "describe this image", attachments },
+      {
+        controlContractVersion: 1,
+        supportedOverrides: [
+          "modelOverride",
+          "providerOverride",
+          "thinkingLevelOverride",
+          "fastModeOverride",
+        ],
+        prompt: "describe this image",
+        provider: "default-provider",
+        model: "default-model",
+        attachments,
+      },
       hookContext,
     );
-    expect(result.provider).toBe("vision-provider");
-    expect(result.modelId).toBe("vision-model");
+    expect(result).toEqual({
+      provider: "vision-provider",
+      modelId: "vision-model",
+      thinkingLevelOverride: "high",
+      fastModeOverride: true,
+    });
   });
 
   it("omits the attachments key for text-only before_model_resolve hooks", async () => {
@@ -199,7 +238,18 @@ describe("resolveHookModelSelection", () => {
     });
 
     expect(hookRunner.runBeforeModelResolve).toHaveBeenCalledWith(
-      { prompt: "text only" },
+      {
+        controlContractVersion: 1,
+        supportedOverrides: [
+          "modelOverride",
+          "providerOverride",
+          "thinkingLevelOverride",
+          "fastModeOverride",
+        ],
+        prompt: "text only",
+        provider: "default-provider",
+        model: "default-model",
+      },
       hookContext,
     );
   });

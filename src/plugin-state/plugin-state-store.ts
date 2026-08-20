@@ -9,6 +9,7 @@ import {
   pluginStateDelete,
   pluginStateDeleteIf,
   pluginStateEntries,
+  pluginStateEntriesInKeyRange,
   pluginStateLookup,
   pluginStateRegister,
   pluginStateRegisterIfAbsent,
@@ -38,6 +39,7 @@ import {
 export type {
   OpenKeyedStoreOptions,
   PluginStateEntry,
+  PluginStateKeyRangeQuery,
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
 } from "./plugin-state-store.types.js";
@@ -203,6 +205,7 @@ function createKeyedStoreForPluginId<T>(
     consume: async (...args) => store.consume(...args),
     delete: async (...args) => store.delete(...args),
     entries: async () => store.entries(),
+    entriesInKeyRange: async (query) => store.entriesInKeyRange(query),
     clear: async () => store.clear(),
   };
 }
@@ -308,6 +311,17 @@ function createSyncKeyedStoreForPluginId<T>(
       return pluginStateEntries({
         pluginId,
         namespace,
+        ...(env ? { env } : {}),
+      }) as PluginStateEntry<T>[];
+    },
+    entriesInKeyRange(query) {
+      return pluginStateEntriesInKeyRange({
+        pluginId,
+        namespace,
+        keyStartInclusive: query.keyStartInclusive,
+        keyEndExclusive: query.keyEndExclusive,
+        limit: query.limit,
+        ...(query.order ? { order: query.order } : {}),
         ...(env ? { env } : {}),
       }) as PluginStateEntry<T>[];
     },

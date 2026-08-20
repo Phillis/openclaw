@@ -152,6 +152,12 @@ export type ChannelAccountSnapshot = {
   connected?: boolean;
   restartPending?: boolean;
   reconnectAttempts?: number;
+  /** Slack Socket Mode's app-wide connection count from the latest hello frame. */
+  socketModeConnectionCount?: number;
+  /** Timestamp for the latest Socket Mode connection-count observation. */
+  socketModeConnectionCountObservedAt?: number | null;
+  /** True when the latest Socket Mode hello reported more than one connection. */
+  socketModeSharedConnection?: boolean;
   lastConnectedAt?: number | null;
   lastDisconnect?:
     | string

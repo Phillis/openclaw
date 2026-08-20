@@ -200,6 +200,57 @@ describe("applyAgentCompactionSettingsFromConfig", () => {
     expect(settingsManager.applyOverrides).not.toHaveBeenCalled();
   });
 
+  it("applies contextUsageThreshold override and makes shouldCompact trigger at the configured share", () => {
+    const settingsManager = SettingsManager.inMemory();
+    const applyOverrides = vi.spyOn(settingsManager, "applyOverrides");
+
+    const result = applyAgentCompactionSettingsFromConfig({
+      settingsManager,
+      cfg: { agents: { defaults: { compaction: { contextUsageThreshold: 0.8 } } } },
+      contextTokenBudget: 100_000,
+    });
+
+    expect(result.compaction).toEqual({ reserveTokens: 20_000, keepRecentTokens: 20_000 });
+    expect(result.didOverride).toBe(true);
+    expect(applyOverrides).toHaveBeenCalledWith({
+      compaction: { reserveTokens: 20_000, contextUsageThreshold: 0.8 },
+    });
+    expect(settingsManager.getCompactionSettings()).toMatchObject({
+      enabled: true,
+      contextUsageThreshold: 0.8,
+    });
+    // At 80% of the window (80_000 of 100_000) compaction should fire.
+    expect(shouldCompact(80_001, 100_000, { enabled: true, ...result.compaction })).toBe(true);
+    // Just under the threshold it should not fire.
+    expect(shouldCompact(79_999, 100_000, { enabled: true, ...result.compaction })).toBe(false);
+  });
+
+  it("does not apply contextUsageThreshold when it is outside the valid fraction range", () => {
+    const settingsManager = SettingsManager.inMemory();
+    const applyOverrides = vi.spyOn(settingsManager, "applyOverrides");
+
+    applyAgentCompactionSettingsFromConfig({
+      settingsManager,
+      cfg: { agents: { defaults: { compaction: { contextUsageThreshold: 1 } } } },
+      contextTokenBudget: 100_000,
+    });
+    applyAgentCompactionSettingsFromConfig({
+      settingsManager,
+      cfg: { agents: { defaults: { compaction: { contextUsageThreshold: 0 } } } },
+      contextTokenBudget: 100_000,
+    });
+    applyAgentCompactionSettingsFromConfig({
+      settingsManager,
+      cfg: { agents: { defaults: { compaction: { contextUsageThreshold: -0.5 } } } },
+      contextTokenBudget: 100_000,
+    });
+
+    expect(applyOverrides).not.toHaveBeenCalledWith(
+      expect.objectContaining({ compaction: { contextUsageThreshold: 1 } }),
+    );
+    expect(settingsManager.getCompactionSettings().contextUsageThreshold).toBeUndefined();
+  });
+
   it("caps the effective reserve so small-context models do not compact at token one", () => {
     // Embedded runner default reserveTokens is 16 384. With a 16 384 context window
     // both the default reserve and floor exceed the safe maximum of 8 384.

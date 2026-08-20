@@ -98,6 +98,8 @@ export async function prepareCodexAttemptContext(
     agentId: sessionAgentId,
     sessionKey: sandboxSessionKey,
     sessionId: params.sessionId,
+    ...(params.agentHarnessId ? { agentHarnessId: params.agentHarnessId } : {}),
+    ...(params.agentHarnessEpoch ? { agentHarnessEpoch: params.agentHarnessEpoch } : {}),
     workspaceDir: params.workspaceDir,
     messageProvider: params.messageProvider ?? undefined,
     trigger: params.trigger,

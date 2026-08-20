@@ -18,6 +18,7 @@ export async function persistCompactionCheckpoint(params: {
   config?: OpenClawConfig;
   sessionKey?: string;
   sessionId: string;
+  agentHarnessId?: string;
   trigger?: "budget" | "overflow" | "manual";
   snapshot?: CapturedCompactionCheckpointSnapshot | null;
   summary?: string;
@@ -45,6 +46,7 @@ export async function persistCompactionCheckpoint(params: {
       ...(params.sessionTarget?.agentId ? { agentId: params.sessionTarget.agentId } : {}),
       sessionKey: params.sessionKey,
       sessionId: params.sessionId,
+      agentHarnessId: params.agentHarnessId,
       reason: resolveSessionCompactionCheckpointReason({ trigger: params.trigger }),
       snapshot: params.snapshot,
       summary: params.summary,

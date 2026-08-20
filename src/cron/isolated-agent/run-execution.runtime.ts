@@ -5,6 +5,10 @@ export {
 } from "../../agents/agent-scope.js";
 export { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 export { resolveCronAgentLane } from "../../agents/lanes.js";
+export {
+  beginAgentHarnessAgentEndDeferral,
+  finalizeAgentHarnessAgentEndDeferral,
+} from "../../agents/harness/lifecycle-hook-helpers.js";
 export { ensureSelectedAgentHarnessPlugin } from "../../agents/harness/runtime-plugin.js";
 export { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 export { runWithModelFallback } from "../../agents/model-fallback-runner.js";

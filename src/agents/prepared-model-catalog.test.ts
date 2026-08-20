@@ -70,6 +70,7 @@ import {
   getPreparedModelCatalogSnapshot,
   loadPreparedModelCatalogOwnerSnapshot,
   loadPreparedModelCatalogSnapshot,
+  loadResolvedPublishedConfiguredModelCatalogOwner,
   loadResolvedPublishedModelCatalogOwner,
   loadPublishedPreparedModelCatalog,
   loadPublishedPreparedModelCatalogOwnerSnapshot,
@@ -317,6 +318,32 @@ describe("prepared model catalog access", () => {
       metadataSnapshot: fullSnapshot.metadataSnapshot,
       modelCatalog: committedSnapshot.modelCatalog,
     });
+  });
+
+  it("keeps configured published owners lazy until full inventory is requested", async () => {
+    const configuredCatalog = {
+      entries: [{ provider: "test", id: "configured", name: "Configured" }],
+      routeVariants: [],
+    };
+    const discoveredCatalog = {
+      entries: [{ provider: "test", id: "discovered", name: "Discovered" }],
+      routeVariants: [],
+    };
+    const loadFullModelCatalog = vi.fn(async () => discoveredCatalog);
+    mocks.prepareSnapshot.mockResolvedValue({
+      ...fullSnapshot,
+      agentDir: "/tmp/prepared-model-catalog-agent",
+      config: { agents: { list: [{ id: "main", default: true }] } },
+      modelCatalog: configuredCatalog,
+      loadFullModelCatalog,
+    });
+
+    const owner = await loadResolvedPublishedConfiguredModelCatalogOwner({ agentId: "main" });
+
+    expect(owner.modelCatalog).toBe(configuredCatalog);
+    expect(loadFullModelCatalog).not.toHaveBeenCalled();
+    await expect(owner.loadFullModelCatalog()).resolves.toBe(discoveredCatalog);
+    expect(loadFullModelCatalog).toHaveBeenCalledOnce();
   });
 
   it("keeps a shared-directory published replacement owner ambiguous", async () => {

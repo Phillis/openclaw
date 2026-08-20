@@ -70,6 +70,8 @@ const resolveHooksGmailModelMock = createMock();
 export const resolveThinkingDefaultMock = createMock();
 export const resolveEffectiveAgentRuntimeMock = createMock();
 export const runWithModelFallbackMock = createMock();
+export const beginAgentHarnessAgentEndDeferralMock = createMock();
+export const finalizeAgentHarnessAgentEndDeferralMock = createMock();
 export const runEmbeddedAgentMock = createMock();
 export const runCliAgentMock = createMock();
 export const lookupContextTokensMock = createMock();
@@ -295,6 +297,8 @@ vi.mock("./run-execution.runtime.js", () => ({
   },
   resolveCronAgentLane: resolveCronAgentLaneMock,
   LiveSessionModelSwitchError,
+  beginAgentHarnessAgentEndDeferral: beginAgentHarnessAgentEndDeferralMock,
+  finalizeAgentHarnessAgentEndDeferral: finalizeAgentHarnessAgentEndDeferralMock,
   runWithModelFallback: runWithModelFallbackMock,
   isCliProvider: isCliProviderMock,
   runEmbeddedAgent: runEmbeddedAgentMock,
@@ -613,6 +617,9 @@ function resetRunExecutionMocks(): void {
   registerAgentRunContextMock.mockReturnValue(undefined);
   runWithModelFallbackMock.mockReset();
   runWithModelFallbackMock.mockResolvedValue(makeDefaultModelFallbackResult());
+  beginAgentHarnessAgentEndDeferralMock.mockReset();
+  finalizeAgentHarnessAgentEndDeferralMock.mockReset();
+  finalizeAgentHarnessAgentEndDeferralMock.mockResolvedValue(true);
   classifyEmbeddedAgentRunResultForModelFallbackMock.mockReset();
   classifyEmbeddedAgentRunResultForModelFallbackMock.mockReturnValue(null);
   mergeEmbeddedAgentRunResultForModelFallbackExhaustionMock.mockReset();

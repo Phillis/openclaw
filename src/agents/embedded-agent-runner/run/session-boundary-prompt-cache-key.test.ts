@@ -26,6 +26,27 @@ describe("resolveSessionBoundaryPromptCacheKey", () => {
     ).toBe("caller-key");
   });
 
+  it("keeps OpenAI cache affinity on its harness lane across unrelated boundaries", () => {
+    const resolve = (boundaryCount: number, agentHarnessEpoch: string) =>
+      resolveSessionBoundaryPromptCacheKey({
+        api: "openai-responses",
+        boundaryCount,
+        agentHarnessEpoch,
+        sessionId: "session-1",
+      });
+
+    expect(resolve(0, "codex-epoch-1")).toBe(resolve(9, "codex-epoch-1"));
+    expect(resolve(9, "codex-epoch-2")).not.toBe(resolve(9, "codex-epoch-1"));
+    expect(
+      resolveSessionBoundaryPromptCacheKey({
+        api: "minimax-m3",
+        boundaryCount: 0,
+        agentHarnessEpoch: "openclaw-epoch-1",
+        sessionId: "session-1",
+      }),
+    ).toBeUndefined();
+  });
+
   it("clamps derived keys from long internal session ids to OpenAI's 64-char limit", () => {
     const longSessionId = `internal-session-effects-session-companion-${"a".repeat(50)}`;
     const key = resolveSessionBoundaryPromptCacheKey({

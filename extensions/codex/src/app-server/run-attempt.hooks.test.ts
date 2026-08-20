@@ -123,6 +123,8 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
 
     const params = createParams(sessionFile, workspaceDir);
     params.runtimePlan = createCodexRuntimePlanFixture();
+    params.agentHarnessId = "codex";
+    params.agentHarnessEpoch = "codex-epoch";
     params.onAgentEvent = onRunAgentEvent;
     const run = runCodexAppServerAttempt(params);
     await harness.waitForMethod("turn/start");
@@ -142,7 +144,13 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
         sessionId?: string;
         systemPrompt?: string;
       },
-      { runId?: string; sessionId?: string; sessionKey?: string },
+      {
+        runId?: string;
+        sessionId?: string;
+        sessionKey?: string;
+        agentHarnessId?: string;
+        agentHarnessEpoch?: string;
+      },
     ];
     expect(llmInputPayload.runId).toBe("run-1");
     expect(llmInputPayload.sessionId).toBe("session-1");
@@ -150,6 +158,8 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
     expect(llmInputPayload.model).toBe("gpt-5.4-codex");
     expect(llmInputPayload.prompt).toBe("hello");
     expect(llmInputPayload.imagesCount).toBe(0);
+    expect(llmInputContext.agentHarnessId).toBe("codex");
+    expect(llmInputContext.agentHarnessEpoch).toBe("codex-epoch");
     expect(llmInputPayload.historyMessages).toEqual([]);
     expect(llmInputPayload.systemPrompt).toContain(
       "You are a personal agent running inside OpenClaw.",
@@ -236,6 +246,8 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
         resolvedRef?: string;
         runId?: string;
         sessionId?: string;
+        agentHarnessId?: string;
+        agentHarnessEpoch?: string;
         contextTokenBudget?: number;
         contextWindowSource?: string;
         contextWindowReferenceTokens?: number;
@@ -261,6 +273,8 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
     expect(llmOutputPayload.lastAssistant?.role).toBe("assistant");
     expect(llmOutputContext.runId).toBe("run-1");
     expect(llmOutputContext.sessionId).toBe("session-1");
+    expect(llmOutputContext.agentHarnessId).toBe("codex");
+    expect(llmOutputContext.agentHarnessEpoch).toBe("codex-epoch");
     expect(llmOutputContext.contextTokenBudget).toBe(150_000);
     expect(llmOutputContext.contextWindowSource).toBe("agentContextTokens");
     expect(llmOutputContext.contextWindowReferenceTokens).toBe(200_000);

@@ -7,6 +7,7 @@ import * as nodeSqlite from "./node-sqlite.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
 import {
   assertSqliteIntegrity,
+  assertSqlitePhysicalScreen,
   confirmSqliteFileIntegrity,
   isTerminalSqliteIntegrityError,
 } from "./sqlite-integrity.js";
@@ -181,6 +182,70 @@ describe("assertSqliteIntegrity", () => {
 
       expect(() => assertSqliteIntegrity(database, "test database")).toThrow(
         /foreign_key_check failed for test database: children row without rowid references parents \(foreign key 0\)/u,
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("assertSqlitePhysicalScreen", () => {
+  it("accepts structurally and referentially consistent databases without an integrity_check sweep", () => {
+    const sqlite = requireNodeSqlite();
+    const database = new sqlite.DatabaseSync(":memory:");
+    const statements: string[] = [];
+    const traced = new Proxy(database, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (sql: string) => {
+            statements.push(sql);
+            return Reflect.get(target, property, receiver).bind(target)(sql);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    }) as DatabaseSync;
+    try {
+      database.exec(`
+        CREATE TABLE parents (id INTEGER PRIMARY KEY);
+        CREATE TABLE children (
+          id INTEGER PRIMARY KEY,
+          parent_id INTEGER NOT NULL REFERENCES parents(id)
+        );
+        INSERT INTO parents (id) VALUES (1);
+        INSERT INTO children (id, parent_id) VALUES (1, 1);
+      `);
+
+      expect(assertSqlitePhysicalScreen(traced, "test database")).toEqual({
+        integrityCheck: "ok",
+      });
+      expect(statements.some((sql) => sql.startsWith("PRAGMA integrity_check"))).toBe(false);
+      expect(statements.some((sql) => sql.startsWith("PRAGMA quick_check"))).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects canonical foreign-key violations even with quick_check as the page screen", () => {
+    // The synchronous open path runs foreign_key_check on top of quick_check:
+    // it is cheap relative to integrity_check (it scans rows of FK-constrained
+    // tables rather than the whole b-tree) and catches real referential
+    // corruption that would otherwise surface later as write-time errors.
+    const sqlite = requireNodeSqlite();
+    const database = new sqlite.DatabaseSync(":memory:");
+    try {
+      database.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE parents (id INTEGER PRIMARY KEY);
+        CREATE TABLE children (
+          id INTEGER PRIMARY KEY,
+          parent_id INTEGER NOT NULL REFERENCES parents(id)
+        );
+        INSERT INTO children (id, parent_id) VALUES (1, 99);
+      `);
+
+      expect(() => assertSqlitePhysicalScreen(database, "test database")).toThrow(
+        /foreign_key_check failed for test database: children row 1 references parents \(foreign key 0\)/u,
       );
     } finally {
       database.close();

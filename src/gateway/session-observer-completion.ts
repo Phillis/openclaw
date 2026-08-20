@@ -1,3 +1,4 @@
+import { PreparedModelRuntimeOwnerNotPublishedError } from "../agents/prepared-model-runtime.js";
 import {
   buildSessionObserverPrompt,
   normalizeSessionObserverModelOutput,
@@ -10,6 +11,21 @@ const MODEL_TIMEOUT_MS = 10_000;
 
 type PrepareModel = NonNullable<SessionObserverDeps["prepareModel"]>;
 type CompleteModel = NonNullable<SessionObserverDeps["completeModel"]>;
+
+/**
+ * Marks a transient prepareModel failure (PreparedModelRuntimeOwnerNotPublishedError
+ * — code `prepared_model_runtime_owner_not_published`, includes its
+ * PublicationSuperseded subclass). The run-digest catch treats this as
+ * non-fatal so a long-lived owner-not-published condition cannot disable
+ * the observer after two cycles; the next observer attempt must re-prepare.
+ */
+export class SessionObserverPrepareTransientError extends Error {
+  readonly cause: unknown;
+  constructor(cause: unknown) {
+    super("session observer prepare failed transiently", { cause });
+    this.name = "SessionObserverPrepareTransientError";
+  }
+}
 
 export function createSessionObserverCompletion(params: {
   getConfig: SessionObserverDeps["getConfig"];
@@ -25,14 +41,31 @@ export function createSessionObserverCompletion(params: {
     if (!modelRef) {
       throw new Error("session observer utility model is unavailable");
     }
-    state.preparedPromise ??= params.prepareModel({
-      cfg: params.getConfig(),
-      agentId: state.agentId,
-      modelRef,
-      useUtilityModel: true,
-      allowMissingApiKeyModes: ["aws-sdk"],
-    });
-    return await state.preparedPromise;
+    if (!state.preparedPromise) {
+      state.preparedPromise = params.prepareModel({
+        cfg: params.getConfig(),
+        agentId: state.agentId,
+        modelRef,
+        useUtilityModel: true,
+        allowMissingApiKeyModes: ["aws-sdk"],
+      });
+    }
+    const promise = state.preparedPromise;
+    try {
+      return await promise;
+    } catch (error) {
+      // Always release the rejected slot when it is still the cached promise so
+      // the next observer attempt re-prepares; transient prepareModel failures
+      // throw a marker the run-digest catch recognizes and skips the disable
+      // counter for, so owner-not-published conditions stay retryable.
+      if (state.preparedPromise === promise) {
+        state.preparedPromise = undefined;
+      }
+      if (error instanceof PreparedModelRuntimeOwnerNotPublishedError) {
+        throw new SessionObserverPrepareTransientError(error);
+      }
+      throw error;
+    }
   };
 
   return async (state: SessionObserverState, notes: readonly string[]) => {

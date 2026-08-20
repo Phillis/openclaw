@@ -358,6 +358,8 @@ export interface ContextEngine {
   bootstrap?(params: {
     sessionId: string;
     sessionKey?: string;
+    /** Current persisted transcript messages for storage-neutral engines. */
+    messages?: AgentMessage[];
     /** Storage-neutral runtime session target for transcript/session SDK helpers. */
     sessionTarget?: ContextEngineSessionTarget;
     sessionFile: string;

@@ -115,6 +115,39 @@ describe("AgentParamsSchema", () => {
 
     expect(Value.Check(AgentParamsSchema, params)).toBe(false);
   });
+
+  it("accepts an explicit empty toolsAllow for tool-free prompts", () => {
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "diary entry",
+        sessionKey: "agent:main:dreaming-narrative-memory-core-v2-light-abcdef",
+        toolsAllow: [],
+        idempotencyKey: "dreaming-narrative-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts a finite toolsAllow list", () => {
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "narrow work",
+        sessionKey: "agent:main:main",
+        toolsAllow: ["message"],
+        idempotencyKey: "narrow-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects non-string entries inside toolsAllow", () => {
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "bad",
+        sessionKey: "agent:main:main",
+        toolsAllow: ["read", 5],
+        idempotencyKey: "bad-allow-1",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("MessageActionParamsSchema", () => {

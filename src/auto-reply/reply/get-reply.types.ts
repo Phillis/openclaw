@@ -39,6 +39,8 @@ type InternalReplySessionOptions = {
   /** Dispatch-owned operation used to defer hooks until durable run admission. */
   replyOperation?: ReplyOperation;
   skillOverrides?: SessionToolOverrides["skills"];
+  /** Bind this Gateway turn to the committed prepared model-runtime owner. */
+  usePublishedModelRuntime?: boolean;
 };
 
 export type InternalGetReplyOptions = GetReplyOptions &

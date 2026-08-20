@@ -548,6 +548,7 @@ export function assertAgentDatabaseIntegrityBeforeMutation(
   database: DatabaseSync,
   agentId: string,
   pathname: string,
+  options: { screen?: VerifyCanonicalSqliteIndexesScreen } = {},
 ): void {
   database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
   const userVersion = readSqliteUserVersion(database);
@@ -573,11 +574,19 @@ export function assertAgentDatabaseIntegrityBeforeMutation(
   if (userVersion === OPENCLAW_AGENT_SCHEMA_VERSION && !hasPendingCurrentVersionMigration) {
     verifyAndRepairCanonicalSqliteIndexes(database, pathname, OPENCLAW_AGENT_SCHEMA_SQL, {
       allowMissingColumns: true,
+      // Synchronous current-version open: rely on the quick_check physical
+      // screen plus the index fingerprint repair. Full integrity_check runs
+      // in the migration branch below, the doctor repair path, the explicit
+      // schema-ensure path (which opts into the full screen), the backup
+      // verifier, and the background integrity verifier (initial delay +
+      // daily cadence; src/state/openclaw-database-verify.ts).
+      screen: options.screen ?? "physical-screen",
       validateAfterRepair: () =>
         assertOpenClawAgentCurrentRuntimeSchema(database, { agentId, pathname }),
     });
   } else {
-    // Every physical open proves the full file before schema mutation or exposure.
+    // Pending migration or unversioned database: prove the full file before
+    // any schema mutation or exposure.
     assertSqliteIntegrity(database, pathname);
   }
   // Current-version convergence runs atomically in ensureAgentSchema below.
@@ -737,7 +746,9 @@ export function ensureOpenClawAgentDatabaseSchema(
   db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
   assertSupportedAgentSchemaVersion(db, pathname);
   assertExistingAgentSchemaOwner(readExistingAgentSchemaMeta(db), agentId, pathname);
-  assertAgentDatabaseIntegrityBeforeMutation(db, agentId, pathname);
+  // Explicit schema-ensure contract: full integrity_check verifies the file
+  // before any schema mutation or registration runs through this entry point.
+  assertAgentDatabaseIntegrityBeforeMutation(db, agentId, pathname, { screen: "full" });
   configureSqlitePreSchemaPragmas(db, {
     busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   });
@@ -760,7 +771,10 @@ export function migrateOpenClawAgentDatabaseToMediaPrerequisiteSchema(
   }
   const agentId = normalizeAgentId(options.agentId);
   const pathname = resolveOpenClawAgentSqlitePath({ ...options, agentId });
-  assertAgentDatabaseIntegrityBeforeMutation(db, agentId, pathname);
+  // Migration is full-check territory; the migration branch below handles
+  // pending versions and the explicit full screen covers the current-version
+  // upgrade path that may still be reached here.
+  assertAgentDatabaseIntegrityBeforeMutation(db, agentId, pathname, { screen: "full" });
   configureSqlitePreSchemaPragmas(db, {
     busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   });

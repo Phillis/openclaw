@@ -1760,4 +1760,265 @@ describe("gateway startup reconciliation", () => {
     }
   });
 });
+
+describe("dreaming promotion single-flight guard", () => {
+  it("reuses the in-flight sweep instead of launching a parallel one", async () => {
+    clearInternalHooks();
+    let resolveSweep:
+      | ((value: { degradedPhases: number; pendingNarratives: number }) => void)
+      | null = null;
+    const workspaceDir = await createTempWorkspace("openclaw-dreaming-overlap-");
+    const { api, harness, onMock } = createDreamingTestContext({
+      config: createDreamingConfig(
+        {
+          enabled: true,
+          limit: 5,
+          phases: { light: { enabled: false }, rem: { enabled: false } },
+        },
+        { agents: { defaults: { workspace: workspaceDir } } },
+      ),
+    });
+
+    try {
+      registerShortTermPromotionDreamingForTest(api);
+      await triggerGatewayStart(onMock, {
+        config: api.config,
+        getCron: () => harness.cron,
+      });
+
+      let sweepCalls = 0;
+      runDreamingSweepPhasesMock.mockImplementation(() => {
+        sweepCalls += 1;
+        if (sweepCalls === 1) {
+          return new Promise((resolve) => {
+            resolveSweep = resolve;
+          });
+        }
+        return Promise.resolve({ degradedPhases: 0, pendingNarratives: 0 });
+      });
+
+      const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
+      const firstCall = beforeAgentReply(
+        { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
+        {
+          trigger: "cron",
+          agentId: "main",
+          workspaceDir,
+          sessionKey: "agent:main:cron:1",
+        },
+      );
+      // Wait until the first sweep is actually in flight, then layer a second
+      // trigger that must reuse the existing promise instead of starting a
+      // parallel sweep.
+      await vi.waitFor(() => expect(sweepCalls).toBe(1));
+      const callsBeforeOverlap = sweepCalls;
+      const secondCall = beforeAgentReply(
+        { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
+        {
+          trigger: "cron",
+          agentId: "main",
+          workspaceDir,
+          sessionKey: "agent:main:cron:2",
+        },
+      );
+
+      await vi.waitFor(() => expect(sweepCalls).toBe(callsBeforeOverlap));
+
+      const resolve = expectDefined(resolveSweep, "in-flight sweep resolver");
+      resolve({ degradedPhases: 0, pendingNarratives: 0 });
+
+      const [firstResult, secondResult] = await Promise.all([firstCall, secondCall]);
+      expect(firstResult).toEqual({
+        handled: true,
+        reason: "memory-core: short-term dreaming processed",
+      });
+      expect(secondResult).toEqual({
+        handled: true,
+        reason: "memory-core: short-term dreaming processed",
+      });
+    } finally {
+      clearInternalHooks();
+    }
+  });
+
+  it("releases the guard after a completed sweep so the next trigger can run", async () => {
+    clearInternalHooks();
+    const workspaceDir = await createTempWorkspace("openclaw-dreaming-release-");
+    const { api, harness, logger, onMock } = createDreamingTestContext({
+      config: createDreamingConfig(
+        {
+          enabled: true,
+          limit: 5,
+          phases: { light: { enabled: false }, rem: { enabled: false } },
+        },
+        { agents: { defaults: { workspace: workspaceDir } } },
+      ),
+    });
+
+    try {
+      registerShortTermPromotionDreamingForTest(api);
+      await triggerGatewayStart(onMock, {
+        config: api.config,
+        getCron: () => harness.cron,
+      });
+
+      runDreamingSweepPhasesMock.mockImplementationOnce(() => {
+        throw new Error("synthetic sweep failure");
+      });
+      const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
+      const firstResult = await beforeAgentReply(
+        { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
+        { trigger: "cron", agentId: "main", workspaceDir },
+      );
+      // Per-workspace failures are contained by the sweep owner. Completion of
+      // the outer sweep must still release the guard for the next trigger.
+      expect(firstResult).toEqual({
+        handled: true,
+        reason: "memory-core: short-term dreaming processed",
+      });
+      expectLogContains(logger.error, "dreaming sweep failed");
+
+      // The next trigger must not be blocked by the released guard.
+      runDreamingSweepPhasesMock.mockResolvedValueOnce({
+        degradedPhases: 0,
+        pendingNarratives: 0,
+      });
+      const secondResult = await beforeAgentReply(
+        { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
+        { trigger: "cron", agentId: "main", workspaceDir },
+      );
+      expect(secondResult).toEqual({
+        handled: true,
+        reason: "memory-core: short-term dreaming processed",
+      });
+    } finally {
+      clearInternalHooks();
+    }
+  });
+
+  it("isolates in-flight sweeps between plugin registrations", async () => {
+    const workspaceA = await createTempWorkspace("openclaw-dreaming-instance-a-");
+    const workspaceB = await createTempWorkspace("openclaw-dreaming-instance-b-");
+    const contextA = createDreamingTestContext({
+      config: createDreamingConfig(
+        { enabled: true, limit: 1 },
+        { agents: { defaults: { workspace: workspaceA } } },
+      ),
+    });
+    const contextB = createDreamingTestContext({
+      config: createDreamingConfig(
+        { enabled: true, limit: 1 },
+        { agents: { defaults: { workspace: workspaceB } } },
+      ),
+    });
+    registerShortTermPromotionDreamingForTest(contextA.api);
+    registerShortTermPromotionDreamingForTest(contextB.api);
+    await triggerGatewayStart(contextA.onMock, {
+      config: contextA.api.config,
+      getCron: () => contextA.harness.cron,
+    });
+    await triggerGatewayStart(contextB.onMock, {
+      config: contextB.api.config,
+      getCron: () => contextB.harness.cron,
+    });
+
+    let releaseA:
+      | ((value: { degradedPhases: number; pendingNarratives: number }) => void)
+      | undefined;
+    runDreamingSweepPhasesMock.mockImplementation(({ workspaceDir }) => {
+      if (workspaceDir === workspaceA) {
+        return new Promise((resolve) => {
+          releaseA = resolve;
+        });
+      }
+      return Promise.resolve({ degradedPhases: 0, pendingNarratives: 0 });
+    });
+    const runA = getBeforeAgentReplyHandler(contextA.onMock)(
+      { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
+      { trigger: "cron", agentId: "main", workspaceDir: workspaceA },
+    );
+    await vi.waitFor(() => expect(releaseA).toBeDefined());
+
+    const resultB = await getBeforeAgentReplyHandler(contextB.onMock)(
+      { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
+      { trigger: "cron", agentId: "main", workspaceDir: workspaceB },
+    );
+    expect(resultB).toEqual({
+      handled: true,
+      reason: "memory-core: short-term dreaming processed",
+    });
+
+    expectDefined(
+      releaseA,
+      "first registration sweep resolver",
+    )({
+      degradedPhases: 0,
+      pendingNarratives: 0,
+    });
+    await expect(runA).resolves.toEqual({
+      handled: true,
+      reason: "memory-core: short-term dreaming processed",
+    });
+  });
+});
+
+describe("dreaming owner flow cooperative yield", () => {
+  it("lets queued event-loop work run between sequential workspace sweeps", async () => {
+    clearInternalHooks();
+    const workspaceA = await createTempWorkspace("openclaw-dreaming-yield-a-");
+    const workspaceB = await createTempWorkspace("openclaw-dreaming-yield-b-");
+    let queuedWorkRan = false;
+    runDreamingSweepPhasesMock.mockClear();
+    runDreamingSweepPhasesMock.mockImplementation(({ workspaceDir }) => {
+      if (workspaceDir === workspaceA) {
+        setImmediate(() => {
+          queuedWorkRan = true;
+        });
+      } else {
+        expect(queuedWorkRan).toBe(true);
+      }
+      return Promise.resolve({ degradedPhases: 0, pendingNarratives: 0 });
+    });
+    const { api, harness, onMock } = createDreamingTestContext({
+      config: createDreamingConfig(
+        {
+          enabled: true,
+          limit: 1,
+          phases: { light: { enabled: false }, rem: { enabled: false } },
+        },
+        {
+          agents: {
+            list: [
+              { id: "main", default: true, workspace: workspaceA },
+              { id: "researcher", workspace: workspaceB },
+            ],
+          },
+        },
+      ),
+    });
+
+    try {
+      registerShortTermPromotionDreamingForTest(api);
+      await triggerGatewayStart(onMock, {
+        config: api.config,
+        getCron: () => harness.cron,
+      });
+
+      await getBeforeAgentReplyHandler(onMock)(
+        { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
+        {
+          trigger: "cron",
+          agentId: "main",
+          workspaceDir: workspaceA,
+          sessionKey: "agent:main:cron:memory-dreaming",
+        },
+      );
+
+      expect(runDreamingSweepPhasesMock).toHaveBeenCalledTimes(2);
+      expect(queuedWorkRan).toBe(true);
+    } finally {
+      clearInternalHooks();
+    }
+  });
+});
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

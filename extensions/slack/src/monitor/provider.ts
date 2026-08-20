@@ -401,7 +401,9 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const clientOptions = resolveSlackWebClientOptions({}, slackDispatcher);
   const durableIngress = createSlackDurableIngress({
     accountId: account.accountId,
-    ...(runtime.log ? { onLog: runtime.log } : {}),
+    ...(runtime.log
+      ? { onLog: (message: string) => runtime.log?.(`[${account.accountId}] ${message}`) }
+      : {}),
     ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
   });
   const monitorContextRef: { current?: SlackMonitorContext } = {};
@@ -452,10 +454,8 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     },
   });
 
-  // Pre-set shuttingDown on the SocketModeClient before app.stop() to prevent
-  // a race where the library's internal ping timeout fires disconnect() before
-  // shuttingDown is set, causing orphaned reconnects with leaked ping intervals.
-  // See: openclaw/openclaw#56508
+  // Pre-set shuttingDown on the SocketModeClient before app.stop() so any in-flight
+  // close event from the SDK's ping monitors resolves the disconnect wait deterministically.
   const gracefulStop = async () => {
     await gracefulStopSlackApp(app);
   };
@@ -490,8 +490,19 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     slackMode === "socket"
       ? registerSlackSocketModeConnectionDiagnostics({
           app,
+          onConnectionCount: (activeConnections) => {
+            opts.setStatus?.({
+              socketModeConnectionCount: activeConnections,
+              socketModeConnectionCountObservedAt: Date.now(),
+              socketModeSharedConnection: activeConnections > 1,
+            });
+          },
           onSharedConnection: (activeConnections) => {
-            runtime.log?.(warn(formatSlackSocketModeSharedConnectionWarning(activeConnections)));
+            runtime.log?.(
+              warn(
+                formatSlackSocketModeSharedConnectionWarning(activeConnections, account.accountId),
+              ),
+            );
           },
         })
       : () => {};

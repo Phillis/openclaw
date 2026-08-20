@@ -126,6 +126,9 @@ describe("projectSafeChannelAccountSnapshotFields", () => {
   it("preserves non-secret transport liveness timestamps", () => {
     const snapshot = projectSafeChannelAccountSnapshotFields({
       connected: true,
+      socketModeConnectionCount: 3,
+      socketModeConnectionCountObservedAt: 456,
+      socketModeSharedConnection: true,
       lastConnectedAt: 123,
       lastInboundAt: 123,
       lastOutboundAt: 234,
@@ -139,6 +142,9 @@ describe("projectSafeChannelAccountSnapshotFields", () => {
 
     expect(snapshot).toEqual({
       connected: true,
+      socketModeConnectionCount: 3,
+      socketModeConnectionCountObservedAt: 456,
+      socketModeSharedConnection: true,
       lastConnectedAt: 123,
       lastInboundAt: 123,
       lastOutboundAt: 234,

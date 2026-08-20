@@ -245,7 +245,7 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     }) ??
     DEFAULT_CONTEXT_TOKENS;
 
-  await persistRunSessionUsage({
+  const persistedSessionEntry = await persistRunSessionUsage({
     storePath,
     sessionKey,
     cfg,
@@ -260,6 +260,8 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     preserveUserFacingSessionModelState: preserveUserFacingSessionState,
     modelUsed,
     providerUsed,
+    agentHarnessId: runResult.meta?.agentMeta?.agentHarnessId,
+    expectedAgentHarnessEpoch: followupRun.run.agentHarnessEpoch,
     contextTokensUsed,
     systemPromptReport: runResult.meta?.systemPromptReport,
     cliSessionId,
@@ -267,6 +269,10 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     clearCliSessionBinding,
     preserveFreshTotalTokensOnStaleUsage: preflightCompactionApplied,
   });
+  if (sessionKey && activeSessionStore && persistedSessionEntry) {
+    activeSessionStore[sessionKey] = persistedSessionEntry;
+    activeSessionEntry = persistedSessionEntry;
+  }
   if (!isHeartbeat && !preserveUserFacingSessionState && !fallbackExhausted) {
     // A completed run that executed the persisted selection consumes the
     // pending live-switch flag; CLI harness runs never hit the embedded

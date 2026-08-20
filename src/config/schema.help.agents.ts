@@ -154,6 +154,8 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
     "Maximum time in seconds allowed for a single compaction operation before it is aborted (default: 180). Increase this for very large sessions that need more time to summarize, or decrease it to fail faster on unresponsive models.",
   "agents.defaults.compaction.model":
     "Optional provider/model or configured bare alias used only for compaction summarization. Bare aliases resolve before dispatch; a configured literal model ID wins if it collides with an alias. Leave unset to keep using the primary agent model.",
+  "agents.defaults.compaction.contextUsageThreshold":
+    "Proactive auto-compaction threshold as a fraction of the active model context window (0 < x < 1). When set, automatic compaction triggers as soon as assessed context usage reaches x of the window (for example 0.8 = 80%) instead of waiting for the default window-minus-reserve boundary. Compaction is LLM-summarized. Leave unset for the default behavior.",
   "agents.defaults.compaction.maxActiveTranscriptBytes":
     'Byte threshold that triggers normal preflight local compaction when the active session transcript reaches this size (bytes or strings like "20mb"). Set to 0 or leave unset to disable. Also caps Codex app-server native rollout transcripts; oversized native threads restart fresh.',
   "agents.defaults.compaction.notifyUser":

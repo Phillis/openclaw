@@ -413,11 +413,11 @@ describe("memory-core dreaming phases", () => {
         valid: { ...entry, key: "valid", lastRecalledAt: "2026-04-14T12:00:00.000Z" },
       },
     });
-    expect(
-      Object.keys(
-        (await shortTermTesting.readRecallStore(workspaceDir, now.toISOString())).entries,
-      ),
-    ).toEqual(["invalid", "valid"]);
+    const seededKeys = Object.keys(
+      (await shortTermTesting.readRecallStore(workspaceDir, now.toISOString())).entries,
+    );
+    expect(seededKeys).toHaveLength(2);
+    expect(seededKeys).toEqual(expect.arrayContaining(["invalid", "valid"]));
     const { beforeAgentReply, logger } = createHarness(
       {
         plugins: {
@@ -523,6 +523,46 @@ describe("memory-core dreaming phases", () => {
     expect(subagent.deleteSession).toHaveBeenCalledTimes(2);
     expect(subagent.deleteSession).toHaveBeenNthCalledWith(1, { sessionKey: expectedSessionKey });
     expect(subagent.deleteSession).toHaveBeenNthCalledWith(2, { sessionKey: expectedSessionKey });
+  });
+
+  it("yields between enabled phases and before returning to deep promotion", async () => {
+    const workspaceDir = await createDreamingWorkspace();
+    await writeDailyNote(workspaceDir, [
+      `# ${DREAMING_TEST_DAY}`,
+      "",
+      "- Keep the gateway responsive during maintenance sweeps.",
+    ]);
+    const cfg: OpenClawConfig = {
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              dreaming: {
+                enabled: true,
+                timezone: "UTC",
+                storage: { mode: "inline", separateReports: false },
+                phases: {
+                  light: { enabled: true, limit: 5, lookbackDays: 2 },
+                  rem: { enabled: true, limit: 5, lookbackDays: 2 },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const yieldControl = vi.fn(async () => {});
+
+    await runDreamingSweepPhases({
+      workspaceDir,
+      cfg,
+      pluginConfig: resolveMemoryDreamingPluginConfig(cfg),
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      nowMs: Date.parse("2026-04-05T10:05:00.000Z"),
+      yieldControl,
+    });
+
+    expect(yieldControl).toHaveBeenCalledTimes(2);
   });
 
   it("suppresses cleanup warnings during request-scoped narrative fallback", async () => {

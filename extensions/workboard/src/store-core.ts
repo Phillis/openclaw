@@ -83,6 +83,7 @@ export class WorkboardCoreStore {
       subscriptions?: WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>;
       attachments?: WorkboardKeyedStore<PersistedWorkboardAttachment>;
       dataVersion?: () => number;
+      close?: () => void;
     } = {},
   ) {
     this.changes = new WorkboardChangeTracker(stores.dataVersion);
@@ -95,6 +96,18 @@ export class WorkboardCoreStore {
       (store as unknown as WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>);
     this.attachmentStore =
       stores.attachments ?? (store as unknown as WorkboardKeyedStore<PersistedWorkboardAttachment>);
+    this.closeStore = stores.close;
+  }
+
+  private readonly closeStore?: () => void;
+  private closed = false;
+
+  close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.closeStore?.();
   }
 
   subscribeChanges(listener: (change: WorkboardChange) => void): () => void {
@@ -196,8 +209,17 @@ export class WorkboardCoreStore {
         byStatus: {},
       });
     }
-    for (const card of await this.list()) {
-      const boardId = cardBoardId(card);
+    const aggregates = this.store.summarizeBoards
+      ? await this.store.summarizeBoards()
+      : (await this.list()).map((card) => ({
+          boardId: cardBoardId(card),
+          status: card.status,
+          archived: Boolean(card.metadata?.archivedAt),
+          total: 1,
+          updatedAt: card.updatedAt,
+        }));
+    for (const aggregate of aggregates) {
+      const boardId = aggregate.boardId;
       const summary =
         boards.get(boardId) ??
         ({
@@ -207,14 +229,15 @@ export class WorkboardCoreStore {
           archived: 0,
           byStatus: {},
         } satisfies WorkboardBoardSummary);
-      summary.total += 1;
-      if (card.metadata?.archivedAt) {
-        summary.archived += 1;
+      summary.total += aggregate.total;
+      if (aggregate.archived) {
+        summary.archived += aggregate.total;
       } else {
-        summary.active += 1;
+        summary.active += aggregate.total;
       }
-      summary.byStatus[card.status] = (summary.byStatus[card.status] ?? 0) + 1;
-      summary.updatedAt = Math.max(summary.updatedAt ?? 0, card.updatedAt);
+      summary.byStatus[aggregate.status] =
+        (summary.byStatus[aggregate.status] ?? 0) + aggregate.total;
+      summary.updatedAt = Math.max(summary.updatedAt ?? 0, aggregate.updatedAt);
       boards.set(boardId, summary);
     }
     return {

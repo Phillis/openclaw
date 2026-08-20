@@ -7,7 +7,7 @@ import type {
   PersistedWorkboardNotificationSubscription,
   WorkboardKeyedStore,
 } from "./persistence-types.js";
-import { createWorkboardSqliteStores } from "./sqlite-store.js";
+import { createWorkboardSqliteStores, resolveWorkboardSqlitePath } from "./sqlite-store.js";
 import {
   buildWorkerContext,
   cardBoardId,
@@ -42,6 +42,8 @@ import {
 import { WorkboardNotificationStore } from "./store-notifications.js";
 
 export type { WorkboardDispatchResult } from "./store-inputs.js";
+
+const sharedSqliteStores = new Map<string, WorkboardStore>();
 
 // Capability layers split review boundaries only; the core still owns persistence and mutation order.
 export class WorkboardStore extends WorkboardNotificationStore {
@@ -291,13 +293,24 @@ export class WorkboardStore extends WorkboardNotificationStore {
     );
   }
 
-  static openSqlite() {
-    const stores = createWorkboardSqliteStores();
-    return new WorkboardStore(stores.cards, {
+  static openSqlite(options: { dbPath?: string; env?: NodeJS.ProcessEnv } = {}) {
+    const dbPath = options.dbPath ?? resolveWorkboardSqlitePath(options.env);
+    const existing = sharedSqliteStores.get(dbPath);
+    if (existing) {
+      return existing;
+    }
+    const stores = createWorkboardSqliteStores({ ...options, dbPath });
+    const store = new WorkboardStore(stores.cards, {
       boards: stores.boards,
       subscriptions: stores.subscriptions,
       attachments: stores.attachments,
       dataVersion: stores.dataVersion,
+      close: () => {
+        stores.close();
+        sharedSqliteStores.delete(dbPath);
+      },
     });
+    sharedSqliteStores.set(dbPath, store);
+    return store;
   }
 }

@@ -2,10 +2,13 @@
 import { describe, expect, it } from "vitest";
 import { validateConfigObject } from "./validation.js";
 
-// NOTE: These tests ensure allow + alsoAllow cannot be set in the same scope.
+// NOTE: alsoAllow widens a profile and merges into the restrictive allow boundary,
+// so a config can declare allow + alsoAllow in the same scope. The pipeline merges
+// them, the profile is widened via profileAlsoAllow, and the agent-level allowlist
+// keeps the merged surface.
 
 describe("config: tools.alsoAllow", () => {
-  it("rejects tools.allow + tools.alsoAllow together", () => {
+  it("parses tools.allow + tools.alsoAllow together", () => {
     const res = validateConfigObject({
       tools: {
         allow: ["group:fs"],
@@ -13,13 +16,10 @@ describe("config: tools.alsoAllow", () => {
       },
     });
 
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.issues.map((issue) => issue.path)).toContain("tools");
-    }
+    expect(res.ok).toBe(true);
   });
 
-  it("rejects agents.entries.*.tools.allow + alsoAllow together", () => {
+  it("parses agents.entries.*.tools.allow + alsoAllow together", () => {
     const res = validateConfigObject({
       agents: {
         entries: {
@@ -33,10 +33,7 @@ describe("config: tools.alsoAllow", () => {
       },
     });
 
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.issues.map((issue) => issue.path)).toContain("agents.entries.main.tools");
-    }
+    expect(res.ok).toBe(true);
   });
 
   it("allows profile + alsoAllow", () => {

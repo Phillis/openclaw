@@ -3003,6 +3003,7 @@ describe("selectAgentHarness", () => {
         model: "gpt-5.5",
         authProfileId: "deleted-profile",
         agentHarnessId: "codex",
+        allowGatewaySubagentBinding: true,
         config: agentModelRuntimeConfig("openai/gpt-5.5", "openclaw"),
       }),
     ).resolves.toEqual({ ok: true, compacted: false });
@@ -3015,6 +3016,8 @@ describe("selectAgentHarness", () => {
       expect.any(Object),
       expect.objectContaining({
         authProfileId: "deleted-profile",
+        agentId: "main",
+        allowGatewaySubagentBinding: true,
         workspaceDir: "/tmp/workspace",
       }),
     );

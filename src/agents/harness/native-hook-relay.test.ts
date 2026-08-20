@@ -2943,7 +2943,7 @@ describe("native hook relay registry", () => {
     },
   );
 
-  it("blocks Codex app-server report-mode pre-tool calls when policy rewrites params", async () => {
+  it("rewrites Codex app-server report-mode pre-tool calls", async () => {
     const beforeToolCall = vi.fn(async () => ({
       params: { command: "echo rewritten" },
     }));
@@ -2975,15 +2975,14 @@ describe("native hook relay registry", () => {
     expect(JSON.parse(response.stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason:
-          "OpenClaw tool policy rewrote Codex app-server approval params; refusing original request.",
+        permissionDecision: "allow",
+        updatedInput: { command: "echo rewritten" },
       },
     });
     expect(beforeToolCall).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks ordinary Codex native pre-tool calls when policy rewrites params", async () => {
+  it("rewrites ordinary Codex native pre-tool calls", async () => {
     const beforeToolCall = vi.fn(async () => ({
       params: { command: "echo rewritten" },
     }));
@@ -3014,15 +3013,14 @@ describe("native hook relay registry", () => {
     expect(JSON.parse(response.stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason:
-          "OpenClaw tool policy rewrote Codex app-server approval params; refusing original request.",
+        permissionDecision: "allow",
+        updatedInput: { command: "echo rewritten" },
       },
     });
     expect(beforeToolCall).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks Codex native pre-tool calls when policy mutates params in place", async () => {
+  it("rewrites Codex native pre-tool calls when policy mutates params in place", async () => {
     const beforeToolCall = vi.fn(async (event: unknown) => {
       const params = requireRecord(
         requireRecord(event, "before tool call event").params,
@@ -3058,9 +3056,8 @@ describe("native hook relay registry", () => {
     expect(JSON.parse(response.stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason:
-          "OpenClaw tool policy rewrote Codex app-server approval params; refusing original request.",
+        permissionDecision: "allow",
+        updatedInput: { command: "echo rewritten" },
       },
     });
     expect(beforeToolCall).toHaveBeenCalledTimes(1);
@@ -3361,7 +3358,7 @@ describe("native hook relay registry", () => {
     });
   });
 
-  it("blocks Codex native Bash pre-tool calls when policy rewrites params", async () => {
+  it("rewrites Codex native Bash pre-tool calls", async () => {
     const beforeToolCall = vi.fn(async () => ({
       params: { command: "echo replaced" },
     }));
@@ -3389,9 +3386,8 @@ describe("native hook relay registry", () => {
     expect(JSON.parse(response.stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason:
-          "OpenClaw tool policy rewrote Codex app-server approval params; refusing original request.",
+        permissionDecision: "allow",
+        updatedInput: { command: "echo replaced" },
       },
     });
     expect(response.stderr).toBe("");

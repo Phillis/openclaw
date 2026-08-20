@@ -17,6 +17,12 @@ type SubagentRunParams = {
   message: string;
   /** Add exact tools registered by the calling plugin to the worker's normal tool surface. */
   toolsAlsoAllow?: string[];
+  /**
+   * Restrict the worker to the listed tools. `undefined` keeps the default
+   * tool surface; an explicit `[]` disables every tool. This restriction is
+   * intersected with existing profile and operator policy.
+   */
+  toolsAllow?: string[];
   provider?: string;
   model?: string;
   extraSystemPrompt?: string;

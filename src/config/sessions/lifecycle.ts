@@ -12,7 +12,7 @@ type SessionLifecycleEntry = Pick<
 
 type SessionWorkStartEntry = Pick<
   SessionEntry,
-  "archivedAt" | "initializationPending" | "sessionId"
+  "agentHarnessMigration" | "archivedAt" | "initializationPending" | "sessionId"
 >;
 
 type SessionWorkStartOptions = {
@@ -58,6 +58,9 @@ export function resolveSessionWorkStartError(
   }
   if (entry?.initializationPending === true) {
     return `Session "${sessionKey}" is still initializing. Retry after initialization completes.`;
+  }
+  if (entry?.agentHarnessMigration) {
+    return `Session "${sessionKey}" is changing agent harness lanes. Retry after the migration completes.`;
   }
   return entry?.archivedAt === undefined
     ? undefined

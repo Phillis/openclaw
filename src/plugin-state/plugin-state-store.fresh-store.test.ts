@@ -103,6 +103,14 @@ describe("plugin state fresh-store reads", () => {
           operation: "entries",
           path: databasePath,
         });
+        await expectPluginStateReadFailure(
+          store.entriesInKeyRange?.({
+            keyStartInclusive: "a",
+            keyEndExclusive: "z",
+            limit: 1,
+          }) ?? Promise.reject(new Error("missing entriesInKeyRange")),
+          { operation: "entries", path: databasePath },
+        );
       },
     );
   });

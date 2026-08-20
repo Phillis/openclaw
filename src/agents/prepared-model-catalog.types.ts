@@ -25,3 +25,8 @@ export type ResolvedPublishedModelCatalogOwner = Readonly<{
   metadataSnapshot: PluginMetadataSnapshot;
   modelCatalog: ModelCatalogSnapshot;
 }>;
+
+export type ResolvedPublishedConfiguredModelCatalogOwner = ResolvedPublishedModelCatalogOwner &
+  Readonly<{
+    loadFullModelCatalog: () => Promise<ModelCatalogSnapshot>;
+  }>;

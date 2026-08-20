@@ -6,6 +6,35 @@ import type { WorkboardStore } from "./store.js";
 afterEach(() => vi.useRealTimers());
 
 describe("createWorkboardChangeEventService", () => {
+  it("keeps the process-shared store open across sequential plugin service generations", async () => {
+    vi.useFakeTimers();
+    const close = vi.fn();
+    const reconcileExternalChanges = vi.fn();
+    const store = {
+      subscribeChanges: vi.fn(() => vi.fn()),
+      announceChangeEpoch: vi.fn(),
+      reconcileExternalChanges,
+      close,
+    } as unknown as WorkboardStore;
+    const firstService = createWorkboardChangeEventService(store);
+    const secondService = createWorkboardChangeEventService(store);
+    const context = {
+      config: {},
+      stateDir: "/tmp/workboard-change-events-test",
+      gatewayEvents: { emit: vi.fn(), onSessionsChanged: () => () => undefined },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    } satisfies Parameters<typeof firstService.start>[0];
+
+    await firstService.start(context);
+    await firstService.stop?.(context);
+    await secondService.start(context);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(reconcileExternalChanges).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    await secondService.stop?.(context);
+  });
+
   it("keeps repeated starts on one change subscription and reconciliation timer", async () => {
     vi.useFakeTimers();
     const listeners = new Set<(change: WorkboardChange) => void>();

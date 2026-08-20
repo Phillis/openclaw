@@ -241,6 +241,30 @@ Set `enabled: false` to disable threshold-driven auto-compaction inside the embe
 
 Manual `/compact` uses `agents.defaults.compaction.keepRecentTokens` (default: `20000`) and keeps that recent-tail cut point.
 
+### Proactive context-usage threshold
+
+By default auto-compaction waits until context usage approaches the model window minus the built-in reserve (near-full in absolute terms). To trigger automatic, LLM-summarized compaction at an earlier, configurable high limit, set `agents.defaults.compaction.contextUsageThreshold` to a fraction of the context window (0 < x < 1):
+
+```json5
+{
+  agents: {
+    defaults: {
+      compaction: {
+        contextUsageThreshold: 0.8,
+      },
+    },
+  },
+}
+```
+
+With `0.8`, the session is LLM-summarized as soon as assessed context usage reaches 80% of the configured context window (for example 800K of a 1M window). This prevents Slack and other long-running channel sessions from growing so large that summarization exceeds the compaction timeout. The threshold is applied consistently across:
+
+- embedded auto-compaction (`shouldCompact`) used during agent runs,
+- auto-reply preflight compaction run before the next channel turn (for example a Slack message), and
+- the pre-compaction memory flush, which still runs just ahead of the compaction boundary.
+
+Leave `contextUsageThreshold` unset (or set it to `0`) for the default window-minus-reserve behavior. The fraction is capped below 1 on purpose so summarization always keeps room for the prompt and next model output.
+
 OpenClaw adopts an explicit successor identity returned by a context engine. The built-in SQLite compactor keeps the current session identity. Branch/restore checkpoint actions use a returned successor when present; legacy pre-compaction checkpoint files remain readable while referenced.
 
 ## Pluggable compaction providers

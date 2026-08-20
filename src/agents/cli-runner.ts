@@ -295,6 +295,8 @@ export async function runPreparedCliAgent(
     agentId: params.agentId,
     sessionKey: params.sessionKey,
     sessionId: params.sessionId,
+    ...(params.agentHarnessId ? { agentHarnessId: params.agentHarnessId } : {}),
+    ...(params.agentHarnessEpoch ? { agentHarnessEpoch: params.agentHarnessEpoch } : {}),
     workspaceDir: params.workspaceDir,
     trigger: params.trigger,
     ...(params.config ? { config: params.config } : {}),
@@ -329,6 +331,7 @@ export async function runPreparedCliAgent(
   const buildFailedAgentEndEvent = (error: string) => ({
     messages: buildAgentEndMessages(),
     success: false,
+    terminal: true,
     error,
     durationMs: Date.now() - context.started,
   });
@@ -339,6 +342,7 @@ export async function runPreparedCliAgent(
       currentTurnMessages: [buildCliHookUserMessage(message)],
     }),
     success: false,
+    terminal: true,
     error: message,
     durationMs: Date.now() - context.started,
   });
@@ -564,6 +568,7 @@ export async function runPreparedCliAgent(
           event: {
             messages: buildAgentEndMessages(lastAssistant),
             success: true,
+            terminal: true,
             durationMs: Date.now() - context.started,
           },
           ctx: hookContext,

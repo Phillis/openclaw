@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handoff-v2-host-activation-plan/v1",
+  "title": "Handoff v2 host activation plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "planId", "createdAt", "expiresAt", "authority", "host", "predecessor", "successor", "guard", "quiescence", "slack", "operations", "gatewaySuspension", "evidence"],
+  "properties": {
+    "schema": { "const": "handoff-v2-host-activation-plan/v1" },
+    "planId": { "$ref": "#/$defs/nonempty" },
+    "createdAt": { "$ref": "#/$defs/instant" },
+    "expiresAt": { "$ref": "#/$defs/instant" },
+    "authority": { "$ref": "#/$defs/noAuthority" },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "uid", "homePath", "stateDir", "stagingRoot", "evidenceRoot", "launchdDomain", "launchdLabel", "gatewayPort"],
+      "properties": {
+        "platform": { "const": "darwin" },
+        "uid": { "type": "integer", "minimum": 1 },
+        "homePath": { "$ref": "#/$defs/absolutePath" },
+        "stateDir": { "$ref": "#/$defs/absolutePath" },
+        "stagingRoot": { "$ref": "#/$defs/absolutePath" },
+        "evidenceRoot": { "$ref": "#/$defs/absolutePath" },
+        "launchdDomain": { "type": "string", "pattern": "^gui/[1-9][0-9]*$" },
+        "launchdLabel": { "$ref": "#/$defs/nonempty" },
+        "gatewayPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "predecessor": { "$ref": "#/$defs/predecessor" },
+    "successor": { "$ref": "#/$defs/successor" },
+    "guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "rolloutLockPath", "rolloutLockSha256", "runId", "planSha256", "startsAt", "expiresAt"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "rolloutLockPath": { "$ref": "#/$defs/absolutePath" },
+        "rolloutLockSha256": { "$ref": "#/$defs/sha256" },
+        "runId": { "$ref": "#/$defs/nonempty" },
+        "planSha256": { "$ref": "#/$defs/sha256" },
+        "startsAt": { "$ref": "#/$defs/instant" },
+        "expiresAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "quiescence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activeTasks", "activeRuns", "competingLifecycleAutomation"],
+      "properties": {
+        "activeTasks": { "const": 0 },
+        "activeRuns": { "const": 0 },
+        "competingLifecycleAutomation": { "const": false }
+      }
+    },
+    "slack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "credentialKind", "expectedUserId", "expectedBotId", "expectedTeamId", "channelId", "expectedApiUrl", "totalTimeoutMs"],
+      "properties": {
+        "accountId": { "const": "oscar" },
+        "credentialKind": { "const": "bot" },
+        "expectedUserId": { "$ref": "#/$defs/nonempty" },
+        "expectedBotId": { "$ref": "#/$defs/nonempty" },
+        "expectedTeamId": { "$ref": "#/$defs/nonempty" },
+        "channelId": { "$ref": "#/$defs/nonempty" },
+        "expectedApiUrl": { "const": "https://slack.com/api/" },
+        "totalTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 30000 }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["restartLimit", "disableLimit", "enableLimit", "bootoutLimit", "bootstrapLimit", "startupWaitMs", "probeIntervalMs", "stabilityWindowMs", "automaticRollback", "automaticSecondRestart"],
+      "properties": {
+        "restartLimit": { "const": 1 },
+        "disableLimit": { "const": 1 },
+        "enableLimit": { "const": 1 },
+        "bootoutLimit": { "const": 1 },
+        "bootstrapLimit": { "const": 1 },
+        "startupWaitMs": { "const": 30000 },
+        "probeIntervalMs": { "const": 1000 },
+        "stabilityWindowMs": { "const": 60000 },
+        "automaticRollback": { "const": false },
+        "automaticSecondRestart": { "const": false }
+      }
+    },
+    "gatewaySuspension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "suspendMode", "handoffSchema"],
+      "properties": {
+        "schema": { "const": "handoff-v2-gateway-suspension-binding/v1" },
+        "suspendMode": { "const": "handoff-durable-hold/v1" },
+        "handoffSchema": { "const": "openclaw-gateway-suspend-handoff/v3" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supervisorLeasePath", "supervisorLeaseSha256", "ledgerDirectory", "predecessorPlistBackupPath", "receiptPath", "rollbackPacketPath"],
+      "properties": {
+        "supervisorLeasePath": { "$ref": "#/$defs/absolutePath" },
+        "supervisorLeaseSha256": { "$ref": "#/$defs/sha256" },
+        "ledgerDirectory": { "$ref": "#/$defs/absolutePath" },
+        "predecessorPlistBackupPath": { "$ref": "#/$defs/absolutePath" },
+        "receiptPath": { "$ref": "#/$defs/absolutePath" },
+        "rollbackPacketPath": { "$ref": "#/$defs/absolutePath" }
+      }
+    }
+  },
+  "$defs": {
+    "noAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "grants", "reusable"],
+      "properties": {
+        "kind": { "const": "none" },
+        "grants": { "type": "array", "maxItems": 0 },
+        "reusable": { "const": false }
+      }
+    },
+    "identityProperties": {
+      "cliPath": { "$ref": "#/$defs/absolutePath" },
+      "cliSha256": { "$ref": "#/$defs/sha256" },
+      "runtimePath": { "$ref": "#/$defs/absolutePath" },
+      "runtimeSha256": { "$ref": "#/$defs/sha256" },
+      "gatewayEntrypointPath": { "$ref": "#/$defs/absolutePath" },
+      "gatewayEntrypointSha256": { "$ref": "#/$defs/sha256" },
+      "wrapperPath": { "$ref": "#/$defs/absolutePath" },
+      "wrapperSha256": { "$ref": "#/$defs/sha256" },
+      "environmentFilePath": { "$ref": "#/$defs/absolutePath" },
+      "environmentFileSha256": { "$ref": "#/$defs/sha256" },
+      "runtimeStampPath": { "$ref": "#/$defs/absolutePath" },
+      "runtimeStampSha256": { "$ref": "#/$defs/sha256" },
+      "buildManifestPath": { "$ref": "#/$defs/absolutePath" },
+      "buildManifestSha256": { "$ref": "#/$defs/sha256" },
+      "expectedProcessCommand": { "$ref": "#/$defs/nonempty" }
+    },
+    "predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "pid", "runCount", "cliPath", "cliSha256", "runtimePath", "runtimeSha256", "gatewayEntrypointPath", "gatewayEntrypointSha256", "wrapperPath", "wrapperSha256", "environmentFilePath", "environmentFileSha256", "runtimeStampPath", "runtimeStampSha256", "buildManifestPath", "buildManifestSha256", "expectedProcessCommand", "servicePlistPath", "servicePlistSha256", "configPath", "configSha256"],
+      "properties": {
+        "commit": { "$ref": "#/$defs/gitObject" },
+        "tree": { "$ref": "#/$defs/gitObject" },
+        "pid": { "type": "integer", "minimum": 1 },
+        "runCount": { "type": "integer", "minimum": 1 },
+        "cliPath": { "$ref": "#/$defs/absolutePath" },
+        "cliSha256": { "$ref": "#/$defs/sha256" },
+        "runtimePath": { "$ref": "#/$defs/absolutePath" },
+        "runtimeSha256": { "$ref": "#/$defs/sha256" },
+        "gatewayEntrypointPath": { "$ref": "#/$defs/absolutePath" },
+        "gatewayEntrypointSha256": { "$ref": "#/$defs/sha256" },
+        "wrapperPath": { "$ref": "#/$defs/absolutePath" },
+        "wrapperSha256": { "$ref": "#/$defs/sha256" },
+        "environmentFilePath": { "$ref": "#/$defs/absolutePath" },
+        "environmentFileSha256": { "$ref": "#/$defs/sha256" },
+        "runtimeStampPath": { "$ref": "#/$defs/absolutePath" },
+        "runtimeStampSha256": { "$ref": "#/$defs/sha256" },
+        "buildManifestPath": { "$ref": "#/$defs/absolutePath" },
+        "buildManifestSha256": { "$ref": "#/$defs/sha256" },
+        "expectedProcessCommand": { "$ref": "#/$defs/nonempty" },
+        "servicePlistPath": { "$ref": "#/$defs/absolutePath" },
+        "servicePlistSha256": { "$ref": "#/$defs/sha256" },
+        "configPath": { "$ref": "#/$defs/absolutePath" },
+        "configSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "successor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "cliPath", "cliSha256", "runtimePath", "runtimeSha256", "gatewayEntrypointPath", "gatewayEntrypointSha256", "wrapperPath", "wrapperSha256", "environmentFilePath", "environmentFileSha256", "runtimeStampPath", "runtimeStampSha256", "buildManifestPath", "buildManifestSha256", "expectedProcessCommand", "stagedServicePlistPath", "stagedServicePlistSha256", "installedServicePlistPath", "installedServicePlistSha256"],
+      "properties": {
+        "commit": { "$ref": "#/$defs/gitObject" },
+        "tree": { "$ref": "#/$defs/gitObject" },
+        "cliPath": { "$ref": "#/$defs/absolutePath" },
+        "cliSha256": { "$ref": "#/$defs/sha256" },
+        "runtimePath": { "$ref": "#/$defs/absolutePath" },
+        "runtimeSha256": { "$ref": "#/$defs/sha256" },
+        "gatewayEntrypointPath": { "$ref": "#/$defs/absolutePath" },
+        "gatewayEntrypointSha256": { "$ref": "#/$defs/sha256" },
+        "wrapperPath": { "$ref": "#/$defs/absolutePath" },
+        "wrapperSha256": { "$ref": "#/$defs/sha256" },
+        "environmentFilePath": { "$ref": "#/$defs/absolutePath" },
+        "environmentFileSha256": { "$ref": "#/$defs/sha256" },
+        "runtimeStampPath": { "$ref": "#/$defs/absolutePath" },
+        "runtimeStampSha256": { "$ref": "#/$defs/sha256" },
+        "buildManifestPath": { "$ref": "#/$defs/absolutePath" },
+        "buildManifestSha256": { "$ref": "#/$defs/sha256" },
+        "expectedProcessCommand": { "$ref": "#/$defs/nonempty" },
+        "stagedServicePlistPath": { "$ref": "#/$defs/absolutePath" },
+        "stagedServicePlistSha256": { "$ref": "#/$defs/sha256" },
+        "installedServicePlistPath": { "$ref": "#/$defs/absolutePath" },
+        "installedServicePlistSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "absolutePath": { "type": "string", "pattern": "^/" },
+    "nonempty": { "type": "string", "minLength": 1 },
+    "instant": { "type": "string", "format": "date-time" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+  }
+}

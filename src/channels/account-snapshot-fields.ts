@@ -240,6 +240,21 @@ export function projectSafeChannelAccountSnapshotFields(
     setSnapshotField(snapshot, key, asBoolean(record[key]));
   }
   setSnapshotField(snapshot, "reconnectAttempts", asFiniteNumber(record.reconnectAttempts));
+  setSnapshotField(
+    snapshot,
+    "socketModeConnectionCount",
+    asFiniteNumber(record.socketModeConnectionCount),
+  );
+  setSnapshotField(
+    snapshot,
+    "socketModeConnectionCountObservedAt",
+    readNullableNumber(record, "socketModeConnectionCountObservedAt"),
+  );
+  setSnapshotField(
+    snapshot,
+    "socketModeSharedConnection",
+    asBoolean(record.socketModeSharedConnection),
+  );
   setSnapshotField(snapshot, "lastConnectedAt", readNullableNumber(record, "lastConnectedAt"));
   setSnapshotField(snapshot, "lastInboundAt", asFiniteNumber(record.lastInboundAt));
   for (const key of ["lastOutboundAt", "lastMessageAt", "lastEventAt"] as const) {
