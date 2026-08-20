@@ -179,7 +179,10 @@ async function onAdmittedTimer(state: CronServiceState) {
   armRunningRecheckTimer(state);
   try {
     const dueJobs = await locked(state, async () => {
-      await ensureLoaded(state, { forceReload: true, skipRecompute: true });
+      // Idle/re-check ticks use the revision-aware in-memory store. Mutations
+      // advance the store revision, so ensureLoaded still refreshes when needed
+      // without re-reading the full SQLite cron store every scheduler tick.
+      await ensureLoaded(state, { skipRecompute: true });
       if (state.stopped || state.restartRecoveryPending) {
         state.deps.log.warn(
           { stopped: state.stopped, restartRecoveryPending: state.restartRecoveryPending },
