@@ -99,10 +99,10 @@ const NARRATIVE_SYSTEM_PROMPT = [
 // many minutes after the reports have already been written. The previous 15 s
 // limit was empirically too tight for warm-gateway runs across light, REM, and
 // deep phases — even unblocked LLM calls hit it on the first sweep after a
-// restart. 60 s gives realistic latency headroom while still capping the
-// worst case at one minute, well below the multi-minute stall the original
-// comment warned against.
-const NARRATIVE_TIMEOUT_MS = 60_000;
+// restart. Live routing telemetry showed successful model output arriving near
+// the former 60 s boundary and then being recorded as a failed run. A 120 s
+// cap gives realistic latency headroom while retaining a bounded failure path.
+const NARRATIVE_TIMEOUT_MS = 120_000;
 const NARRATIVE_MESSAGE_FETCH_LIMIT = 5;
 // A completed run can reach the session reader before the final assistant text
 // is visible, so retry briefly before falling back to synthetic diary text.

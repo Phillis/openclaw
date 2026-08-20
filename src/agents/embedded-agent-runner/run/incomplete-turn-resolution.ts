@@ -129,13 +129,18 @@ export function shouldRetryMissingAssistantTurn(params: {
   aborted: boolean;
   promptError?: unknown;
   timedOut: boolean;
+  /**
+   * Allows a retry for a separately proven pre-execution prompt timeout.
+   * Ordinary callers omit this and retain the strict fail-closed behavior.
+   */
+  replayableTimeout?: boolean;
   attempt: IncompleteTurnAttempt;
 }): boolean {
   if (
     params.payloadCount !== 0 ||
-    params.aborted ||
-    Boolean(params.promptError) ||
-    params.timedOut ||
+    (params.aborted && !(params.replayableTimeout === true && params.timedOut)) ||
+    (Boolean(params.promptError) && !(params.replayableTimeout === true && params.timedOut)) ||
+    (params.timedOut && params.replayableTimeout !== true) ||
     params.attempt.clientToolCalls ||
     params.attempt.currentAttemptAssistant ||
     params.attempt.lastAssistant ||

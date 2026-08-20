@@ -1,10 +1,16 @@
 // Memory Core plugin module implements dreaming shared behavior.
+import { scheduler } from "node:timers/promises";
 import {
   asNullableRecord,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 export { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+
+/** Yield between sequential dreaming phases to keep the gateway event loop responsive. */
+export function yieldToEventLoop(): Promise<void> {
+  return scheduler.yield();
+}
 
 export function extractAssistantText(messages: unknown[]): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {

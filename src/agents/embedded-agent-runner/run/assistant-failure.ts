@@ -35,7 +35,8 @@ import {
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 const MAX_EMPTY_ERROR_RETRIES = 3;
-const MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES = 1;
+/** Bounds the one same-provider no-output timeout retry shared with recovery. */
+export const MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES = 1;
 
 type EmbeddedRunAssistantFailureOutcome = {
   action: "retry" | "proceed";

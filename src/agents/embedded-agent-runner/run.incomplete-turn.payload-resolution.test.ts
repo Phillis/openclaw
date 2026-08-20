@@ -135,6 +135,56 @@ describe("incomplete-turn payload resolution", () => {
     ).toBe(false);
   });
 
+  it("allows a proven pre-execution no-output timeout retry", () => {
+    const attempt = makeAttemptResult({
+      assistantTexts: [],
+      lastAssistant: undefined,
+      currentAttemptAssistant: undefined,
+    });
+    const evidence = {
+      payloadCount: 0,
+      aborted: true,
+      promptError: new Error("LLM request timed out."),
+      timedOut: true,
+    } as const;
+
+    expect(shouldRetryMissingAssistantTurn({ ...evidence, replayableTimeout: true, attempt })).toBe(
+      true,
+    );
+    expect(shouldRetryMissingAssistantTurn({ ...evidence, attempt })).toBe(false);
+  });
+
+  it("keeps the timeout exception fail-closed without a timeout or with side effects", () => {
+    const attempt = makeAttemptResult({
+      assistantTexts: [],
+      lastAssistant: undefined,
+      currentAttemptAssistant: undefined,
+    });
+    expect(
+      shouldRetryMissingAssistantTurn({
+        payloadCount: 0,
+        aborted: true,
+        timedOut: false,
+        replayableTimeout: true,
+        attempt,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRetryMissingAssistantTurn({
+        payloadCount: 0,
+        aborted: false,
+        timedOut: true,
+        replayableTimeout: true,
+        attempt: makeAttemptResult({
+          assistantTexts: [],
+          lastAssistant: undefined,
+          currentAttemptAssistant: undefined,
+          itemLifecycle: { startedCount: 1, completedCount: 0, activeCount: 1 },
+        }),
+      }),
+    ).toBe(false);
+  });
+
   it("detects tool-use terminal turn with pre-tool text as incomplete (#76477)", () => {
     // When the last assistant message ended with stopReason=toolUse, pre-tool
     // text alone must not suppress the incomplete-turn guard. The model

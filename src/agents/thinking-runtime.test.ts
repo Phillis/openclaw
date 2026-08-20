@@ -9,9 +9,137 @@ import { restoreRegisteredAgentHarnesses } from "./harness/registry.test-support
 import type { AgentHarness } from "./harness/types.js";
 import {
   hasResolvedThinkingCatalogEntry,
+  isMinimaxM3Model,
   resolveCandidateThinkingLevel,
   resolveEffectiveAgentRuntime,
 } from "./thinking-runtime.js";
+
+describe("isMinimaxM3Model", () => {
+  it("recognizes native and alias M3 model ids by normalized basename", () => {
+    for (const modelId of [
+      "MiniMax-M3",
+      "minimax-m3",
+      "minimax/minimax-m3",
+      "MiniMax-M3.5",
+      "minimax-m3:cloud",
+      "minimax/MiniMax-M3",
+    ]) {
+      expect(isMinimaxM3Model(modelId)).toBe(true);
+    }
+  });
+
+  it.each(["MiniMax-M2.7", "minimax-m2", "minimax-m35", "MiniMax-M3x", "music-2.6"])(
+    "rejects non-M3 name %s",
+    (modelId) => {
+      expect(isMinimaxM3Model(modelId)).toBe(false);
+    },
+  );
+
+  it("rejects missing model ids", () => {
+    expect(isMinimaxM3Model(undefined)).toBe(false);
+    expect(isMinimaxM3Model(null)).toBe(false);
+    expect(isMinimaxM3Model("")).toBe(false);
+  });
+});
+
+describe("resolveCandidateThinkingLevel MiniMax M3", () => {
+  it("forces native minimax M3 candidates to adaptive", () => {
+    expect(
+      resolveCandidateThinkingLevel({
+        cfg: {},
+        provider: "minimax",
+        modelId: "MiniMax-M3",
+        level: "high",
+      }),
+    ).toBe("adaptive");
+  });
+
+  it("recognizes minimax-portal and minimax-cn M3 aliases", () => {
+    expect(
+      resolveCandidateThinkingLevel({
+        cfg: {},
+        provider: "minimax-portal",
+        modelId: "MiniMax-M3",
+        level: "max",
+      }),
+    ).toBe("adaptive");
+    expect(
+      resolveCandidateThinkingLevel({
+        cfg: {},
+        provider: "minimax-cn",
+        modelId: "minimax-m3",
+        level: "high",
+      }),
+    ).toBe("adaptive");
+  });
+
+  it("recognizes openrouter vendor-prefixed M3 ids", () => {
+    expect(
+      resolveCandidateThinkingLevel({
+        cfg: {},
+        provider: "openrouter",
+        modelId: "minimax/minimax-m3",
+        level: "high",
+      }),
+    ).toBe("adaptive");
+  });
+
+  it("recognizes the ollama M3 cloud alias", () => {
+    expect(
+      resolveCandidateThinkingLevel({
+        cfg: {},
+        provider: "ollama",
+        modelId: "minimax-m3:cloud",
+        level: "max",
+      }),
+    ).toBe("adaptive");
+  });
+
+  it("normalizes every inherited level including unset to adaptive", () => {
+    for (const level of [
+      undefined,
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]) {
+      expect(
+        resolveCandidateThinkingLevel({
+          cfg: {},
+          provider: "minimax",
+          modelId: "MiniMax-M3",
+          level,
+        }),
+      ).toBe("adaptive");
+    }
+  });
+
+  it("leaves false-positive non-M3 names unchanged", () => {
+    expect(
+      resolveCandidateThinkingLevel({
+        cfg: {},
+        provider: "openrouter",
+        modelId: "minimax/MiniMax-M2.7",
+        level: "high",
+      }),
+    ).toBe("high");
+  });
+
+  it("keeps an ordinary compatible fallback unchanged", () => {
+    expect(
+      resolveCandidateThinkingLevel({
+        cfg: {},
+        provider: "demo",
+        modelId: "demo-model",
+        level: "medium",
+      }),
+    ).toBe("medium");
+  });
+});
 
 describe("hasResolvedThinkingCatalogEntry", () => {
   it("requires authoritative reasoning metadata for the selected model", () => {

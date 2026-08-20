@@ -457,6 +457,7 @@ export async function runPreparedEmbeddedLoop(
         runtimeAuthRetry,
         codexAppServerRecoveryRetryAvailable,
         codexAppServerRecoveryRetries,
+        sameModelIdleTimeoutRetries,
         lastRetryFailoverReason,
         traceAttempts,
         sessionAgentId,
@@ -468,6 +469,7 @@ export async function runPreparedEmbeddedLoop(
         thinkLevel = recovery.thinkLevel;
         authRetryPending = recovery.authRetryPending;
         codexAppServerRecoveryRetries = recovery.codexAppServerRecoveryRetries;
+        sameModelIdleTimeoutRetries = recovery.sameModelIdleTimeoutRetries;
         lastRetryFailoverReason = recovery.lastRetryFailoverReason;
         continue;
       }

@@ -13,6 +13,23 @@ import { resolveAgentHarnessPolicy } from "./harness/policy.js";
 import { resolveAutoAgentHarnessId } from "./harness/support.js";
 import { resolveSessionRuntimeOverrideForProvider } from "./session-runtime-compat.js";
 
+/**
+ * Recognizes MiniMax M3 and forward-compatible M3.x models across routed
+ * provider aliases (native minimax, minimax-portal/CN, openrouter vendor
+ * prefixes, ollama cloud tags) by normalizing the model basename. Provider
+ * thinking profiles only match their own provider ids, so fallback revalidation
+ * must match M3 by model id alone: M3 always requires adaptive thinking and
+ * cannot carry an incompatible primary level.
+ */
+export function isMinimaxM3Model(modelId: string | undefined | null): boolean {
+  const normalized = normalizeOptionalString(modelId);
+  if (!normalized) {
+    return false;
+  }
+  const basename = normalized.split("/").at(-1)?.split(":")[0] ?? "";
+  return /^MiniMax-M3(?:\b|[-.])/i.test(basename);
+}
+
 export function hasResolvedThinkingCatalogEntry(params: {
   catalog?: readonly ThinkingCatalogEntry[];
   provider: string;
@@ -98,6 +115,11 @@ export function resolveCandidateThinkingLevel(params: {
   /** Concrete harness already selected by the caller, when selection is pinned. */
   agentRuntime?: string | null;
 }): ThinkLevel | undefined {
+  if (isMinimaxM3Model(params.modelId)) {
+    // MiniMax M3 always runs adaptive thinking; never carry an incompatible
+    // primary level (unset/off/high/max/ultra) into the selected candidate.
+    return "adaptive";
+  }
   if (!params.level) {
     return undefined;
   }

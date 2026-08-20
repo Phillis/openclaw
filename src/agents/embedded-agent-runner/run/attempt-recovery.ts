@@ -9,17 +9,23 @@ import { log } from "../logger.js";
 import { getEmbeddedSessionPromptState } from "../session-prompt-state.js";
 import type { EmbeddedAgentRunResult, TraceAttempt } from "../types.js";
 import type { createUsageAccumulator } from "../usage-accumulator.js";
+import { MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES } from "./assistant-failure.js";
 import type { prepareAndDispatchEmbeddedRunAttempt } from "./attempt-dispatch-preparation.js";
 import type { normalizeEmbeddedRunAttempt } from "./attempt-normalization.js";
-import { isCurrentAttemptReplaySafe } from "./attempt-terminal-evidence.js";
+import {
+  hasAttemptTerminalState,
+  isCurrentAttemptReplaySafe,
+} from "./attempt-terminal-evidence.js";
 import { buildEmbeddedRunBlockedResult } from "./blocked-run-result.js";
 import { resolveCodexAppServerRecoveryRetry } from "./codex-app-server-recovery.js";
 import { resolveCompactionLiveModelSelection } from "./compaction-live-model-selection.js";
 import type { createEmbeddedRunCompactionRuntime } from "./compaction-runtime.js";
 import type { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
+import { mergeRetryFailoverReason } from "./failover-policy.js";
 import type { createEmbeddedRunFailoverRetryController } from "./failover-retry-controller.js";
 import { buildErrorAgentMeta } from "./helpers.js";
+import { shouldRetryMissingAssistantTurn } from "./incomplete-turn-resolution.js";
 import { recoverEmbeddedRunOverflow } from "./overflow-context-recovery.js";
 import { handleEmbeddedPromptFailure } from "./prompt-failure.js";
 import type { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
@@ -57,6 +63,7 @@ export async function recoverEmbeddedRunAttempt(input: {
   runtimeAuthRetry: boolean;
   codexAppServerRecoveryRetryAvailable: boolean;
   codexAppServerRecoveryRetries: number;
+  sameModelIdleTimeoutRetries: number;
   lastRetryFailoverReason: FailoverReason | null;
   traceAttempts: TraceAttempt[];
   sessionAgentId: string;
@@ -66,6 +73,7 @@ export async function recoverEmbeddedRunAttempt(input: {
       action: "retry";
       authRetryPending: boolean;
       codexAppServerRecoveryRetries: number;
+      sameModelIdleTimeoutRetries: number;
       lastRetryFailoverReason: FailoverReason | null;
       thinkLevel: PreparedRuntime["snapshot"] extends () => infer Snapshot
         ? Snapshot extends { thinkLevel: infer ThinkLevel }
@@ -125,6 +133,7 @@ export async function recoverEmbeddedRunAttempt(input: {
   const retry = (updates?: {
     authRetryPending?: boolean;
     codexAppServerRecoveryRetries?: number;
+    sameModelIdleTimeoutRetries?: number;
     lastRetryFailoverReason?: FailoverReason | null;
     thinkLevel?: typeof runtime.thinkLevel;
   }) => ({
@@ -132,6 +141,8 @@ export async function recoverEmbeddedRunAttempt(input: {
     authRetryPending: updates?.authRetryPending ?? false,
     codexAppServerRecoveryRetries:
       updates?.codexAppServerRecoveryRetries ?? input.codexAppServerRecoveryRetries,
+    sameModelIdleTimeoutRetries:
+      updates?.sameModelIdleTimeoutRetries ?? input.sameModelIdleTimeoutRetries,
     lastRetryFailoverReason:
       updates?.lastRetryFailoverReason === undefined
         ? input.lastRetryFailoverReason
@@ -319,6 +330,60 @@ export async function recoverEmbeddedRunAttempt(input: {
     ) {
       throw toErrorObject(promptError, "Prompt failed");
     }
+  }
+  // Provably pre-execution no-output prompt timeouts get one same-provider/model
+  // retry before profile rotation or the configured fallback model consumes the
+  // turn. Only idle/runtime timeout forms with zero assistant/tool/item/delivery
+  // evidence are eligible; the counter is shared with the assistant-failure lane
+  // so the whole turn gets at most one blind same-prompt replay. Codex
+  // app-server failures keep their own recovery lane and never widen here.
+  // Every run-abort-terminated attempt carries an `aborted` merge artifact on
+  // its timeout terminal, so external/signal aborts are excluded by their own
+  // gates (`externalAbort`, `signalOwnedInterruption`) rather than the flag.
+  const noOutputPromptTimeoutRetryable =
+    timedOut &&
+    !timedOutByRunBudget &&
+    !timedOutDuringCompaction &&
+    !timedOutDuringToolExecution &&
+    !externalAbort &&
+    !signalOwnedInterruption &&
+    !attempt.codexAppServerFailure &&
+    attempt.promptTimeoutOutcome?.replayInvalid !== true &&
+    normalizedAttempt.canRestartForLiveSwitch &&
+    !hasAttemptTerminalState(attempt) &&
+    shouldRetryMissingAssistantTurn({
+      payloadCount: 0,
+      aborted,
+      promptError,
+      timedOut,
+      replayableTimeout: true,
+      attempt,
+    }) &&
+    input.sameModelIdleTimeoutRetries < MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES;
+  if (noOutputPromptTimeoutRetryable) {
+    runInput.laneController.throwIfAborted();
+    sessionPromptState.suppressNextUserMessagePersistence =
+      sessionPromptState.activePrompt.persisted;
+    input.traceAttempts.push({
+      provider: preparedRuntime.provider,
+      model: preparedRuntime.modelId,
+      result: "timeout",
+      reason: "timeout",
+      stage: "prompt",
+    });
+    log.warn(
+      `no-output prompt timeout for ${preparedRuntime.provider}/${preparedRuntime.modelId}; retrying same model once ` +
+        `retry=${input.sameModelIdleTimeoutRetries + 1}/${MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES} ` +
+        `runId=${params.runId} sessionId=${params.sessionId}`,
+    );
+    return retry({
+      sameModelIdleTimeoutRetries: input.sameModelIdleTimeoutRetries + 1,
+      lastRetryFailoverReason: mergeRetryFailoverReason({
+        previous: input.lastRetryFailoverReason,
+        failoverReason: "timeout",
+        timedOut: true,
+      }),
+    });
   }
   if (
     promptError &&

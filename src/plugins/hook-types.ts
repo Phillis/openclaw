@@ -1,4 +1,4 @@
-import type { FailoverReason } from "../agents/embedded-agent-helpers/types.js";
+import type { FailoverReason } from "../agents/failover/signal.js";
 import type { AgentMessage } from "../agents/runtime/index.js";
 import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
