@@ -2298,6 +2298,30 @@ describe("resolvePluginTools optional tools", () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps catalogMode direct-only through the plugin tool descriptor cache", () => {
+    const factory = vi.fn(() => ({
+      ...makeTool("cached_direct_only_tool"),
+      catalogMode: "direct-only" as const,
+    }));
+    setRegistry([
+      {
+        pluginId: "direct-only-cache",
+        optional: false,
+        source: "/tmp/direct-only-cache.js",
+        names: ["cached_direct_only_tool"],
+        factory,
+      },
+    ]);
+
+    const [fresh] = resolvePluginTools(createResolveToolsParams());
+    const [cached] = resolvePluginTools(createResolveToolsParams());
+
+    expect(fresh?.catalogMode).toBe("direct-only");
+    expect(cached?.catalogMode).toBe("direct-only");
+    expect(cached).not.toBe(fresh);
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps cached ordinary plugin tools free of network provenance", async () => {
     const factory = vi.fn(() => makeTool("cached_ordinary_tool"));
     setRegistry([
