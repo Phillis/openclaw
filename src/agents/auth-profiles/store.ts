@@ -189,6 +189,7 @@ function preserveLegacyOAuthRefsOnSave(params: {
 type ResolvedExternalCliOverlayOptions = {
   allowKeychainPrompt?: boolean;
   config?: OpenClawConfig;
+  workspaceDir?: string;
   externalCliProviderIds?: Iterable<string>;
   externalCliProfileIds?: Iterable<string>;
 };
@@ -350,6 +351,7 @@ function resolveExternalCliOverlayOptions(
     return {
       allowKeychainPrompt: false,
       ...(config ? { config } : {}),
+      ...(discovery.workspaceDir ? { workspaceDir: discovery.workspaceDir } : {}),
       externalCliProviderIds: [],
       externalCliProfileIds: [],
     };
@@ -360,6 +362,7 @@ function resolveExternalCliOverlayOptions(
     return {
       ...(allowKeychainPrompt !== undefined ? { allowKeychainPrompt } : {}),
       ...(config ? { config } : {}),
+      ...(discovery.workspaceDir ? { workspaceDir: discovery.workspaceDir } : {}),
     };
   }
   const allowKeychainPrompt = discovery.allowKeychainPrompt ?? options?.allowKeychainPrompt;
@@ -367,6 +370,7 @@ function resolveExternalCliOverlayOptions(
   return {
     ...(allowKeychainPrompt !== undefined ? { allowKeychainPrompt } : {}),
     ...(config ? { config } : {}),
+    ...(discovery.workspaceDir ? { workspaceDir: discovery.workspaceDir } : {}),
     ...(discovery.providerIds ? { externalCliProviderIds: discovery.providerIds } : {}),
     ...(discovery.profileIds ? { externalCliProfileIds: discovery.profileIds } : {}),
   };

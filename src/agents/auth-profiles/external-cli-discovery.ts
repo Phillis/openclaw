@@ -16,16 +16,19 @@ export type ExternalCliAuthDiscovery =
       mode: "none";
       allowKeychainPrompt?: false;
       config?: OpenClawConfig;
+      workspaceDir?: string;
     }
   | {
       mode: "existing";
       allowKeychainPrompt?: boolean;
       config?: OpenClawConfig;
+      workspaceDir?: string;
     }
   | {
       mode: "scoped";
       allowKeychainPrompt?: boolean;
       config?: OpenClawConfig;
+      workspaceDir?: string;
       providerIds?: Iterable<string>;
       profileIds?: Iterable<string>;
     };
@@ -36,6 +39,7 @@ type ProviderAuthDiscoveryParams = {
   profileId?: string;
   preferredProfile?: string;
   allowKeychainPrompt?: boolean;
+  workspaceDir?: string;
 };
 
 type ConfigStatusDiscoveryParams = {
@@ -68,6 +72,7 @@ export function externalCliDiscoveryScoped(params: {
   providerIds?: Iterable<string>;
   profileIds?: Iterable<string>;
   allowKeychainPrompt?: boolean;
+  workspaceDir?: string;
 }): ExternalCliAuthDiscovery {
   return {
     mode: "scoped",
@@ -75,6 +80,7 @@ export function externalCliDiscoveryScoped(params: {
       ? { allowKeychainPrompt: params.allowKeychainPrompt }
       : {}),
     ...(params.config ? { config: params.config } : {}),
+    ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     ...(params.providerIds ? { providerIds: params.providerIds } : {}),
     ...(params.profileIds ? { profileIds: params.profileIds } : {}),
   };
@@ -88,6 +94,7 @@ export function externalCliDiscoveryForProviderAuth(
   return externalCliDiscoveryScoped({
     config: params.cfg,
     allowKeychainPrompt: params.allowKeychainPrompt ?? false,
+    ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     providerIds: [params.provider],
     ...(profileIds.length > 0 ? { profileIds } : {}),
   });

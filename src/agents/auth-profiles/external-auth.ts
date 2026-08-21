@@ -27,6 +27,7 @@ type ResolveExternalAuthProfiles = typeof resolveExternalAuthProfilesWithPlugins
 type ExternalCliOverlayOptions = {
   allowKeychainPrompt?: boolean;
   config?: OpenClawConfig;
+  workspaceDir?: string;
   externalCliProviderIds?: Iterable<string>;
   externalCliProfileIds?: Iterable<string>;
 };
@@ -102,10 +103,13 @@ function resolveExternalAuthProfiles(params: {
   const profiles = resolveProfiles({
     env,
     config: params.externalCli?.config,
+    ...(params.externalCli?.workspaceDir ? { workspaceDir: params.externalCli.workspaceDir } : {}),
     context: {
       config: params.externalCli?.config,
       agentDir: params.agentDir,
-      workspaceDir: undefined,
+      ...(params.externalCli?.workspaceDir
+        ? { workspaceDir: params.externalCli.workspaceDir }
+        : {}),
       env,
       store: params.store,
     },

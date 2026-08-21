@@ -39,6 +39,7 @@ import {
   resolveApiKeyForProviderCore,
   type ResolvedProviderAuth,
 } from "./model-auth.js";
+import { resolveModelWorkspaceDir } from "./model-discovery-context.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
 import {
   buildModelAliasIndex,
@@ -246,7 +247,9 @@ export async function prepareSimpleCompletionModel(params: {
   bindAuthOwner?: boolean;
   modelResolver?: typeof resolveModelAsync;
 }): Promise<PreparedSimpleCompletionModel> {
-  const workspaceDir = resolveSimpleCompletionModelResolverWorkspace(params.modelResolver);
+  const workspaceDir =
+    resolveSimpleCompletionModelResolverWorkspace(params.modelResolver) ??
+    resolveModelWorkspaceDir(params.cfg, undefined, params.agentId);
   const resolved = await (params.modelResolver ?? resolveModelAsync)(
     params.provider,
     params.modelId,

@@ -66,6 +66,7 @@ export function resolveScopedAuthProfileStore(params: {
   provider: string;
   profileId?: string;
   preferredProfile?: string;
+  workspaceDir?: string;
 }): AuthProfileStore {
   return ensureAuthProfileStore(params.agentDir, {
     externalCli: externalCliDiscoveryForProviderAuth(params),
