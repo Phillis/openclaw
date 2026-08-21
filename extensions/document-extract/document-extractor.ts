@@ -31,6 +31,7 @@ function toDocumentImage(image: PdfImage): DocumentExtractedImage {
     type: "image",
     data: Buffer.from(image.bytes).toString("base64"),
     mimeType: image.mimeType,
+    ...(Number.isInteger(image.page) && image.page > 0 ? { page: image.page } : {}),
   };
 }
 
@@ -111,6 +112,9 @@ async function extractPdfContent(
             forms: true,
           },
         });
+        if (imageResult.images.length === 0) {
+          throw new Error(`PDF page ${pageNumber} did not render an image.`);
+        }
         for (const image of imageResult.images) {
           images.push(toDocumentImage(image));
           remainingPixels -= image.width * image.height;

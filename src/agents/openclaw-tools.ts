@@ -26,12 +26,7 @@ import {
 import type { ConversationRecallContext } from "./conversation-recall.types.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 import { filterToolsByClientCaps } from "./openclaw-tools.client-caps.js";
-import {
-  isToolExplicitlyAllowedByFactoryPolicy,
-  mergeFactoryPolicyList,
-  resolveImageToolFactoryAvailable,
-  resolveOptionalMediaToolFactoryPlan,
-} from "./openclaw-tools.media-factory-plan.js";
+import * as mediaFactory from "./openclaw-tools.media-factory-plan.js";
 import { createMediaGenerationAsyncStartCallback } from "./openclaw-tools.media-yield.js";
 import type { ModelAwareToolContext } from "./openclaw-tools.model-context.js";
 import { applyNodesToolWorkspaceGuard } from "./openclaw-tools.nodes-workspace-guard.js";
@@ -232,6 +227,10 @@ export function createOpenClawTools(
     runtimeConfig: runtimeSnapshot?.config,
     runtimeSourceConfig: runtimeSnapshot?.sourceConfig,
   });
+  const optionalMediaConfig = availabilityConfig ?? resolvedConfig;
+  const pdfDirectModelHasVision =
+    options?.modelHasVision === true &&
+    mediaFactory.isDocumentExtractorPolicyAvailable(optionalMediaConfig);
   const { sessionAgentId } = resolveSessionAgentIds({
     sessionKey: options?.agentSessionKey,
     config: resolvedConfig,
@@ -269,9 +268,10 @@ export function createOpenClawTools(
     options?.sandboxRoot && options?.sandboxFsBridge
       ? { root: options.sandboxRoot, bridge: options.sandboxFsBridge }
       : undefined;
-  const optionalMediaTools = resolveOptionalMediaToolFactoryPlan({
-    config: availabilityConfig ?? resolvedConfig,
+  const optionalMediaTools = mediaFactory.resolveOptionalMediaToolFactoryPlan({
+    config: optionalMediaConfig,
     workspaceDir,
+    modelHasVision: options?.modelHasVision,
     authStore: options?.authProfileStore,
     toolAllowlist: options?.pluginToolAllowlist,
     toolDenylist: options?.pluginToolDenylist,
@@ -291,7 +291,7 @@ export function createOpenClawTools(
   const requesterTurnRunId = options?.runId;
   const imageTool =
     options?.agentDir &&
-    resolveImageToolFactoryAvailable({
+    mediaFactory.resolveImageToolFactoryAvailable({
       config: availabilityConfig ?? resolvedConfig,
       agentDir: options.agentDir,
       workspaceDir,
@@ -350,7 +350,7 @@ export function createOpenClawTools(
           preparedModelRuntime: options?.preparedModelRuntime,
           authProfileStore: options?.authProfileStore,
           workspaceDir,
-          modelHasVision: options?.modelHasVision,
+          modelHasVision: pdfDirectModelHasVision,
           sandbox,
           fsPolicy: options?.fsPolicy,
           deferAutoModelResolution: true,
@@ -429,19 +429,19 @@ export function createOpenClawTools(
   });
   options?.recordToolPrepStage?.("openclaw-tools:nodes-tool");
   const embedded = isEmbeddedMode();
-  const explicitFactoryAllowlist = mergeFactoryPolicyList(
+  const explicitFactoryAllowlist = mediaFactory.mergeFactoryPolicyList(
     resolvedConfig?.tools?.allow,
     resolvedConfig?.tools?.alsoAllow,
     options?.pluginToolAllowlist,
   );
-  const explicitFactoryDenylist = mergeFactoryPolicyList(
+  const explicitFactoryDenylist = mediaFactory.mergeFactoryPolicyList(
     resolvedConfig?.tools?.deny,
     options?.pluginToolDenylist,
   );
   const includeMessageTool =
     !embedded ||
     options?.sourceReplyDeliveryMode === "message_tool_only" ||
-    isToolExplicitlyAllowedByFactoryPolicy({
+    mediaFactory.isToolExplicitlyAllowedByFactoryPolicy({
       toolName: "message",
       allowlist: explicitFactoryAllowlist,
       denylist: explicitFactoryDenylist,

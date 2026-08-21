@@ -3,6 +3,7 @@ export type DocumentExtractedImage = {
   type: "image";
   data: string;
   mimeType: string;
+  page?: number;
 };
 
 /** Request passed to plugin document extractors. */

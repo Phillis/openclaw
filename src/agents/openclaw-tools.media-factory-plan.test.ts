@@ -22,6 +22,18 @@ import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY } from "./tool-policy.js";
 import { loadCapabilityMetadataSnapshot } from "./tools/manifest-capability-availability.js";
 import * as pdfModelConfigModule from "./tools/pdf-tool.model-config.js";
 
+const getActiveSecretsRuntimeConfigSnapshotMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../secrets/runtime-state.js", async () => {
+  const actual = await vi.importActual<typeof import("../secrets/runtime-state.js")>(
+    "../secrets/runtime-state.js",
+  );
+  return {
+    ...actual,
+    getActiveSecretsRuntimeConfigSnapshot: getActiveSecretsRuntimeConfigSnapshotMock,
+  };
+});
+
 type CreateOpenClawToolsOptions = Parameters<
   typeof import("./openclaw-tools.js").createOpenClawTools
 >[0];
@@ -254,6 +266,8 @@ describe("optional media tool factory planning", () => {
   beforeEach(() => {
     resetPluginRuntimeStateForTest();
     clearSecretsRuntimeSnapshot();
+    getActiveSecretsRuntimeConfigSnapshotMock.mockReset();
+    getActiveSecretsRuntimeConfigSnapshotMock.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -648,6 +662,87 @@ describe("optional media tool factory planning", () => {
 
     expect(tools.map((tool) => tool.name)).toContain("pdf");
     expect(resolveSpy).not.toHaveBeenCalled();
+  });
+
+  it("registers direct PDF inspection for an active vision model without nested provider signals", async () => {
+    const config: OpenClawConfig = {};
+    installSnapshot(config, []);
+    const authProfileStore = createAuthStore();
+
+    expect(
+      resolveOptionalMediaToolFactoryPlan({
+        config,
+        authStore: authProfileStore,
+        modelHasVision: true,
+      }).pdf,
+    ).toBe(true);
+    const tools = await createOpenClawToolsForTest({
+      config,
+      agentDir: "/tmp/openclaw-agent-main",
+      authProfileStore,
+      modelHasVision: true,
+    });
+
+    expect(tools.map((tool) => tool.name)).toContain("pdf");
+  });
+
+  it("omits direct PDF inspection when the document extractor is disabled", () => {
+    const config: OpenClawConfig = {
+      plugins: { entries: { "document-extract": { enabled: false } } },
+    };
+    installSnapshot(config, []);
+    const authProfileStore = createAuthStore();
+
+    expect(
+      resolveOptionalMediaToolFactoryPlan({
+        config,
+        authStore: authProfileStore,
+        modelHasVision: true,
+      }).pdf,
+    ).toBe(false);
+  });
+
+  it("keeps an explicit PDF provider non-direct when the runtime overlay disables extraction", async () => {
+    const sourceConfig: OpenClawConfig = {
+      agents: {
+        defaults: { pdfModel: { primary: "anthropic/claude-opus-4-6" } },
+      },
+    };
+    const availabilityConfig: OpenClawConfig = {
+      ...sourceConfig,
+      plugins: { entries: { "document-extract": { enabled: false } } },
+    };
+    installSnapshot(availabilityConfig, []);
+    getActiveSecretsRuntimeConfigSnapshotMock.mockReturnValue({
+      sourceConfig,
+      config: availabilityConfig,
+    });
+    const authProfileStore = createAuthStore();
+
+    expect(
+      resolveOptionalMediaToolFactoryPlan({
+        config: availabilityConfig,
+        authStore: authProfileStore,
+        modelHasVision: true,
+      }).pdf,
+    ).toBe(true);
+    const tools = await createOpenClawToolsForTest({
+      config: sourceConfig,
+      agentDir: "/tmp/openclaw-agent-main",
+      authProfileStore,
+      modelHasVision: true,
+      disablePluginTools: true,
+      wrapBeforeToolCallHook: false,
+    });
+    const pdfTool = tools.find((tool) => tool.name === "pdf");
+
+    if (!pdfTool) {
+      throw new Error("expected pdf tool");
+    }
+    expect(pdfTool.catalogMode).not.toBe("direct-only");
+    expect(
+      (pdfTool.parameters as { properties?: Record<string, unknown> }).properties,
+    ).toHaveProperty("model");
   });
 
   it("keeps enabled external manifest capability providers on the factory path", () => {

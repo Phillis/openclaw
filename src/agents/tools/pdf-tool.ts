@@ -21,6 +21,7 @@ import { loadWebMediaRaw } from "../../media/web-media.js";
 import { resolveUserPath } from "../../utils.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { abortable } from "../embedded-agent-runner/run/abortable.js";
+import { resolveImageSanitizationLimits } from "../image-sanitization.js";
 import { applySecretRefHeaderSentinels } from "../model-auth.js";
 import {
   acquireAgentRunPreparedModelRuntime,
@@ -28,8 +29,10 @@ import {
 } from "../prepared-model-runtime.js";
 import { getModelProviderRequestTransport } from "../provider-request-config.js";
 import { registerProviderStreamForModel } from "../provider-stream.js";
+import type { AgentToolResult } from "../runtime/index.js";
 import { optionalFiniteNumberSchema } from "../schema/typebox.js";
 import { getModelRegistryRuntime } from "../sessions/model-registry-runtime.js";
+import { sanitizeToolResultImages } from "../tool-images.js";
 import { readFiniteNumberParam, ToolInputError } from "./common.js";
 import { coerceImageModelConfig, type ImageModelConfig } from "./image-tool.helpers.js";
 import {
@@ -70,23 +73,25 @@ const DEFAULT_MAX_PAGES = 20;
 const PDF_MIN_TEXT_CHARS = 200;
 const PDF_MAX_PIXELS = 4_000_000;
 
-const PdfToolSchema = Type.Object({
-  prompt: Type.Optional(Type.String()),
-  pdf: Type.Optional(Type.String({ description: "One PDF path/URL." })),
-  pdfs: Type.Optional(
-    Type.Array(Type.String(), {
-      description: "PDF paths/URLs; max 10.",
-    }),
-  ),
-  pages: Type.Optional(
-    Type.String({
-      description: 'Pages, e.g. "1-5", "1,3,5-7"; default all.',
-    }),
-  ),
-  password: Type.Optional(Type.String({ description: "Password for encrypted PDFs." })),
-  model: Type.Optional(Type.String()),
-  maxBytesMb: optionalFiniteNumberSchema({ exclusiveMinimum: 0 }),
-});
+function createPdfToolSchema(modelHasVision: boolean) {
+  return Type.Object({
+    prompt: Type.Optional(Type.String()),
+    pdf: Type.Optional(Type.String({ description: "One PDF path/URL." })),
+    pdfs: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "PDF paths/URLs; max 10.",
+      }),
+    ),
+    pages: Type.Optional(
+      Type.String({
+        description: 'Pages, e.g. "1-5", "1,3,5-7"; default all.',
+      }),
+    ),
+    password: Type.Optional(Type.String({ description: "Password for encrypted PDFs." })),
+    ...(modelHasVision ? {} : { model: Type.Optional(Type.String()) }),
+    maxBytesMb: optionalFiniteNumberSchema({ exclusiveMinimum: 0 }),
+  });
+}
 
 function hasExplicitPdfToolModelConfig(config?: OpenClawConfig): boolean {
   return (
@@ -107,23 +112,7 @@ function buildPdfExtractionContext(
   extractions: PdfExtractedContent[],
   model?: { api?: string },
 ): Context {
-  const content: Array<
-    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
-  > = [];
-
-  // Add extracted text and images
-  for (const [i, extraction] of extractions.entries()) {
-    if (extraction.text.trim()) {
-      const label = extractions.length > 1 ? `[PDF ${i + 1} text]\n` : "[PDF text]\n";
-      content.push({ type: "text", text: label + extraction.text });
-    }
-    for (const img of extraction.images) {
-      content.push({ type: "image", data: img.data, mimeType: img.mimeType });
-    }
-  }
-
-  // Add the user prompt
-  content.push({ type: "text", text: prompt });
+  const content = buildPdfExtractionContent(prompt, extractions);
 
   const systemPrompt =
     model?.api === "openai-chatgpt-responses" ? CODEX_PDF_INSTRUCTIONS : undefined;
@@ -132,6 +121,37 @@ function buildPdfExtractionContext(
     ...(systemPrompt ? { systemPrompt } : {}),
     messages: [{ role: "user", content, timestamp: Date.now() }],
   };
+}
+
+function buildPdfExtractionContent(
+  prompt: string,
+  extractions: PdfExtractedContent[],
+  options?: { includeImageLabels?: boolean },
+): Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> {
+  const content: Array<
+    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+  > = [];
+
+  // Add extracted text and images
+  for (const [i, extraction] of extractions.entries()) {
+    const pdfLabel = extractions.length > 1 ? `PDF ${i + 1}` : "PDF";
+    if (extraction.text.trim()) {
+      content.push({ type: "text", text: `[${pdfLabel} text]\n${extraction.text}` });
+    }
+    for (const [imageIndex, img] of extraction.images.entries()) {
+      if (options?.includeImageLabels === true) {
+        const imageLabel = img.page
+          ? `${pdfLabel} page ${img.page}`
+          : `${pdfLabel} image ${imageIndex + 1}`;
+        content.push({ type: "text", text: `[${imageLabel}]` });
+      }
+      content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+    }
+  }
+
+  // Add the user prompt
+  content.push({ type: "text", text: prompt });
+  return content;
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +403,7 @@ export function createPdfTool(options?: {
   deferAutoModelResolution?: boolean;
 }): AnyAgentTool | null {
   const agentDir = options?.agentDir?.trim();
+  const modelHasVision = options?.modelHasVision === true;
   const hasExplicitModelConfig = hasExplicitPdfToolModelConfig(options?.config);
   if (!agentDir) {
     if (hasExplicitModelConfig) {
@@ -392,16 +413,18 @@ export function createPdfTool(options?: {
   }
 
   const shouldDeferAutoModelResolution =
-    options?.deferAutoModelResolution === true && !hasExplicitModelConfig;
-  const registrationPdfModelConfig = shouldDeferAutoModelResolution
+    modelHasVision || (options?.deferAutoModelResolution === true && !hasExplicitModelConfig);
+  const registrationPdfModelConfig = modelHasVision
     ? null
-    : resolvePdfModelConfigForTool({
-        cfg: options?.config,
-        agentDir,
-        workspaceDir: options?.workspaceDir,
-        authStore: options?.authProfileStore,
-      });
-  if (!registrationPdfModelConfig && !shouldDeferAutoModelResolution) {
+    : shouldDeferAutoModelResolution
+      ? null
+      : resolvePdfModelConfigForTool({
+          cfg: options?.config,
+          agentDir,
+          workspaceDir: options?.workspaceDir,
+          authStore: options?.authProfileStore,
+        });
+  if (!modelHasVision && !registrationPdfModelConfig && !shouldDeferAutoModelResolution) {
     return null;
   }
 
@@ -419,16 +442,17 @@ export function createPdfTool(options?: {
       ? Math.floor(maxPagesDefault)
       : DEFAULT_MAX_PAGES;
 
-  const description =
-    'Analyze PDF(s): Anthropic/Google native when supported, else text/image extraction. pdf one; pdfs max 10; prompt says inspection. `pages` selects a page range ("1-5", "1,3,5-7"); `password` opens encrypted PDFs (both non-native only).';
+  const description = modelHasVision
+    ? 'Load/render PDF page(s) for direct visual inspection. pdf one; pdfs max 10; prompt says inspection. `pages` selects a page range ("1-5", "1,3,5-7"); `password` opens encrypted PDFs.'
+    : 'Analyze PDF(s): Anthropic/Google native when supported, else text/image extraction. pdf one; pdfs max 10; prompt says inspection. `pages` selects a page range ("1-5", "1,3,5-7"); `password` opens encrypted PDFs (both non-native only).';
   const remoteMediaSsrfPolicy = resolveRemoteMediaSsrfPolicy(options?.config);
 
   return {
     label: "PDF",
     name: "pdf",
     description,
-    ...(options?.modelHasVision ? { catalogMode: "direct-only" as const } : {}),
-    parameters: PdfToolSchema,
+    ...(modelHasVision ? { catalogMode: "direct-only" as const } : {}),
+    parameters: createPdfToolSchema(modelHasVision),
     execute: async (_toolCallId, args, signal) => {
       const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 
@@ -464,16 +488,27 @@ export function createPdfTool(options?: {
       const pagesRaw = normalizeOptionalString(record.pages);
       const pageNumbers = pagesRaw ? parsePageRange(pagesRaw, configuredMaxPages) : undefined;
       const password = typeof record.password === "string" ? record.password : undefined;
+      const directMaxPages = Math.min(configuredMaxPages, DEFAULT_MAX_PAGES);
+      if (
+        modelHasVision &&
+        (pdfInputs.length > directMaxPages ||
+          (pageNumbers && pageNumbers.length * pdfInputs.length > directMaxPages))
+      ) {
+        throw new ToolInputError(
+          `Direct PDF inspection is limited to ${directMaxPages} total rendered pages.`,
+        );
+      }
 
-      const pdfModelConfig =
-        registrationPdfModelConfig ??
-        resolvePdfModelConfigForTool({
-          cfg: options?.config,
-          agentDir,
-          workspaceDir: options?.workspaceDir,
-          authStore: options?.authProfileStore,
-        });
-      if (!pdfModelConfig) {
+      const pdfModelConfig = modelHasVision
+        ? null
+        : (registrationPdfModelConfig ??
+          resolvePdfModelConfigForTool({
+            cfg: options?.config,
+            agentDir,
+            workspaceDir: options?.workspaceDir,
+            authStore: options?.authProfileStore,
+          }));
+      if (!modelHasVision && !pdfModelConfig) {
         throw new ToolInputError("No PDF model configured.");
       }
 
@@ -582,7 +617,17 @@ export function createPdfTool(options?: {
         });
       }
 
-      const getExtractions = async (): Promise<PdfExtractedContent[]> => {
+      const getExtractions = async (extractionOptions?: {
+        minTextChars?: number;
+        aggregateLimits?: boolean;
+      }): Promise<PdfExtractedContent[]> => {
+        const aggregateLimits = extractionOptions?.aggregateLimits === true;
+        const maxPages = aggregateLimits
+          ? (pageNumbers?.length ?? Math.max(1, Math.floor(directMaxPages / loadedPdfs.length)))
+          : configuredMaxPages;
+        const maxPixels = aggregateLimits
+          ? Math.max(1, Math.floor(PDF_MAX_PIXELS / loadedPdfs.length))
+          : PDF_MAX_PIXELS;
         const extractedAll: PdfExtractedContent[] = [];
         for (const pdf of loadedPdfs) {
           // Extraction is sequential and can be CPU-heavy. Do not start the next
@@ -590,9 +635,9 @@ export function createPdfTool(options?: {
           signal?.throwIfAborted();
           const extracted = await extractPdfContent({
             buffer: pdf.buffer,
-            maxPages: configuredMaxPages,
-            maxPixels: PDF_MAX_PIXELS,
-            minTextChars: PDF_MIN_TEXT_CHARS,
+            maxPages,
+            maxPixels,
+            minTextChars: extractionOptions?.minTextChars ?? PDF_MIN_TEXT_CHARS,
             ...(password ? { password } : {}),
             pageNumbers,
             config: options?.config,
@@ -601,6 +646,71 @@ export function createPdfTool(options?: {
         }
         return extractedAll;
       };
+
+      const singlePdf = loadedPdfs.length === 1 ? loadedPdfs.at(0) : undefined;
+      const pdfDetails = singlePdf
+        ? {
+            pdf: singlePdf.resolvedPath,
+            ...(singlePdf.rewrittenFrom ? { rewrittenFrom: singlePdf.rewrittenFrom } : {}),
+          }
+        : {
+            pdfs: loadedPdfs.map((p) =>
+              Object.assign(
+                { pdf: p.resolvedPath },
+                p.rewrittenFrom ? { rewrittenFrom: p.rewrittenFrom } : {},
+              ),
+            ),
+          };
+
+      if (modelHasVision) {
+        signal?.throwIfAborted();
+        const extractions = await getExtractions({
+          minTextChars: Number.MAX_SAFE_INTEGER,
+          aggregateLimits: true,
+        });
+        signal?.throwIfAborted();
+        if (
+          extractions.length !== loadedPdfs.length ||
+          extractions.some((extraction) => extraction.images.length === 0)
+        ) {
+          throw new Error(
+            "PDF rendering did not produce a page image for every document in direct visual inspection.",
+          );
+        }
+        const renderedImageCount = extractions.reduce(
+          (count, extraction) => count + extraction.images.length,
+          0,
+        );
+        const nativeResult: AgentToolResult<unknown> = {
+          content: buildPdfExtractionContent(promptRaw, extractions, {
+            includeImageLabels: true,
+          }),
+          details: {
+            transport: "native",
+            ...pdfDetails,
+            media: { outbound: false },
+          },
+        };
+        const sanitizedResult = await sanitizeToolResultImages(
+          nativeResult,
+          "pdf:native",
+          resolveImageSanitizationLimits(options?.config),
+        );
+        signal?.throwIfAborted();
+        const sanitizedImageCount = sanitizedResult.content.filter(
+          (block) => block.type === "image",
+        ).length;
+        if (sanitizedImageCount !== renderedImageCount) {
+          throw new Error(
+            "PDF page image sanitization removed one or more rendered pages from direct visual inspection.",
+          );
+        }
+        return sanitizedResult;
+      }
+
+      if (!pdfModelConfig) {
+        throw new ToolInputError("No PDF model configured.");
+      }
 
       // Do not issue a paid PDF-model call for an already-aborted run.
       signal?.throwIfAborted();
@@ -621,21 +731,6 @@ export function createPdfTool(options?: {
         pageNumbers,
         getExtractions,
       });
-
-      const singlePdf = loadedPdfs.length === 1 ? loadedPdfs.at(0) : undefined;
-      const pdfDetails = singlePdf
-        ? {
-            pdf: singlePdf.resolvedPath,
-            ...(singlePdf.rewrittenFrom ? { rewrittenFrom: singlePdf.rewrittenFrom } : {}),
-          }
-        : {
-            pdfs: loadedPdfs.map((p) =>
-              Object.assign(
-                { pdf: p.resolvedPath },
-                p.rewrittenFrom ? { rewrittenFrom: p.rewrittenFrom } : {},
-              ),
-            ),
-          };
 
       return buildTextToolResult(result, { native: result.native, ...pdfDetails });
     },

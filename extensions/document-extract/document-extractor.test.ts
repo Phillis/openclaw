@@ -112,8 +112,8 @@ describe("PDF document extractor", () => {
     expect(result).toEqual({
       text: "",
       images: [
-        { type: "image", data: "cG5nMQ==", mimeType: "image/png" },
-        { type: "image", data: "cG5nMg==", mimeType: "image/png" },
+        { type: "image", data: "cG5nMQ==", mimeType: "image/png", page: 1 },
+        { type: "image", data: "cG5nMg==", mimeType: "image/png", page: 2 },
       ],
     });
     expect(pdfDocument.destroy).toHaveBeenCalledTimes(1);
@@ -128,6 +128,33 @@ describe("PDF document extractor", () => {
     expect(result).toEqual({ text: "enough text", images: [] });
     expect(pdfDocument.extract).toHaveBeenCalledTimes(1);
     expect(pdfDocument.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders text-rich PDFs when the caller forces visual extraction", async () => {
+    pdfDocument.extract
+      .mockResolvedValueOnce({ text: "enough text", images: [] })
+      .mockResolvedValueOnce({
+        text: "",
+        images: [
+          {
+            bytes: Uint8Array.from(Buffer.from("page")),
+            mimeType: "image/png",
+            page: 1,
+            width: 10,
+            height: 10,
+          },
+        ],
+      });
+
+    const result = await createPdfDocumentExtractor().extract(
+      request({ minTextChars: Number.MAX_SAFE_INTEGER, pageNumbers: [1] }),
+    );
+
+    expect(pdfDocument.extract).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      text: "enough text",
+      images: [{ type: "image", data: "cGFnZQ==", mimeType: "image/png", page: 1 }],
+    });
   });
 
   it("opens encrypted PDFs with the request password", async () => {
@@ -155,13 +182,29 @@ describe("PDF document extractor", () => {
   it("filters selected pages and renders them one page per image call", async () => {
     pdfDocument.extract
       .mockResolvedValueOnce({ text: "", images: [] })
-      .mockResolvedValueOnce({ text: "", images: [] })
-      .mockResolvedValueOnce({ text: "", images: [] });
+      .mockResolvedValueOnce({
+        text: "",
+        images: [
+          { bytes: Uint8Array.from([2]), mimeType: "image/png", page: 2, width: 5, height: 5 },
+        ],
+      })
+      .mockResolvedValueOnce({
+        text: "",
+        images: [
+          { bytes: Uint8Array.from([1]), mimeType: "image/png", page: 1, width: 5, height: 5 },
+        ],
+      });
     const extractor = createPdfDocumentExtractor();
 
     const result = await extractor.extract(request({ pageNumbers: [3, 2, 0, 1], maxPages: 2 }));
 
-    expect(result).toEqual({ text: "", images: [] });
+    expect(result).toEqual({
+      text: "",
+      images: [
+        { type: "image", data: "Ag==", mimeType: "image/png", page: 2 },
+        { type: "image", data: "AQ==", mimeType: "image/png", page: 1 },
+      ],
+    });
     expect(pdfDocument.extract).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ mode: "text", pages: [2, 1] }),
@@ -207,6 +250,20 @@ describe("PDF document extractor", () => {
     expect(result).toEqual({ text: "short", images: [] });
     expect(onImageExtractionError).toHaveBeenCalledWith(failure);
     expect(pdfDocument.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an empty page render as an extraction failure", async () => {
+    const onImageExtractionError = vi.fn();
+    pdfDocument.extract
+      .mockResolvedValueOnce({ text: "", images: [] })
+      .mockResolvedValueOnce({ text: "", images: [] });
+
+    await expect(
+      createPdfDocumentExtractor().extract(request({ onImageExtractionError })),
+    ).rejects.toThrow("PDF image extraction failed with no extractable text");
+    expect(onImageExtractionError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "PDF page 1 did not render an image." }),
+    );
   });
 
   it.each([

@@ -7,6 +7,7 @@ import {
 } from "../config/model-input.js";
 import type { AgentModelConfig } from "../config/types.agents-shared.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { normalizePluginsConfig } from "../plugins/config-state.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { listProfilesForProvider } from "./auth-profiles/profile-list.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
@@ -59,6 +60,17 @@ function hasExplicitPdfModelConfig(config: OpenClawConfig | undefined): boolean 
   return (
     hasExplicitToolModelConfig(config?.agents?.defaults?.pdfModel) ||
     hasExplicitImageModelConfig(config)
+  );
+}
+
+export function isDocumentExtractorPolicyAvailable(config: OpenClawConfig | undefined): boolean {
+  const plugins = normalizePluginsConfig(config?.plugins);
+  const pluginId = "document-extract";
+  return (
+    plugins.enabled &&
+    !plugins.deny.includes(pluginId) &&
+    plugins.entries[pluginId]?.enabled !== false &&
+    (plugins.allow.length === 0 || plugins.allow.includes(pluginId))
   );
 }
 
@@ -218,6 +230,7 @@ function hasConfiguredVisionModelAuthSignal(params: {
 export function resolveOptionalMediaToolFactoryPlan(params: {
   config?: OpenClawConfig;
   workspaceDir?: string;
+  modelHasVision?: boolean;
   authStore?: AuthProfileStore;
   toolAllowlist?: string[];
   toolDenylist?: string[];
@@ -305,7 +318,8 @@ export function resolveOptionalMediaToolFactoryPlan(params: {
         })),
     pdf:
       allowPdf &&
-      (explicitPdf ||
+      ((params.modelHasVision === true && isDocumentExtractorPolicyAvailable(params.config)) ||
+        explicitPdf ||
         hasSnapshotCapabilityAvailability({
           snapshot,
           authStore: params.authStore,
