@@ -10,6 +10,9 @@ import {
 
 installPinnedHostnameTestHooks();
 
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xdb]);
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 describe("minimax image-generation provider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -29,12 +32,12 @@ describe("minimax image-generation provider", () => {
     });
   }
 
-  function mockSuccessfulMinimaxImageResponse() {
+  function mockSuccessfulMinimaxImageResponse(imageBytes = PNG_BYTES) {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           data: {
-            image_base64: [Buffer.from("png-data").toString("base64")],
+            image_base64: [imageBytes.toString("base64")],
           },
           base_resp: { status_code: 0 },
         }),
@@ -130,13 +133,33 @@ describe("minimax image-generation provider", () => {
     expect(result).toEqual({
       images: [
         {
-          buffer: Buffer.from("png-data"),
+          buffer: PNG_BYTES,
           mimeType: "image/png",
           fileName: "image-1.png",
         },
       ],
       model: "image-01",
     });
+  });
+
+  it("reports JPEG bytes with a matching MIME type and filename", async () => {
+    mockMinimaxApiKey();
+    mockSuccessfulMinimaxImageResponse(JPEG_BYTES);
+
+    const result = await buildMinimaxImageGenerationProvider().generateImage({
+      provider: "minimax",
+      model: "image-01",
+      prompt: "draw a cat",
+      cfg: {},
+    });
+
+    expect(result.images).toEqual([
+      {
+        buffer: JPEG_BYTES,
+        mimeType: "image/jpeg",
+        fileName: "image-1.jpg",
+      },
+    ]);
   });
 
   it("rejects malformed base64 image payloads", async () => {

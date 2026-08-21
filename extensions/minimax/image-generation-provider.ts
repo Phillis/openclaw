@@ -1,6 +1,7 @@
 // Minimax provider module implements model/runtime integration.
 import {
   resolveInlineImageJsonResponseMaxBytes,
+  sniffImageMimeType,
   type ImageGenerationProvider,
 } from "openclaw/plugin-sdk/image-generation";
 import { resolveGeneratedMediaMaxBytes } from "openclaw/plugin-sdk/media-generation-runtime";
@@ -18,7 +19,7 @@ import {
 const DEFAULT_MINIMAX_IMAGE_BASE_URL = "https://api.minimax.io";
 const CN_MINIMAX_IMAGE_BASE_URL = "https://api.minimaxi.com";
 const DEFAULT_MODEL = "image-01";
-const DEFAULT_OUTPUT_MIME = "image/png";
+const DEFAULT_OUTPUT_MIME = "image/jpeg";
 const MINIMAX_MAX_IMAGE_RESULTS = 9;
 const MINIMAX_SUPPORTED_ASPECT_RATIOS = [
   "1:1",
@@ -203,10 +204,12 @@ function buildMinimaxImageProvider(providerId: string): ImageGenerationProvider 
             if (!canonicalBase64) {
               throw new Error("MiniMax image generation returned malformed image base64");
             }
+            const buffer = Buffer.from(canonicalBase64, "base64");
+            const detected = sniffImageMimeType(buffer, DEFAULT_OUTPUT_MIME);
             return {
-              buffer: Buffer.from(canonicalBase64, "base64"),
-              mimeType: DEFAULT_OUTPUT_MIME,
-              fileName: `image-${index + 1}.png`,
+              buffer,
+              mimeType: detected.mimeType,
+              fileName: `image-${index + 1}.${detected.extension}`,
             };
           })
           .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
