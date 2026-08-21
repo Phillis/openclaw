@@ -1,5 +1,6 @@
 /** Sanitizes replayed tool calls and provider-specific transcript structure. */
 import { replaceCompactionReplayOwnerContent } from "@openclaw/ai/transports";
+import { validateToolArguments } from "@openclaw/ai/validation";
 import { hasNonEmptyString as replayToolCallNonEmptyString } from "../../../../packages/normalization-core/src/string-coerce.js";
 import {
   downgradeOpenAIFunctionCallReasoningPairs,
@@ -39,6 +40,13 @@ type ReplayToolCallSanitizeReport = {
   droppedAssistantMessages: number;
 };
 
+type ReplayVisibleTool = {
+  name?: string;
+  parameters?: unknown;
+};
+
+type ReplayToolInputValidator = (toolName: string, args: unknown) => boolean;
+
 type AnthropicToolResultContentBlock = {
   type?: unknown;
   toolUseId?: unknown;
@@ -55,7 +63,11 @@ function isThinkingLikeReplayBlock(block: unknown): boolean {
   return type === "thinking" || type === "redacted_thinking";
 }
 
-function isReplaySafeThinkingTurn(content: unknown[], allowedToolNames?: Set<string>): boolean {
+function isReplaySafeThinkingTurn(
+  content: unknown[],
+  allowedToolNames?: Set<string>,
+  validateToolInput?: ReplayToolInputValidator,
+): boolean {
   const seenToolCallIds = new Set<string>();
   for (const block of content) {
     if (!isReplayToolCallBlock(block)) {
@@ -72,6 +84,10 @@ function isReplaySafeThinkingTurn(content: unknown[], allowedToolNames?: Set<str
     if (!resolvedName || replayBlock.name !== resolvedName) {
       return false;
     }
+    const args = readReplayToolCallInput(replayBlock);
+    if (validateToolInput && !validateToolInput(resolvedName, args)) {
+      return false;
+    }
   }
   return true;
 }
@@ -84,10 +100,17 @@ function isReplayToolCallBlock(block: unknown): block is ReplayToolCallBlock {
 }
 
 function replayToolCallHasInput(block: ReplayToolCallBlock): boolean {
-  const hasInput = "input" in block ? block.input !== undefined && block.input !== null : false;
-  const hasArguments =
-    "arguments" in block ? block.arguments !== undefined && block.arguments !== null : false;
-  return hasInput || hasArguments;
+  return readReplayToolCallInput(block) !== undefined;
+}
+
+function readReplayToolCallInput(block: ReplayToolCallBlock): unknown | undefined {
+  if ("input" in block && block.input !== undefined && block.input !== null) {
+    return block.input;
+  }
+  if ("arguments" in block && block.arguments !== undefined && block.arguments !== null) {
+    return block.arguments;
+  }
+  return undefined;
 }
 
 function collectFollowingToolResults(
@@ -142,6 +165,7 @@ function sanitizeReplayToolCallInputs(
   messages: AgentMessage[],
   allowedToolNames?: Set<string>,
   allowProviderOwnedThinkingReplay?: boolean,
+  validateToolInput?: ReplayToolInputValidator,
 ): ReplayToolCallSanitizeReport {
   let changed = false;
   let droppedAssistantMessages = 0;
@@ -170,7 +194,7 @@ function sanitizeReplayToolCallInputs(
       const replaySafeToolCalls = extractToolCallsFromAssistant(message);
       const followingToolResults = collectFollowingToolResults(messages, index);
       if (
-        isReplaySafeThinkingTurn(message.content, allowedToolNames) &&
+        isReplaySafeThinkingTurn(message.content, allowedToolNames, validateToolInput) &&
         replaySafeToolCalls.every(
           (toolCall) =>
             !preservedThinkingToolCallIds.has(toolCall.id) &&
@@ -215,6 +239,13 @@ function sanitizeReplayToolCallInputs(
         continue;
       }
 
+      const args = readReplayToolCallInput(replayBlock);
+      if (validateToolInput && !validateToolInput(resolvedName, args)) {
+        changed = true;
+        messageChanged = true;
+        continue;
+      }
+
       if (replayBlock.name !== resolvedName) {
         nextContent.push({ ...(block as object), name: resolvedName } as typeof block);
         changed = true;
@@ -247,6 +278,50 @@ function sanitizeReplayToolCallInputs(
   return {
     messages: changed ? out : messages,
     droppedAssistantMessages,
+  };
+}
+
+function createReplayToolInputValidator(
+  visibleTools?: readonly ReplayVisibleTool[],
+): ReplayToolInputValidator | undefined {
+  if (!visibleTools?.length) {
+    return undefined;
+  }
+  const toolsByName = new Map<string, ReplayVisibleTool>();
+  const duplicateNames = new Set<string>();
+  for (const tool of visibleTools) {
+    const name = tool.name?.trim();
+    if (!name || tool.parameters === undefined) {
+      continue;
+    }
+    if (toolsByName.has(name)) {
+      toolsByName.delete(name);
+      duplicateNames.add(name);
+      continue;
+    }
+    if (!duplicateNames.has(name)) {
+      toolsByName.set(name, tool);
+    }
+  }
+  if (toolsByName.size === 0) {
+    return undefined;
+  }
+  return (toolName, args) => {
+    const tool = toolsByName.get(toolName);
+    if (!tool) {
+      return true;
+    }
+    try {
+      validateToolArguments(tool as never, {
+        type: "toolCall",
+        id: "replay-schema-check",
+        name: toolName,
+        arguments: args,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   };
 }
 
@@ -454,7 +529,10 @@ export function wrapStreamFnSanitizeMalformedToolCalls(
   provider?: string | null,
 ): StreamFn {
   return (model, context, options) => {
-    const ctx = context as unknown as { messages?: unknown };
+    const ctx = context as unknown as {
+      messages?: unknown;
+      tools?: readonly ReplayVisibleTool[];
+    };
     const messages = ctx?.messages;
     if (!Array.isArray(messages)) {
       return baseFn(model, context, options);
@@ -472,6 +550,7 @@ export function wrapStreamFnSanitizeMalformedToolCalls(
       messages as AgentMessage[],
       allowedToolNames,
       allowProviderOwnedThinkingReplay,
+      createReplayToolInputValidator(ctx.tools),
     );
     const isOpenAIResponsesApi =
       (model as { api?: unknown }).api === "openai-responses" ||

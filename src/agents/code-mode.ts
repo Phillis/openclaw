@@ -164,7 +164,8 @@ function createCodeModeExecDescription(
     skillsGuidance +
     ' The `language` field accepts only "javascript" or "typescript"; do not pass "bash", "shell", or other values.' +
     " The `code` field contains JavaScript or TypeScript, never a shell command. " +
-    "For shell or file operations, call the exact catalog tool from guest JavaScript; do not retry failed shell source." +
+    "Shell/file: use exact tools; do not retry failed shell source. " +
+    "One-shot shell: `openclaw:core:exec`; `terminal.open` doesn't await." +
     (namespacePrompt ? `\n\n${namespacePrompt}` : "") +
     (catalogIndex ? `\n\n${catalogIndex}` : "")
   );

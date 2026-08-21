@@ -228,6 +228,8 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(execTool.description).toContain('"javascript" or "typescript"');
     expect(execTool.description).toContain("never a shell command");
     expect(execTool.description).toContain("do not retry failed shell source");
+    expect(execTool.description).toContain("One-shot shell: `openclaw:core:exec`");
+    expect(execTool.description).toContain("`terminal.open` doesn't await");
     const nodesGuidance =
       "- nodes: paired Gateway nodes; nodes.list(), (await nodes.get(id)).invoke(command, params)";
     expect(execTool.description).toContain(nodesGuidance);

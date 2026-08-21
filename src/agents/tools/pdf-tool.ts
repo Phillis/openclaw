@@ -370,6 +370,7 @@ export function createPdfTool(options?: {
   config?: OpenClawConfig;
   agentId?: string;
   agentDir?: string;
+  modelHasVision?: boolean;
   authProfileStore?: AuthProfileStore;
   workspaceDir?: string;
   preparedModelRuntime?: PreparedModelRuntimeSnapshot;
@@ -426,6 +427,7 @@ export function createPdfTool(options?: {
     label: "PDF",
     name: "pdf",
     description,
+    ...(options?.modelHasVision ? { catalogMode: "direct-only" as const } : {}),
     parameters: PdfToolSchema,
     execute: async (_toolCallId, args, signal) => {
       const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};

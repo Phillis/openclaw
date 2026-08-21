@@ -164,6 +164,16 @@ describe("createPdfTool", () => {
       expect(tool.name).toBe("pdf");
       expect(tool.label).toBe("PDF");
       expect(tool.description).toContain("Analyze PDF(s)");
+      expect(tool.catalogMode).toBeUndefined();
+    });
+    const createTool = await loadCreatePdfTool();
+    await withTempPdfAgentDir(async (agentDir) => {
+      const tool = createTool({
+        config: withPdfModel(ANTHROPIC_PDF_MODEL),
+        agentDir,
+        modelHasVision: true,
+      });
+      expect(tool?.catalogMode).toBe("direct-only");
     });
   });
 

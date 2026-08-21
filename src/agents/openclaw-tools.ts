@@ -350,6 +350,7 @@ export function createOpenClawTools(
           preparedModelRuntime: options?.preparedModelRuntime,
           authProfileStore: options?.authProfileStore,
           workspaceDir,
+          modelHasVision: options?.modelHasVision,
           sandbox,
           fsPolicy: options?.fsPolicy,
           deferAutoModelResolution: true,

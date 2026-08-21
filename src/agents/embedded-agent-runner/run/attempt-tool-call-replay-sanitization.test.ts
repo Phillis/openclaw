@@ -403,6 +403,172 @@ describe("sanitizeReplayToolCallIdsForStream", () => {
 });
 
 describe("wrapStreamFnSanitizeMalformedToolCalls", () => {
+  const nativeExec = {
+    name: "exec",
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+      additionalProperties: false,
+    },
+  };
+  const codeModeExec = {
+    name: "exec",
+    parameters: {
+      type: "object",
+      properties: { code: { type: "string" } },
+      required: ["code"],
+      additionalProperties: false,
+    },
+  };
+
+  function captureReplay(
+    messages: AgentMessage[],
+    visibleTools: Array<{ name: string; parameters: Record<string, unknown> }>,
+    api = "openai-completions",
+  ) {
+    const baseFn = vi.fn((_model: unknown, _context: unknown, _options: unknown) =>
+      createFakeStream({ events: [], resultMessage: { role: "assistant", content: "ok" } }),
+    );
+    const wrapped = wrapStreamFnSanitizeMalformedToolCalls(
+      baseFn as never,
+      new Set(["exec", "pdf"]),
+      undefined,
+      "openai",
+    );
+    void wrapped({ api } as never, { messages, tools: visibleTools } as never, {} as never);
+    const call = baseFn.mock.calls[0];
+    if (!call) {
+      throw new Error("expected wrapped stream to call its base function");
+    }
+    return (call[1] as { messages?: AgentMessage[] }).messages;
+  }
+
+  it.each([
+    ["code-mode replay on native exec", { code: "return 1" }, nativeExec],
+    ["native replay on code-mode exec", { command: "true" }, codeModeExec],
+  ])("drops incompatible same-name %s call and result", (_label, args, currentTool) => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "earlier" } as never,
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_exec", name: "exec", arguments: args }],
+      } as never,
+      {
+        role: "toolResult",
+        toolCallId: "call_exec",
+        toolName: "exec",
+        content: [{ type: "text", text: "done" }],
+        isError: false,
+      } as never,
+      { role: "assistant", content: "Earlier work completed." } as never,
+    ];
+
+    expect(captureReplay(messages, [currentTool])).toEqual([messages[0], messages[3]]);
+  });
+
+  it("preserves valid current-schema and unknown hidden replay calls", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "call_exec", name: "exec", arguments: { command: "true" } },
+        ],
+      } as never,
+      {
+        role: "toolResult",
+        toolCallId: "call_exec",
+        toolName: "exec",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      } as never,
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_pdf", name: "pdf", arguments: { pdf: "a.pdf" } }],
+      } as never,
+      {
+        role: "toolResult",
+        toolCallId: "call_pdf",
+        toolName: "pdf",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      } as never,
+    ];
+
+    expect(captureReplay(messages, [nativeExec])).toBe(messages);
+  });
+
+  it("revalidates replay against the visible tool schema on every request", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "call_exec", name: "exec", arguments: { code: "return 1" } },
+        ],
+      } as never,
+      {
+        role: "toolResult",
+        toolCallId: "call_exec",
+        toolName: "exec",
+        content: [{ type: "text", text: "1" }],
+        isError: false,
+      } as never,
+    ];
+    const baseFn = vi.fn((_model: unknown, _context: unknown, _options: unknown) =>
+      createFakeStream({ events: [], resultMessage: { role: "assistant", content: "ok" } }),
+    );
+    const wrapped = wrapStreamFnSanitizeMalformedToolCalls(
+      baseFn as never,
+      new Set(["exec"]),
+      undefined,
+      "openai",
+    );
+
+    void wrapped(
+      { api: "openai-completions" } as never,
+      { messages, tools: [codeModeExec] } as never,
+      {} as never,
+    );
+    void wrapped(
+      { api: "openai-completions" } as never,
+      { messages, tools: [nativeExec] } as never,
+      {} as never,
+    );
+
+    const [codeModeCall, nativeCall] = baseFn.mock.calls;
+    if (!codeModeCall || !nativeCall) {
+      throw new Error("expected one provider call for each visible tool schema");
+    }
+    expect((codeModeCall[1] as { messages?: AgentMessage[] }).messages).toBe(messages);
+    expect((nativeCall[1] as { messages?: AgentMessage[] }).messages).toEqual([]);
+  });
+
+  it("uses valid arguments when a replay block has a null input field", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_exec",
+            name: "exec",
+            input: null,
+            arguments: { command: "true" },
+          },
+        ],
+      } as never,
+      {
+        role: "toolResult",
+        toolCallId: "call_exec",
+        toolName: "exec",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      } as never,
+    ];
+
+    expect(captureReplay(messages, [nativeExec])).toBe(messages);
+  });
+
   it("keeps valid non-Responses replay inputs pass-through", () => {
     const messages: AgentMessage[] = [
       {
