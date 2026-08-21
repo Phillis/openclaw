@@ -772,6 +772,14 @@ async function compactCodexNativeThread(
               recovery: "stale_thread_binding",
             });
           }
+          if (options.allowNonManualNativeRequest && isCodexActiveWriterError(error)) {
+            return skippedCodexNativeCompactionResult(params, {
+              reason: "codex app-server thread already has an active writer",
+              code: "active_writer_after_context_engine",
+              expectedThreadId: binding.threadId,
+              currentThreadId: binding.threadId,
+            });
+          }
           embeddedAgentLog.warn("codex app-server compaction failed", {
             sessionId: params.sessionId,
             sessionKey: params.sessionKey,
@@ -980,6 +988,16 @@ function isCodexThreadNotFoundError(error: unknown): boolean {
   // is the authoritative positive signal here, not the generic code. This is a
   // self-heal recovery gate, not user-facing classification.
   return coerceErrorMessage(error).toLowerCase().includes("thread not found");
+}
+
+function isCodexActiveWriterError(error: unknown): boolean {
+  // Codex returns generic INVALID_REQUEST for this exact, definite rejection.
+  // It proves the follow-up request did not start and is safe to skip only when
+  // the owning context engine already completed the primary compaction.
+  return (
+    error instanceof CodexAppServerRpcError &&
+    coerceErrorMessage(error).toLowerCase().includes("already has an active writer")
+  );
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
