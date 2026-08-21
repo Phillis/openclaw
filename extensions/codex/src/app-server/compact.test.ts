@@ -695,6 +695,84 @@ describe("maybeCompactCodexAppServerSession", () => {
     );
   });
 
+  it("skips a definite active-writer rejection only for the post-context-engine follow-up", async () => {
+    const fake = createFakeCodexClient();
+    fake.request.mockRejectedValueOnce(
+      new CodexAppServerRpcError(
+        { code: -32_600, message: "thread thread-1 already has an active writer" },
+        "thread/compact/start",
+      ),
+    );
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const projection = {
+      schemaVersion: 1 as const,
+      mode: "thread_bootstrap" as const,
+      epoch: "epoch-1",
+      fingerprint: "fingerprint-1",
+    };
+    const sessionFile = await writeTestBinding({
+      contextEngine: {
+        schemaVersion: 1,
+        engineId: "lossless-claw",
+        policyFingerprint: "policy-1",
+        projection,
+      },
+    });
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          currentTokenCount: 456,
+        },
+        { allowNonManualNativeRequest: true },
+      ),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      compacted: false,
+      reason: "codex app-server thread already has an active writer",
+      result: {
+        tokensBefore: 456,
+        details: {
+          backend: "codex-app-server",
+          skipped: true,
+          reason: "active_writer_after_context_engine",
+          request: "after_context_engine",
+          trigger: "budget",
+          expectedThreadId: "thread-1",
+          currentThreadId: "thread-1",
+        },
+      },
+    });
+    expect((await readCodexAppServerBinding(sessionFile))?.contextEngine?.projection).toEqual(
+      projection,
+    );
+  });
+
+  it("keeps a manual active-writer rejection fail-closed", async () => {
+    const fake = createFakeCodexClient();
+    fake.request.mockRejectedValueOnce(
+      new CodexAppServerRpcError(
+        { code: -32_600, message: "thread thread-1 already has an active writer" },
+        "thread/compact/start",
+      ),
+    );
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = await writeTestBinding();
+
+    await expect(startCompaction(sessionFile)).resolves.toMatchObject({
+      ok: false,
+      compacted: false,
+      reason: "thread thread-1 already has an active writer",
+    });
+  });
+
   it("preserves projection when aborted before guarded native compaction", async () => {
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
