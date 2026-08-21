@@ -62,16 +62,16 @@ const MAX_CODE_MODE_CATALOG_INDEX_CHARS = 8_000;
 
 const CODE_MODE_CATALOG_INDEX_HEADING = [
   "OpenClaw/plugin tool quick index (exact ids; descriptions are intentionally deferred):",
-  "Each line is `id input -> output`; `-> ?` means unknown.",
-  "OUTPUT DECLARED RULE: use declared fields for dependent calls in the first exec.",
-  "OUTPUT UNKNOWN RULE: return the raw tool value unchanged; inspect or map it only in a later exec.",
+  "`id input -> output`; `?` = unknown.",
+  "OUTPUT DECLARED RULE: use fields now.",
+  "OUTPUT UNKNOWN RULE: return raw; inspect/map next exec.",
 ].join("\n");
 
 function codeModeCatalogIndexFooter(included: number, total: number): string {
   const omitted = total - included;
   return omitted > 0
     ? `${omitted} additional OpenClaw/plugin tools omitted from this prompt index. Use ALL_TOOLS or tools.search inside exec to find them.`
-    : "Use these exact ids with tools.callValue; use ALL_TOOLS or tools.search inside exec when lookup is ambiguous.";
+    : "Use exact ids with tools.callValue; use ALL_TOOLS/tools.search if ambiguous.";
 }
 
 function renderCodeModeCatalogIndex(lines: readonly string[], total: number): string {
@@ -165,7 +165,7 @@ function createCodeModeExecDescription(
     ' The `language` field accepts only "javascript" or "typescript"; do not pass "bash", "shell", or other values.' +
     " The `code` field contains JavaScript or TypeScript, never a shell command. " +
     "Shell/file: use exact tools; do not retry failed shell source. " +
-    "One-shot shell: `openclaw:core:exec`; `terminal.open` doesn't await." +
+    'One-shot: `tools.callValue("openclaw:core:exec", { command, timeoutSeconds? })`; `timeoutSeconds`=seconds; bare `timeout` unsupported; no unsafe retry; `terminal.open` doesn\'t await.' +
     (namespacePrompt ? `\n\n${namespacePrompt}` : "") +
     (catalogIndex ? `\n\n${catalogIndex}` : "")
   );

@@ -228,7 +228,12 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(execTool.description).toContain('"javascript" or "typescript"');
     expect(execTool.description).toContain("never a shell command");
     expect(execTool.description).toContain("do not retry failed shell source");
-    expect(execTool.description).toContain("One-shot shell: `openclaw:core:exec`");
+    expect(execTool.description).toContain(
+      '`tools.callValue("openclaw:core:exec", { command, timeoutSeconds? })`',
+    );
+    expect(execTool.description).toContain("`timeoutSeconds`=seconds");
+    expect(execTool.description).toContain("bare `timeout` unsupported");
+    expect(execTool.description).toContain("no unsafe retry");
     expect(execTool.description).toContain("`terminal.open` doesn't await");
     const nodesGuidance =
       "- nodes: paired Gateway nodes; nodes.list(), (await nodes.get(id)).invoke(command, params)";
@@ -309,7 +314,13 @@ describe("Code Mode catalog and model-visible surface", () => {
 
     const description = compacted.tools[0]?.description ?? "";
     expect(description).toContain("descriptions are intentionally deferred");
+    expect(description).toContain("`id input -> output`; `?` = unknown.");
     expect(description).toContain("OUTPUT DECLARED RULE");
+    expect(description).toContain("OUTPUT DECLARED RULE: use fields now.");
+    expect(description).toContain("OUTPUT UNKNOWN RULE: return raw; inspect/map next exec.");
+    expect(description).toContain(
+      "Use exact ids with tools.callValue; use ALL_TOOLS/tools.search if ambiguous.",
+    );
     expect(description).toContain(
       '- "openclaw:fake-code-mode:alpha_tool" { value?: string } -> Array<{ id: string; score: number }>',
     );
