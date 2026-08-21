@@ -158,9 +158,14 @@ export function createNodeWorkspaceRetainCoordinator(
         );
         continue;
       }
+      // Only nodes that advertised a worker build can accept retain commands.
+      // Keep using workerBuild rather than current worker runs so temporarily
+      // idle or at-capacity worker nodes remain eligible for reconciliation.
       const targets = reconcileAll
-        ? currentNodes
-        : currentNodes.filter((node) => requestedNodes.has(node.nodeId));
+        ? currentNodes.filter((node) => node.workerBuild !== undefined)
+        : currentNodes.filter(
+            (node) => node.workerBuild !== undefined && requestedNodes.has(node.nodeId),
+          );
       await Promise.all(
         targets.map(async (node) => {
           try {

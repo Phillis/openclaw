@@ -13,6 +13,11 @@ const node = {
   clientId: "node-host",
   clientMode: "node",
   protocolFeature: "node-worker-supervisor-v1",
+  workerBuild: {
+    bundleHash: "a".repeat(64),
+    openclawVersion: "2026.8.1",
+    protocolFeatures: ["worker-heartbeat-v1"],
+  },
   commands: [],
 } as const;
 
@@ -171,6 +176,20 @@ describe("node workspace retain coordinator", () => {
 
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(invoke.mock.calls[1]?.[0].params).toMatchObject({ sequence: 2 });
+    await coordinator.stop();
+  });
+
+  it("skips connected nodes that never advertised a worker build", async () => {
+    const { coordinator, invoke } = createHarness();
+    const transport = {
+      listCurrentNodes: async () => [{ ...node, workerBuild: undefined }],
+      invoke,
+    } as NodeWorkerSupervisorTransport;
+    coordinator.bindTransport(transport);
+
+    await coordinator.start();
+
+    expect(invoke).not.toHaveBeenCalled();
     await coordinator.stop();
   });
 });
