@@ -14,6 +14,7 @@ import {
 } from "../../tool-search.js";
 
 const mocks = vi.hoisted(() => ({
+  armAcceptedCodeModeAsyncStart: vi.fn(),
   clearActiveRun: vi.fn(),
   notifyToolActivity: vi.fn(),
   registerAcceptedCodeModeAsyncStart: vi.fn(),
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../code-mode-execution.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../code-mode-execution.js")>()),
+  armAcceptedCodeModeAsyncStart: mocks.armAcceptedCodeModeAsyncStart,
   registerAcceptedCodeModeAsyncStart: mocks.registerAcceptedCodeModeAsyncStart,
 }));
 vi.mock("../../embedded-agent-subscribe.js", () => ({
@@ -423,6 +425,7 @@ describe("prepareEmbeddedAttemptStream", () => {
     });
 
     expect(execute).toHaveBeenCalledOnce();
+    expect(mocks.armAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(runAbortController.signal);
     expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledOnce();
     expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(
       runAbortController.signal,

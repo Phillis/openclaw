@@ -16,7 +16,10 @@ import {
 } from "../../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import { recordStructuredReplayTrustForToolCall } from "../../agent-tools.before-tool-call.js";
-import { registerAcceptedCodeModeAsyncStart } from "../../code-mode-execution.js";
+import {
+  armAcceptedCodeModeAsyncStart,
+  registerAcceptedCodeModeAsyncStart,
+} from "../../code-mode-execution.js";
 import { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
 import { cancelPendingAgentQuestionForSession } from "../../harness/gateway-question.js";
 import { runAgentHarnessBeforeAgentFinalizeHook } from "../../harness/lifecycle-hook-helpers.js";
@@ -325,6 +328,7 @@ export function prepareEmbeddedAttemptStream(input: {
   toolMetasForTerminal = subscription.toolMetas;
 
   const toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor = async (toolParams) => {
+    armAcceptedCodeModeAsyncStart(input.runAbortController.signal);
     let acceptedDuringExecution:
       | Awaited<ReturnType<typeof toolParams.acceptResultBeforeProjection>>
       | undefined;

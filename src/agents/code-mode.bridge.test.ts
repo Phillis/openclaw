@@ -5,7 +5,10 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { buildBlockedToolResult } from "./agent-tools.before-tool-call.js";
-import { registerAcceptedCodeModeAsyncStart } from "./code-mode-execution.js";
+import {
+  armAcceptedCodeModeAsyncStart,
+  registerAcceptedCodeModeAsyncStart,
+} from "./code-mode-execution.js";
 import { applyCodeModeCatalog, createCodeModeTools } from "./code-mode.js";
 import {
   resetCodeModeTestState,
@@ -708,6 +711,51 @@ describe("Code Mode bridge settlement and cancellation", () => {
     expect(testing.activeRuns.size).toBe(0);
   });
 
+  it("waits briefly for an already-dispatched async start to publish after abort", async () => {
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const controller = new AbortController();
+    const asyncStart = {
+      async: true,
+      status: "started",
+      taskId: "task-image-late",
+      runId: "tool:image_generate:late",
+    };
+    const imageGenerate = pluginToolWithExecute(
+      "fake_image_generate_late",
+      "Publish accepted image generation after parent abort",
+      async () => {
+        armAcceptedCodeModeAsyncStart(controller.signal);
+        setImmediate(() => controller.abort());
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 25);
+        });
+        const result = jsonResult(asyncStart);
+        registerAcceptedCodeModeAsyncStart(controller.signal, result);
+        return result;
+      },
+    );
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, imageGenerate],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+
+    const details = resultDetails(
+      await expectDefined(codeModeTools[0], "codeModeTools[0] test invariant").execute(
+        "code-call-late-async-start-abort",
+        { code: 'return await tools.callValue("fake_image_generate_late", {});' },
+        controller.signal,
+      ),
+    );
+
+    expect(details).toMatchObject({ status: "completed", value: asyncStart });
+    expect(imageGenerate.execute).toHaveBeenCalledOnce();
+    expect(testing.activeRuns.size).toBe(0);
+  });
+
   it("keeps an ordinary bridge abort failed without an accepted async-start envelope", async () => {
     const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
     const controller = new AbortController();
@@ -738,6 +786,45 @@ describe("Code Mode bridge settlement and cancellation", () => {
 
     expect(details).toMatchObject({ status: "failed", code: "aborted" });
     expect(ordinary.execute).toHaveBeenCalledOnce();
+    expect(testing.activeRuns.size).toBe(0);
+  });
+
+  it("bounds an armed abort whose target never publishes an accepted start", async () => {
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const controller = new AbortController();
+    const neverPublishes = pluginToolWithExecute(
+      "fake_never_publishes_async_start",
+      "Abort without publishing an accepted start",
+      async () => {
+        armAcceptedCodeModeAsyncStart(controller.signal);
+        setImmediate(() => controller.abort());
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 1_000);
+        });
+        return jsonResult({ status: "late" });
+      },
+    );
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, neverPublishes],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+
+    const startedAt = Date.now();
+    const details = resultDetails(
+      await expectDefined(codeModeTools[0], "codeModeTools[0] test invariant").execute(
+        "code-call-stuck-async-start-abort",
+        { code: 'return await tools.callValue("fake_never_publishes_async_start", {});' },
+        controller.signal,
+      ),
+    );
+
+    expect(details).toMatchObject({ status: "failed", code: "aborted" });
+    expect(Date.now() - startedAt).toBeLessThan(750);
+    expect(neverPublishes.execute).toHaveBeenCalledOnce();
     expect(testing.activeRuns.size).toBe(0);
   });
 

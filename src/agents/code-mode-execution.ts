@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { codeModeReplayIdForToolCall } from "./code-mode-bridge.js";
 import { awaitCodeModeDeadline } from "./code-mode-deadline.js";
@@ -49,7 +50,27 @@ import { resolveSwarmConfig } from "./subagents/swarm/swarm-config.js";
 import { ToolSearchRuntime, type ToolSearchToolContext } from "./tool-search.js";
 import { ToolInputError } from "./tools/common.js";
 
-const acceptedAsyncStartBySignal = new WeakMap<AbortSignal, unknown>();
+const ACCEPTED_ASYNC_START_SETTLEMENT_GRACE_MS = 250;
+
+type AcceptedAsyncStartCarrier = {
+  value?: unknown;
+  closed: boolean;
+  settled: boolean;
+  promise: Promise<void>;
+  resolve: () => void;
+};
+
+const acceptedAsyncStartBySignal = new WeakMap<AbortSignal, AcceptedAsyncStartCarrier>();
+
+function createAcceptedAsyncStartCarrier(): AcceptedAsyncStartCarrier {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  return { closed: false, settled: false, promise, resolve };
+}
+
+/** Arms the one-shot carrier before a target tool can yield and abort its parent run. */
+export function armAcceptedCodeModeAsyncStart(signal: AbortSignal): void {
+  acceptedAsyncStartBySignal.set(signal, createAcceptedAsyncStartCarrier());
+}
 
 function canonicalAsyncStartValue(value: unknown): unknown | undefined {
   if (!isRecord(value)) {
@@ -75,9 +96,32 @@ export function registerAcceptedCodeModeAsyncStart(
 ): void {
   const value = isRecord(result) && "details" in result ? result.details : undefined;
   const accepted = canonicalAsyncStartValue(value);
-  if (accepted !== undefined) {
-    acceptedAsyncStartBySignal.set(signal, accepted);
+  const carrier = acceptedAsyncStartBySignal.get(signal) ?? createAcceptedAsyncStartCarrier();
+  if (carrier.closed) {
+    return;
   }
+  if (accepted !== undefined) {
+    carrier.value = accepted;
+  }
+  if (!carrier.settled) {
+    carrier.settled = true;
+    carrier.resolve();
+  }
+  acceptedAsyncStartBySignal.set(signal, carrier);
+}
+
+async function takeAcceptedCodeModeAsyncStart(signal: AbortSignal): Promise<unknown | undefined> {
+  const carrier = acceptedAsyncStartBySignal.get(signal);
+  if (!carrier) {
+    return undefined;
+  }
+  if (!carrier.settled) {
+    await Promise.race([carrier.promise, delay(ACCEPTED_ASYNC_START_SETTLEMENT_GRACE_MS)]);
+  }
+  carrier.closed = true;
+  const value = carrier.value;
+  carrier.value = undefined;
+  return value;
 }
 
 export async function runCodeModeExec(params: {
@@ -290,12 +334,11 @@ async function settleCodeModeResult(params: {
     replaySafe: params.replaySafe,
     telemetry: telemetry(params.runtime),
   });
-  const acceptedAsyncStartResult = () => {
-    const value = params.signal ? acceptedAsyncStartBySignal.get(params.signal) : undefined;
+  const acceptedAsyncStartResult = async () => {
+    const value = params.signal ? await takeAcceptedCodeModeAsyncStart(params.signal) : undefined;
     if (value === undefined) {
       return undefined;
     }
-    acceptedAsyncStartBySignal.delete(params.signal!);
     const bounded = boundCodeModeResult({
       output,
       value,
@@ -309,8 +352,8 @@ async function settleCodeModeResult(params: {
       telemetry: telemetry(params.runtime),
     };
   };
-  const settleAbort = () => {
-    const accepted = acceptedAsyncStartResult();
+  const settleAbort = async () => {
+    const accepted = await acceptedAsyncStartResult();
     cancelPendingBridgeStates(pending);
     return accepted ?? abortedResult();
   };
