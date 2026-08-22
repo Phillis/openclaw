@@ -387,7 +387,7 @@ describe("prepareEmbeddedAttemptStream", () => {
     expect(Object.isFrozen(returned.details)).toBe(true);
   });
 
-  it("registers accepted async starts under the outer run signal", async () => {
+  it("registers accepted async starts under the exact bridge signal", async () => {
     const projections: ToolSearchTargetTranscriptProjection[] = [];
     const runAbortController = new AbortController();
     const bridgeAbortController = new AbortController();
@@ -425,15 +425,55 @@ describe("prepareEmbeddedAttemptStream", () => {
     });
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(mocks.armAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(runAbortController.signal);
+    expect(mocks.armAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(bridgeSignal);
     expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledOnce();
     expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(
-      runAbortController.signal,
+      bridgeSignal,
       expect.objectContaining({ details: asyncStart.details }),
     );
     expect(mocks.registerAcceptedCodeModeAsyncStart).not.toHaveBeenCalledWith(
-      bridgeSignal,
+      runAbortController.signal,
       expect.anything(),
+    );
+  });
+
+  it("falls back to the run signal when a bridge signal is unavailable", async () => {
+    const projections: ToolSearchTargetTranscriptProjection[] = [];
+    const runAbortController = new AbortController();
+    const asyncStart = {
+      content: [{ type: "text" as const, text: "Image generation started" }],
+      details: {
+        async: true,
+        status: "started",
+        taskId: "task-image-fallback",
+        runId: "tool:image_generate:fallback",
+      },
+    };
+    const prepared = prepareCatalogExecutor(projections, { runAbortController });
+
+    await prepared.toolSearchCatalogExecutor({
+      tool: {
+        name: "image_generate",
+        description: "Start image generation",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute: vi.fn(async (_toolCallId, _input, signal) => {
+          expect(signal).toBe(runAbortController.signal);
+          return asyncStart;
+        }),
+      } as never,
+      toolName: "image_generate",
+      source: "openclaw",
+      sourceName: "fixture-plugin",
+      toolCallId: "call-image-generate-fallback",
+      parentToolCallId: "call-code-mode",
+      input: {},
+      acceptResultBeforeProjection: async (candidate) => structuredClone(candidate),
+    });
+
+    expect(mocks.armAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(runAbortController.signal);
+    expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(
+      runAbortController.signal,
+      expect.objectContaining({ details: asyncStart.details }),
     );
   });
 

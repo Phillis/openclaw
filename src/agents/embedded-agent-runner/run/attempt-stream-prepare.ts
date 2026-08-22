@@ -328,7 +328,8 @@ export function prepareEmbeddedAttemptStream(input: {
   toolMetasForTerminal = subscription.toolMetas;
 
   const toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor = async (toolParams) => {
-    armAcceptedCodeModeAsyncStart(input.runAbortController.signal);
+    const acceptedAsyncStartSignal = toolParams.signal ?? input.runAbortController.signal;
+    armAcceptedCodeModeAsyncStart(acceptedAsyncStartSignal);
     let acceptedDuringExecution:
       | Awaited<ReturnType<typeof toolParams.acceptResultBeforeProjection>>
       | undefined;
@@ -357,10 +358,7 @@ export function prepareEmbeddedAttemptStream(input: {
             undefined as never,
           );
           acceptedDuringExecution = await toolParams.acceptResultBeforeProjection(executed);
-          registerAcceptedCodeModeAsyncStart(
-            input.runAbortController.signal,
-            acceptedDuringExecution,
-          );
+          registerAcceptedCodeModeAsyncStart(acceptedAsyncStartSignal, acceptedDuringExecution);
           return executed;
         },
       });
