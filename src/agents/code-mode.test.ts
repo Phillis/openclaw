@@ -212,7 +212,8 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(execTool.description).toContain("`ALL_TOOLS` is the complete compact catalog");
     expect(execTool.description).toContain("`tools.search(query: string, options?)`");
     expect(execTool.description).toContain("enabled catalog tools allowed by policy");
-    expect(execTool.description).toContain("`tools.describe(id: string)`");
+    expect(execTool.description).toContain("`tools.describe(id).inputSchema`");
+    expect(execTool.description).toContain("not search `input`");
     expect(execTool.description).toContain("`tools.callValue(id: string, args?)`");
     expect(execTool.description).toContain("`tools.call(id: string, args?)`");
     expect(execTool.description).toContain("Never invent or transform a tool id");
