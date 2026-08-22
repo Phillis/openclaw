@@ -115,6 +115,7 @@ const GENERATED_IMAGE_MEDIA_SUBDIR = "tool-image-generation";
 const DEFAULT_MAX_INPUT_IMAGES = 10;
 const MAX_REFERENCE_IMAGE_INPUTS = 14;
 const DEFAULT_RESOLUTION: ImageGenerationResolution = "1K";
+const SUPPORTED_RESOLUTIONS = ["1K", "2K", "4K"] as const;
 const SUPPORTED_QUALITIES = ["low", "medium", "high", "auto"] as const;
 const SUPPORTED_OUTPUT_FORMATS = ["png", "jpeg", "webp"] as const;
 const SUPPORTED_BACKGROUNDS = ["transparent", "opaque", "auto"] as const;
@@ -186,11 +187,9 @@ const ImageGenerateToolSchema = Type.Object({
         "Aspect ratio: 1:1, 2:1, 20:9, 19.5:9, 2:3, 3:2, 2.35:1, 3:4, 4:3, 4:5, 5:4, 9:16, 9:19.5, 9:20, 16:9, 21:9, 1:2, 4:1, 1:4, 8:1, 1:8.",
     }),
   ),
-  resolution: Type.Optional(
-    Type.String({
-      description: "Resolution: 1K, 2K, 4K; useful for Google.",
-    }),
-  ),
+  resolution: optionalStringEnum(SUPPORTED_RESOLUTIONS, {
+    description: "Resolution: 1K, 2K, 4K; useful for Google.",
+  }),
   quality: optionalStringEnum(SUPPORTED_QUALITIES, {
     description: "Quality: low, medium, high, auto.",
   }),

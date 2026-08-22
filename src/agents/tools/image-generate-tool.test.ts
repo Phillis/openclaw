@@ -414,6 +414,22 @@ describe("createImageGenerateTool", () => {
     expect(JSON.stringify(tool.parameters)).toContain("openai/gpt-image-1.5");
   });
 
+  it("publishes the exact resolution enum for code-mode argument construction", () => {
+    vi.stubEnv("OPENAI_API_KEY", "openai-key");
+    stubImageGenerationProviders();
+
+    const tool = requireImageGenerateTool(createImageGenerateTool({ config: {} }));
+    const resolution = (
+      tool.parameters as {
+        properties?: { resolution?: { enum?: string[] } };
+      }
+    ).properties?.resolution;
+
+    expect(resolution?.enum).toEqual(["1K", "2K", "4K"]);
+    const codeModeValue = resolution?.enum?.[0] ?? "1024x1024";
+    expect(codeModeValue).toBe("1K");
+  });
+
   it("does not load runtime providers while registering an explicitly configured tool", () => {
     const listProviders = vi
       .spyOn(imageGenerationRuntime, "listRuntimeImageGenerationProviders")
