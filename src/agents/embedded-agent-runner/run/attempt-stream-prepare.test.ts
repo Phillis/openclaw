@@ -387,7 +387,7 @@ describe("prepareEmbeddedAttemptStream", () => {
     expect(Object.isFrozen(returned.details)).toBe(true);
   });
 
-  it("registers accepted async starts under the exact bridge signal", async () => {
+  it("registers accepted async starts under the exact parent tool call", async () => {
     const projections: ToolSearchTargetTranscriptProjection[] = [];
     const runAbortController = new AbortController();
     const bridgeAbortController = new AbortController();
@@ -425,19 +425,19 @@ describe("prepareEmbeddedAttemptStream", () => {
     });
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(mocks.armAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(bridgeSignal);
+    expect(mocks.armAcceptedCodeModeAsyncStart).toHaveBeenCalledWith("call-code-mode");
     expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledOnce();
     expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(
-      bridgeSignal,
+      "call-code-mode",
       expect.objectContaining({ details: asyncStart.details }),
     );
     expect(mocks.registerAcceptedCodeModeAsyncStart).not.toHaveBeenCalledWith(
-      runAbortController.signal,
+      bridgeSignal,
       expect.anything(),
     );
   });
 
-  it("falls back to the run signal when a bridge signal is unavailable", async () => {
+  it("does not arm a carrier without an outer parent tool call", async () => {
     const projections: ToolSearchTargetTranscriptProjection[] = [];
     const runAbortController = new AbortController();
     const asyncStart = {
@@ -465,16 +465,12 @@ describe("prepareEmbeddedAttemptStream", () => {
       source: "openclaw",
       sourceName: "fixture-plugin",
       toolCallId: "call-image-generate-fallback",
-      parentToolCallId: "call-code-mode",
       input: {},
       acceptResultBeforeProjection: async (candidate) => structuredClone(candidate),
     });
 
-    expect(mocks.armAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(runAbortController.signal);
-    expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(
-      runAbortController.signal,
-      expect.objectContaining({ details: asyncStart.details }),
-    );
+    expect(mocks.armAcceptedCodeModeAsyncStart).not.toHaveBeenCalled();
+    expect(mocks.registerAcceptedCodeModeAsyncStart).not.toHaveBeenCalled();
   });
 
   it("marks accepted canonical failures in hidden tool transcript projections", async () => {

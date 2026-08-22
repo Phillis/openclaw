@@ -682,9 +682,10 @@ describe("Code Mode bridge settlement and cancellation", () => {
     const imageGenerate = pluginToolWithExecute(
       "fake_image_generate",
       "Start fake image generation",
-      async () => {
+      async (_toolCallId, _input, bridgeSignal) => {
+        expect(bridgeSignal).not.toBe(controller.signal);
         const result = jsonResult(asyncStart);
-        registerAcceptedCodeModeAsyncStart(controller.signal, result);
+        registerAcceptedCodeModeAsyncStart("code-call-async-start-abort", result);
         setImmediate(() => controller.abort());
         return result;
       },
@@ -724,13 +725,13 @@ describe("Code Mode bridge settlement and cancellation", () => {
       "fake_image_generate_late",
       "Publish accepted image generation after parent abort",
       async () => {
-        armAcceptedCodeModeAsyncStart(controller.signal);
+        armAcceptedCodeModeAsyncStart("code-call-late-async-start-abort");
         setImmediate(() => controller.abort());
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 25);
         });
         const result = jsonResult(asyncStart);
-        registerAcceptedCodeModeAsyncStart(controller.signal, result);
+        registerAcceptedCodeModeAsyncStart("code-call-late-async-start-abort", result);
         return result;
       },
     );
@@ -796,7 +797,7 @@ describe("Code Mode bridge settlement and cancellation", () => {
       "fake_never_publishes_async_start",
       "Abort without publishing an accepted start",
       async () => {
-        armAcceptedCodeModeAsyncStart(controller.signal);
+        armAcceptedCodeModeAsyncStart("code-call-stuck-async-start-abort");
         setImmediate(() => controller.abort());
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 1_000);

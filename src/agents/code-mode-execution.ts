@@ -60,7 +60,7 @@ type AcceptedAsyncStartCarrier = {
   resolve: () => void;
 };
 
-const acceptedAsyncStartBySignal = new WeakMap<AbortSignal, AcceptedAsyncStartCarrier>();
+const acceptedAsyncStarts = new Map<string, AcceptedAsyncStartCarrier>();
 
 function createAcceptedAsyncStartCarrier(): AcceptedAsyncStartCarrier {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -68,8 +68,8 @@ function createAcceptedAsyncStartCarrier(): AcceptedAsyncStartCarrier {
 }
 
 /** Arms the one-shot carrier before a target tool can yield and abort its parent run. */
-export function armAcceptedCodeModeAsyncStart(signal: AbortSignal): void {
-  acceptedAsyncStartBySignal.set(signal, createAcceptedAsyncStartCarrier());
+export function armAcceptedCodeModeAsyncStart(parentToolCallId: string): void {
+  acceptedAsyncStarts.set(parentToolCallId, createAcceptedAsyncStartCarrier());
 }
 
 function canonicalAsyncStartValue(value: unknown): unknown | undefined {
@@ -91,12 +91,12 @@ function canonicalAsyncStartValue(value: unknown): unknown | undefined {
 
 /** Records a validated async-start result before its yield can abort the parent code-mode call. */
 export function registerAcceptedCodeModeAsyncStart(
-  signal: AbortSignal,
+  parentToolCallId: string,
   result: AgentToolResult<unknown>,
 ): void {
   const value = isRecord(result) && "details" in result ? result.details : undefined;
   const accepted = canonicalAsyncStartValue(value);
-  const carrier = acceptedAsyncStartBySignal.get(signal) ?? createAcceptedAsyncStartCarrier();
+  const carrier = acceptedAsyncStarts.get(parentToolCallId) ?? createAcceptedAsyncStartCarrier();
   if (carrier.closed) {
     return;
   }
@@ -107,11 +107,13 @@ export function registerAcceptedCodeModeAsyncStart(
     carrier.settled = true;
     carrier.resolve();
   }
-  acceptedAsyncStartBySignal.set(signal, carrier);
+  acceptedAsyncStarts.set(parentToolCallId, carrier);
 }
 
-async function takeAcceptedCodeModeAsyncStart(signal: AbortSignal): Promise<unknown | undefined> {
-  const carrier = acceptedAsyncStartBySignal.get(signal);
+async function takeAcceptedCodeModeAsyncStart(
+  parentToolCallId: string,
+): Promise<unknown | undefined> {
+  const carrier = acceptedAsyncStarts.get(parentToolCallId);
   if (!carrier) {
     return undefined;
   }
@@ -335,7 +337,7 @@ async function settleCodeModeResult(params: {
     telemetry: telemetry(params.runtime),
   });
   const acceptedAsyncStartResult = async () => {
-    const value = params.signal ? await takeAcceptedCodeModeAsyncStart(params.signal) : undefined;
+    const value = await takeAcceptedCodeModeAsyncStart(params.parentToolCallId);
     if (value === undefined) {
       return undefined;
     }
@@ -604,9 +606,7 @@ async function settleCodeModeResult(params: {
     return settleAbort();
   }
   cancelPendingBridgeStates(pending);
-  if (params.signal) {
-    acceptedAsyncStartBySignal.delete(params.signal);
-  }
+  acceptedAsyncStarts.delete(params.parentToolCallId);
   const bounded = boundCodeModeResult({
     output,
     ...(result.status === "completed" ? { value: result.value } : {}),
