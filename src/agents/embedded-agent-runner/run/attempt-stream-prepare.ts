@@ -16,6 +16,7 @@ import {
 } from "../../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import { recordStructuredReplayTrustForToolCall } from "../../agent-tools.before-tool-call.js";
+import { registerAcceptedCodeModeAsyncStart } from "../../code-mode-execution.js";
 import { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
 import { cancelPendingAgentQuestionForSession } from "../../harness/gateway-question.js";
 import { runAgentHarnessBeforeAgentFinalizeHook } from "../../harness/lifecycle-hook-helpers.js";
@@ -324,6 +325,9 @@ export function prepareEmbeddedAttemptStream(input: {
   toolMetasForTerminal = subscription.toolMetas;
 
   const toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor = async (toolParams) => {
+    let acceptedDuringExecution:
+      | Awaited<ReturnType<typeof toolParams.acceptResultBeforeProjection>>
+      | undefined;
     try {
       if (toolParams.source === "openclaw" && toolParams.sourceName === "core") {
         recordStructuredReplayTrustForToolCall(
@@ -340,18 +344,26 @@ export function prepareEmbeddedAttemptStream(input: {
         hideFromChannelProgress:
           "hideFromChannelProgress" in toolParams.tool &&
           toolParams.tool.hideFromChannelProgress === true,
-        execute: async () =>
-          await toolParams.tool.execute(
+        execute: async () => {
+          const executed = await toolParams.tool.execute(
             toolParams.toolCallId,
             toolParams.input,
             toolParams.signal ?? input.runAbortController.signal,
             toolParams.onUpdate,
             undefined as never,
-          ),
+          );
+          acceptedDuringExecution = await toolParams.acceptResultBeforeProjection(executed);
+          registerAcceptedCodeModeAsyncStart(
+            toolParams.signal ?? input.runAbortController.signal,
+            acceptedDuringExecution,
+          );
+          return executed;
+        },
       });
       // Settlement persists every queued projection. Validate the final result
       // first so a rejected hidden-tool value never enters session history.
-      const acceptedResult = await toolParams.acceptResultBeforeProjection(result);
+      const acceptedResult =
+        acceptedDuringExecution ?? (await toolParams.acceptResultBeforeProjection(result));
       const isError = isToolResultError(acceptedResult);
       input.toolSearchTargetTranscriptProjections.push({
         parentToolCallId: toolParams.parentToolCallId,

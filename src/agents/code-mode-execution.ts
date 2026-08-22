@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { codeModeReplayIdForToolCall } from "./code-mode-bridge.js";
 import { awaitCodeModeDeadline } from "./code-mode-deadline.js";
 import { boundCodeModeResult } from "./code-mode-json.js";
@@ -43,10 +44,41 @@ import {
   type PendingBridgeState,
 } from "./code-mode-state.js";
 import { normalizeCodeModeWorkerResult, runCodeModeWorker } from "./code-mode-worker.js";
-import type { AgentToolUpdateCallback } from "./runtime/index.js";
+import type { AgentToolResult, AgentToolUpdateCallback } from "./runtime/index.js";
 import { resolveSwarmConfig } from "./subagents/swarm/swarm-config.js";
 import { ToolSearchRuntime, type ToolSearchToolContext } from "./tool-search.js";
 import { ToolInputError } from "./tools/common.js";
+
+const acceptedAsyncStartBySignal = new WeakMap<AbortSignal, unknown>();
+
+function canonicalAsyncStartValue(value: unknown): unknown | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const task = isRecord(value.task) ? value.task : undefined;
+  const taskId = typeof value.taskId === "string" ? value.taskId : task?.taskId;
+  const runId = typeof value.runId === "string" ? value.runId : task?.runId;
+  return value.async === true &&
+    value.status === "started" &&
+    typeof taskId === "string" &&
+    taskId.trim() &&
+    typeof runId === "string" &&
+    runId.trim()
+    ? value
+    : undefined;
+}
+
+/** Records a validated async-start result before its yield can abort the parent code-mode call. */
+export function registerAcceptedCodeModeAsyncStart(
+  signal: AbortSignal,
+  result: AgentToolResult<unknown>,
+): void {
+  const value = isRecord(result) && "details" in result ? result.details : undefined;
+  const accepted = canonicalAsyncStartValue(value);
+  if (accepted !== undefined) {
+    acceptedAsyncStartBySignal.set(signal, accepted);
+  }
+}
 
 export async function runCodeModeExec(params: {
   toolCallId: string;
@@ -258,6 +290,30 @@ async function settleCodeModeResult(params: {
     replaySafe: params.replaySafe,
     telemetry: telemetry(params.runtime),
   });
+  const acceptedAsyncStartResult = () => {
+    const value = params.signal ? acceptedAsyncStartBySignal.get(params.signal) : undefined;
+    if (value === undefined) {
+      return undefined;
+    }
+    acceptedAsyncStartBySignal.delete(params.signal!);
+    const bounded = boundCodeModeResult({
+      output,
+      value,
+      maxOutputBytes: params.config.maxOutputBytes,
+    });
+    return {
+      status: "completed" as const,
+      value: bounded.value,
+      output: bounded.output.slice(bounded.truncated ? 0 : deliveredOutputCount),
+      replaySafe: params.replaySafe,
+      telemetry: telemetry(params.runtime),
+    };
+  };
+  const settleAbort = () => {
+    const accepted = acceptedAsyncStartResult();
+    cancelPendingBridgeStates(pending);
+    return accepted ?? abortedResult();
+  };
   // Bridge tool calls (search/describe/call/namespace) run through the same
   // policy-checked executor whether the model awaits them one at a time or in a
   // batch, so resolve them inline within the exec deadline and resume the VM
@@ -292,8 +348,7 @@ async function settleCodeModeResult(params: {
       break;
     }
     if (params.signal?.aborted) {
-      cancelPendingBridgeStates(pending);
-      return abortedResult();
+      return settleAbort();
     }
     let releaseReservation: (() => void) | undefined;
     try {
@@ -341,8 +396,7 @@ async function settleCodeModeResult(params: {
         // cancelled call could never be waited on and would pin one of the
         // process-global active-run slots until TTL expiry.
         if (params.signal?.aborted) {
-          cancelPendingBridgeStates(pending);
-          return abortedResult();
+          return settleAbort();
         }
         // Parked rather than resumed: without a usable budget the restore alone
         // would burn the remaining deadline and fail a recoverable run.
@@ -392,6 +446,9 @@ async function settleCodeModeResult(params: {
         deliveredOutputCount = 0;
       }
     } catch (error) {
+      if (params.signal?.aborted) {
+        return settleAbort();
+      }
       cancelPendingBridgeStates(pending);
       throw error;
     } finally {
@@ -400,8 +457,7 @@ async function settleCodeModeResult(params: {
   }
   if (result.status === "waiting") {
     if (params.signal?.aborted) {
-      cancelPendingBridgeStates(pending);
-      return abortedResult();
+      return settleAbort();
     }
     const pendingReplaySafe = pendingBridgeRequestsReplaySafe(
       result.pendingRequests,
@@ -501,7 +557,13 @@ async function settleCodeModeResult(params: {
   }
   // Defensive cleanup covers aborts or terminal failures; successful runs have
   // already drained every dispatched call before releasing their snapshot.
+  if (params.signal?.aborted && result.status === "failed") {
+    return settleAbort();
+  }
   cancelPendingBridgeStates(pending);
+  if (params.signal) {
+    acceptedAsyncStartBySignal.delete(params.signal);
+  }
   const bounded = boundCodeModeResult({
     output,
     ...(result.status === "completed" ? { value: result.value } : {}),

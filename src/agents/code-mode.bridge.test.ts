@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { buildBlockedToolResult } from "./agent-tools.before-tool-call.js";
+import { registerAcceptedCodeModeAsyncStart } from "./code-mode-execution.js";
 import { applyCodeModeCatalog, createCodeModeTools } from "./code-mode.js";
 import {
   resetCodeModeTestState,
@@ -662,6 +663,81 @@ describe("Code Mode bridge settlement and cancellation", () => {
       clearTimeout(abortTimer);
     }
     expect(Date.now() - startedAt).toBeLessThan(10_000);
+    expect(testing.activeRuns.size).toBe(0);
+  });
+
+  it("preserves an accepted async-start bridge value when its yield aborts the parent exec", async () => {
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const controller = new AbortController();
+    const asyncStart = {
+      async: true,
+      status: "started",
+      taskId: "task-image-1",
+      runId: "tool:image_generate:run-1",
+      task: { taskId: "task-image-1", runId: "tool:image_generate:run-1" },
+    };
+    const imageGenerate = pluginToolWithExecute(
+      "fake_image_generate",
+      "Start fake image generation",
+      async () => {
+        const result = jsonResult(asyncStart);
+        registerAcceptedCodeModeAsyncStart(controller.signal, result);
+        setImmediate(() => controller.abort());
+        return result;
+      },
+    );
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, imageGenerate],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+
+    const details = resultDetails(
+      await expectDefined(codeModeTools[0], "codeModeTools[0] test invariant").execute(
+        "code-call-async-start-abort",
+        { code: 'return await tools.callValue("fake_image_generate", {});' },
+        controller.signal,
+      ),
+    );
+
+    expect(details).toMatchObject({ status: "completed", value: asyncStart });
+    expect(imageGenerate.execute).toHaveBeenCalledOnce();
+    expect(testing.activeRuns.size).toBe(0);
+  });
+
+  it("keeps an ordinary bridge abort failed without an accepted async-start envelope", async () => {
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const controller = new AbortController();
+    const ordinary = pluginToolWithExecute(
+      "fake_abort_after_result",
+      "Return before abort",
+      async () => {
+        setImmediate(() => controller.abort());
+        return jsonResult({ status: "started", taskId: "not-async", runId: "run-not-async" });
+      },
+    );
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, ordinary],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+
+    const details = resultDetails(
+      await expectDefined(codeModeTools[0], "codeModeTools[0] test invariant").execute(
+        "code-call-ordinary-abort",
+        { code: 'return await tools.callValue("fake_abort_after_result", {});' },
+        controller.signal,
+      ),
+    );
+
+    expect(details).toMatchObject({ status: "failed", code: "aborted" });
+    expect(ordinary.execute).toHaveBeenCalledOnce();
     expect(testing.activeRuns.size).toBe(0);
   });
 
