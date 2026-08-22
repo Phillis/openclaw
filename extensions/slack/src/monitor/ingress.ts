@@ -19,6 +19,7 @@ import { isNonRecoverableSlackAuthError } from "./reconnect-policy.js";
 const SLACK_INGRESS_PAYLOAD_VERSION = 1;
 const SLACK_INGRESS_POLL_INTERVAL_MS = 1_000;
 const SLACK_BOLT_AUTHORIZATION_ERROR = "slack_bolt_authorization_error";
+const PREPARED_MODEL_RUNTIME_OWNER_NOT_PUBLISHED = "prepared_model_runtime_owner_not_published";
 const SLACK_INGRESS_RETRY_MAX_ATTEMPTS = 8;
 const SLACK_INGRESS_RETRY_DEAD_LETTER_MIN_AGE_MS = 15 * 60 * 1_000;
 
@@ -202,6 +203,12 @@ export function resolveSlackIngressNonRetryableFailure(error: unknown) {
       isNonRecoverableSlackAuthError(candidate)
     ) {
       return { reason: "slack-auth", message: formatErrorMessage(candidate) };
+    }
+    if (extractErrorCode(candidate) === PREPARED_MODEL_RUNTIME_OWNER_NOT_PUBLISHED) {
+      return {
+        reason: "runtime-owner-unpublished",
+        message: formatErrorMessage(candidate),
+      };
     }
   }
   return null;

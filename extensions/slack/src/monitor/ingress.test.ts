@@ -20,7 +20,11 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSlackMonitorContext } from "./context.js";
 import { registerSlackMemberEvents } from "./events/members.js";
-import { createSlackDurableIngress, resolveSlackIngressTurnLifecycle } from "./ingress.js";
+import {
+  createSlackDurableIngress,
+  resolveSlackIngressNonRetryableFailure,
+  resolveSlackIngressTurnLifecycle,
+} from "./ingress.js";
 
 type SlackIngressQueue = NonNullable<Parameters<typeof createSlackDurableIngress>[0]["queue"]>;
 type SlackIngressPayload = Parameters<SlackIngressQueue["enqueue"]>[1];
@@ -208,6 +212,12 @@ function createReceiverEventWithBody(body: Record<string, unknown>): ReceiverEve
   return { body, ack: vi.fn(async () => {}) };
 }
 
+function createRuntimeOwnerNotPublishedError(message = "prepared runtime owner missing") {
+  return Object.assign(new Error(message), {
+    code: "prepared_model_runtime_owner_not_published",
+  });
+}
+
 function attachIngress(
   queue: ChannelIngressQueue<SlackIngressPayload>,
   processEvent: (event: ReceiverEvent) => Promise<void>,
@@ -266,6 +276,70 @@ describe("Slack durable ingress", () => {
       expect(enqueue).toHaveBeenCalledTimes(1);
       expect(ack).not.toHaveBeenCalled();
       expect(processEvent).not.toHaveBeenCalled();
+      await ingress.stop();
+    });
+  });
+
+  it("classifies a nested unpublished runtime owner by exact error code", () => {
+    const coded = createRuntimeOwnerNotPublishedError();
+    const nested = new Error("reply resolution failed", {
+      cause: { error: { original: coded } },
+    });
+
+    expect(resolveSlackIngressNonRetryableFailure(nested)).toEqual({
+      reason: "runtime-owner-unpublished",
+      message: coded.message,
+    });
+  });
+
+  it("does not classify an unpublished runtime owner by message text alone", () => {
+    expect(
+      resolveSlackIngressNonRetryableFailure(
+        new Error("prepared model runtime owner was not published for main"),
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps generic dispatch failures retryable", () => {
+    expect(resolveSlackIngressNonRetryableFailure(new Error("provider unavailable"))).toBeNull();
+  });
+
+  it("dead-letters an unpublished runtime owner and advances the same lane on the next pump", async () => {
+    await withQueue(async (queue) => {
+      const dispatched: string[] = [];
+      const processEvent = vi.fn(async (event: ReceiverEvent) => {
+        const eventId = (event.body as { event_id?: string }).event_id;
+        if (!eventId) {
+          throw new Error("missing test event id");
+        }
+        dispatched.push(eventId);
+        if (eventId === "Ev-runtime-owner-missing") {
+          throw new Error("reply resolution failed", {
+            cause: createRuntimeOwnerNotPublishedError(),
+          });
+        }
+        await resolveSlackIngressTurnLifecycle(event.customProperties)?.onAdopted();
+      });
+      const { ingress, receive } = attachIngress(queue, processEvent);
+
+      await receive(createReceiverEvent("Ev-runtime-owner-missing"));
+      await receive(
+        createReceiverEvent("Ev-after-runtime-owner", undefined, { ts: "1700000000.000200" }),
+      );
+      ingress.start();
+      await ingress.waitForIdle();
+
+      expect(dispatched).toEqual(["Ev-runtime-owner-missing", "Ev-after-runtime-owner"]);
+      expect(processEvent).toHaveBeenCalledTimes(2);
+      await expect(queue.listFailed?.({ limit: "all" })).resolves.toMatchObject([
+        {
+          id: "Ev-runtime-owner-missing",
+          reason: "runtime-owner-unpublished",
+        },
+      ]);
+      expect((await queue.enqueue("Ev-after-runtime-owner", {} as SlackIngressPayload)).kind).toBe(
+        "completed",
+      );
       await ingress.stop();
     });
   });
