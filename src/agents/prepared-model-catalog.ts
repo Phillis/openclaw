@@ -55,6 +55,8 @@ export type LoadPreparedModelCatalogParams = {
   /** Scoped read-only loads may run live discovery for the scoped providers only. */
   scopedLiveProviderDiscovery?: boolean;
   allowGatewaySubagentBinding?: boolean;
+  /** Long-lived turn paths may consume the committed Gateway generation after config replacement. */
+  allowPublishedConfigReplacement?: boolean;
 };
 
 export type GetPublishedPreparedModelCatalogOwnerParams = Omit<
@@ -423,7 +425,10 @@ export async function loadPreparedModelCatalogSnapshot(
   if (params.readOnly && params.providerDiscoveryProviderIds) {
     return loadScopedReadOnlyModelCatalog(params);
   }
-  return (await loadPreparedModelCatalogOwnerSnapshot(params)).modelCatalog;
+  const owner = params.allowPublishedConfigReplacement
+    ? await loadPublishedPreparedModelCatalogOwnerSnapshot(params)
+    : await loadPreparedModelCatalogOwnerSnapshot(params);
+  return owner.modelCatalog;
 }
 
 export async function loadPreparedModelCatalog(

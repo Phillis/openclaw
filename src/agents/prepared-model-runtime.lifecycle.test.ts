@@ -823,15 +823,13 @@ describe("prepared model runtime snapshots", () => {
     expect(settled).toBe(true);
   });
 
-  it("invalidates and refreshes the affected owner at auth publication", async () => {
+  it("waits for the affected owner at auth publication", async () => {
     const config = {};
     const agentDir = "/tmp/prepared-model-runtime-auth";
     const first = await publishPreparedModelRuntimeSnapshot({ config, agentDir });
 
     mocks.mutationListener?.({ agentDir, affectsInheritedStores: false });
-    await expect(prepareModelRuntimeSnapshot({ config, agentDir })).rejects.toThrow(
-      "stale after auth mutation",
-    );
+    await expect(prepareModelRuntimeSnapshot({ config, agentDir })).resolves.not.toBe(first);
 
     await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
     const refreshed = await prepareModelRuntimeSnapshot({ config, agentDir });

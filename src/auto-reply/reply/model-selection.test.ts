@@ -306,6 +306,7 @@ describe("createModelSelectionState catalog loading", () => {
 
   it("hydrates runtime catalog metadata when the configured allowlist entry lacks reasoning", async () => {
     vi.mocked(loadModelCatalogLocal).mockClear();
+    catalogRuntimeMocks.loadModelCatalogSnapshot.mockClear();
     vi.mocked(loadModelCatalogLocal).mockResolvedValueOnce([
       { provider: "openai", id: "gpt-5.4", name: "GPT-5.4", reasoning: true },
     ]);
@@ -339,6 +340,12 @@ describe("createModelSelectionState catalog loading", () => {
 
     await expect(state.resolveDefaultThinkingLevel()).resolves.toBe("medium");
     expect(loadModelCatalogLocal).toHaveBeenCalledOnce();
+    expect(catalogRuntimeMocks.loadModelCatalogSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        allowPublishedConfigReplacement: true,
+      }),
+    );
   });
 
   it("uses the prepared gateway owner catalog without an exact-generation reload", async () => {

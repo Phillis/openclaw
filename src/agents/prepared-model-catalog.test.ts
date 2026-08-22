@@ -377,6 +377,18 @@ describe("prepared model catalog access", () => {
     );
   });
 
+  it("allows a long-lived snapshot reader to consume the published replacement", async () => {
+    const committedSnapshot = {
+      ...fullSnapshot,
+      config: { agents: { defaults: { model: "openai/committed" } } },
+    };
+    mocks.prepareSnapshot.mockResolvedValue(committedSnapshot);
+
+    await expect(
+      loadPreparedModelCatalogSnapshot({ allowPublishedConfigReplacement: true }),
+    ).resolves.toBe(committedSnapshot.modelCatalog);
+  });
+
   it("prefers the full published generation for read-only access", () => {
     mocks.getSnapshot.mockReturnValue(fullSnapshot);
 

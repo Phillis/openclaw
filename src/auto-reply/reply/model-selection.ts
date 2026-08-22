@@ -197,6 +197,9 @@ export async function createModelSelectionState(params: {
     config: cfg,
     agentId: catalogAgentId,
     agentDir: resolveAgentDir(cfg, catalogAgentId),
+    // A replay/reset can outlive the config object that admitted it. Model selection is a
+    // long-lived Gateway reader, so bind fallback loads to the committed owner generation.
+    allowPublishedConfigReplacement: true,
   };
   const loadRuntimeCatalogSnapshot = async (): Promise<ModelCatalogSnapshot> =>
     params.loadPreparedModelCatalog
