@@ -354,7 +354,7 @@ export function prepareEmbeddedAttemptStream(input: {
           );
           acceptedDuringExecution = await toolParams.acceptResultBeforeProjection(executed);
           registerAcceptedCodeModeAsyncStart(
-            toolParams.signal ?? input.runAbortController.signal,
+            input.runAbortController.signal,
             acceptedDuringExecution,
           );
           return executed;

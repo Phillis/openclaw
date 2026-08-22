@@ -16,11 +16,16 @@ import {
 const mocks = vi.hoisted(() => ({
   clearActiveRun: vi.fn(),
   notifyToolActivity: vi.fn(),
+  registerAcceptedCodeModeAsyncStart: vi.fn(),
   runBeforeFinalizeHook: vi.fn(),
   setActiveRun: vi.fn(),
   subscribe: vi.fn(),
 }));
 
+vi.mock("../../code-mode-execution.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../code-mode-execution.js")>()),
+  registerAcceptedCodeModeAsyncStart: mocks.registerAcceptedCodeModeAsyncStart,
+}));
 vi.mock("../../embedded-agent-subscribe.js", () => ({
   subscribeEmbeddedAgentSession: mocks.subscribe,
 }));
@@ -378,6 +383,55 @@ describe("prepareEmbeddedAttemptStream", () => {
     expect(returned).toMatchObject({ details: { id: 42 } });
     expect(Object.isFrozen(returned)).toBe(true);
     expect(Object.isFrozen(returned.details)).toBe(true);
+  });
+
+  it("registers accepted async starts under the outer run signal", async () => {
+    const projections: ToolSearchTargetTranscriptProjection[] = [];
+    const runAbortController = new AbortController();
+    const bridgeAbortController = new AbortController();
+    const bridgeSignal = AbortSignal.any([runAbortController.signal, bridgeAbortController.signal]);
+    const asyncStart = {
+      content: [{ type: "text" as const, text: "Image generation started" }],
+      details: {
+        async: true,
+        status: "started",
+        taskId: "task-image-1",
+        runId: "tool:image_generate:run-1",
+      },
+    };
+    const execute = vi.fn(async (_toolCallId, _input, signal) => {
+      expect(signal).toBe(bridgeSignal);
+      return asyncStart;
+    });
+    const prepared = prepareCatalogExecutor(projections, { runAbortController });
+
+    await prepared.toolSearchCatalogExecutor({
+      tool: {
+        name: "image_generate",
+        description: "Start image generation",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute,
+      } as never,
+      toolName: "image_generate",
+      source: "openclaw",
+      sourceName: "fixture-plugin",
+      toolCallId: "call-image-generate",
+      parentToolCallId: "call-code-mode",
+      input: {},
+      signal: bridgeSignal,
+      acceptResultBeforeProjection: async (candidate) => structuredClone(candidate),
+    });
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledOnce();
+    expect(mocks.registerAcceptedCodeModeAsyncStart).toHaveBeenCalledWith(
+      runAbortController.signal,
+      expect.objectContaining({ details: asyncStart.details }),
+    );
+    expect(mocks.registerAcceptedCodeModeAsyncStart).not.toHaveBeenCalledWith(
+      bridgeSignal,
+      expect.anything(),
+    );
   });
 
   it("marks accepted canonical failures in hidden tool transcript projections", async () => {
