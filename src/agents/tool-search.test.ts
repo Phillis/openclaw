@@ -1255,6 +1255,22 @@ describe("Tool Search", () => {
     expect(Object.isFrozen((result as unknown[])[0])).toBe(true);
   });
 
+  it("aliases described parameters as the common inputSchema field", async () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const target = pluginTool("strict_prompt", "Create media from a prompt");
+    const parameters = Type.Object({ prompt: Type.String() }, { additionalProperties: false });
+    target.parameters = parameters;
+    registerHeadlessToolSearchCatalog({ catalogRef, tools: [target] });
+    const runtime = new ToolSearchRuntime(
+      { catalogRef },
+      resolveToolSearchConfig({ tools: { toolSearch: { mode: "tools" } } } as never),
+    );
+
+    const described = await runtime.describe("strict_prompt");
+    expect(described.parameters).toBe(parameters);
+    expect(described.inputSchema).toBe(described.parameters);
+  });
+
   it("keeps output hints and validation after runtime normalization clones tools", async () => {
     const catalogRef = createToolSearchCatalogRef();
     const target = pluginTool("orchard_normalized_output", "Read a normalized orchard row");
@@ -1549,6 +1565,46 @@ describe("Tool Search", () => {
     expect(telemetry.searchCount).toBe(1);
     expect(telemetry.describeCount).toBe(1);
     expect(telemetry.callCount).toBe(1);
+  });
+
+  it("lets code mode construct a required prompt from described inputSchema", async () => {
+    const codeTool = fakeTool(TOOL_SEARCH_CODE_MODE_TOOL_NAME, "code mode");
+    const imageTool = pluginTool("fake_image_generate", "Generate an image");
+    imageTool.parameters = Type.Object(
+      { prompt: Type.String(), model: Type.Optional(Type.String()) },
+      { additionalProperties: false },
+    );
+    const compacted = applyToolSearchCatalog({
+      tools: [codeTool, imageTool],
+      config: { tools: { toolSearch: true } } as never,
+      sessionId: "describe-input-schema",
+      sessionKey: "agent:main:describe-input-schema",
+    });
+    const [runtimeCodeTool] = createToolSearchTools({
+      sessionId: "describe-input-schema",
+      sessionKey: "agent:main:describe-input-schema",
+      config: compacted.tools[0] ? {} : undefined,
+    });
+
+    await expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+      "call-described-prompt",
+      {
+        code: `
+          const hit = (await openclaw.tools.search("fake_image_generate", { limit: 1 }))[0];
+          const spec = await openclaw.tools.describe(hit.id);
+          const args = {};
+          if (Object.prototype.hasOwnProperty.call(spec.inputSchema.properties, "prompt")) {
+            args.prompt = "friendly orange robot";
+          }
+          return await openclaw.tools.call(hit.id, args);
+        `,
+      },
+    );
+
+    expect(imageTool.execute).toHaveBeenCalledOnce();
+    expect(vi.mocked(imageTool.execute).mock.calls[0]?.[1]).toEqual({
+      prompt: "friendly orange robot",
+    });
   });
 
   it("wraps legacy code-mode network output without changing its structured value", async () => {

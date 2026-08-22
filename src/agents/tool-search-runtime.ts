@@ -52,9 +52,11 @@ import type {
 import { asToolParamsRecord, jsonResult, ToolInputError } from "./tools/common.js";
 
 function describeEntry(entry: ToolSearchCatalogEntry) {
+  const parameters = entry.parameters ?? {};
   return {
     ...compactToolSearchCatalogEntry(entry),
-    parameters: entry.parameters ?? {},
+    parameters,
+    inputSchema: parameters,
     ...(entry.outputSchema ? { outputSchema: entry.outputSchema } : {}),
   };
 }
