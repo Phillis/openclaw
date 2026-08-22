@@ -430,6 +430,97 @@ describe("createImageGenerateTool", () => {
     expect(codeModeValue).toBe("1K");
   });
 
+  it("describes and preserves exact named-provider generation and edit payloads", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "openai-key");
+    vi.stubEnv("MINIMAX_API_KEY", "minimax-key");
+    stubImageGenerationProviders();
+
+    const tool = createToolWithPrimaryImageModel("openai/gpt-image-1");
+    const properties = (
+      tool.parameters as {
+        properties?: Record<string, { description?: string; enum?: string[] }>;
+      }
+    ).properties;
+    expect(properties?.prompt?.description).toContain("required for generate and edit");
+    expect(properties?.model?.description).toContain("copy it here");
+    expect(properties?.model?.description).toContain("minimax/image-01");
+    expect(properties?.image?.description).toContain("exact prior returned image path");
+    expect(properties?.resolution?.description).toContain(
+      "Omit for providers that do not support it",
+    );
+
+    const generateImage = vi.spyOn(imageGenerationRuntime, "generateImage").mockResolvedValue({
+      provider: "minimax",
+      model: "image-01",
+      attempts: [],
+      ignoredOverrides: [],
+      images: [
+        {
+          buffer: Buffer.from("jpeg-out"),
+          mimeType: "image/jpeg",
+          fileName: "orange-robot.jpg",
+        },
+      ],
+    });
+    vi.spyOn(mediaStore, "saveMediaBuffer")
+      .mockResolvedValueOnce({
+        path: "/tmp/orange-robot.jpg",
+        id: "orange-robot.jpg",
+        size: 8,
+        contentType: "image/jpeg",
+      })
+      .mockResolvedValueOnce({
+        path: "/tmp/orange-robot-blue-crescent.jpg",
+        id: "orange-robot-blue-crescent.jpg",
+        size: 8,
+        contentType: "image/jpeg",
+      });
+    vi.spyOn(webMedia, "loadWebMedia").mockResolvedValue({
+      kind: "image",
+      buffer: Buffer.from("jpeg-out"),
+      contentType: "image/jpeg",
+    });
+
+    const generationArgs = {
+      prompt: "A cheerful orange robot on a simple white background.",
+      model: "minimax/image-01",
+      aspectRatio: "1:1",
+      count: 1,
+    };
+    await tool.execute("call-minimax-generation", generationArgs);
+    const generationRequest = mockCallArg(generateImage, 0, "generateImage");
+    expect(generationRequest).toMatchObject({
+      modelOverride: "minimax/image-01",
+      aspectRatio: "1:1",
+      count: 1,
+      inputImages: [],
+    });
+    expect(generationRequest.resolution).toBeUndefined();
+
+    const priorOutputPath = "/tmp/orange-robot.jpg";
+    const editArgs = {
+      prompt: "Add a blue crescent and preserve everything else.",
+      model: "minimax/image-01",
+      image: priorOutputPath,
+      count: 1,
+    };
+    await tool.execute("call-minimax-edit", editArgs);
+    expect(webMedia.loadWebMedia).toHaveBeenCalledWith(priorOutputPath, expect.any(Object));
+    const editRequest = mockCallArg(generateImage, 1, "generateImage");
+    expect(editRequest).toMatchObject({
+      modelOverride: "minimax/image-01",
+      count: 1,
+      inputImages: [
+        {
+          buffer: Buffer.from("jpeg-out"),
+          mimeType: "image/jpeg",
+        },
+      ],
+    });
+    expect(editRequest.resolution).toBeUndefined();
+    expect(generateImage).toHaveBeenCalledTimes(2);
+  });
+
   it("does not load runtime providers while registering an explicitly configured tool", () => {
     const listProviders = vi
       .spyOn(imageGenerationRuntime, "listRuntimeImageGenerationProviders")

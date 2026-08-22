@@ -154,10 +154,12 @@ const ImageGenerateToolSchema = Type.Object({
       description: '"generate" default, "status" active task, "list" providers/models.',
     }),
   ),
-  prompt: Type.Optional(Type.String({ description: "Image prompt." })),
+  prompt: Type.Optional(
+    Type.String({ description: "Image prompt; required for generate and edit." }),
+  ),
   image: Type.Optional(
     Type.String({
-      description: "Reference image path/URL for edit.",
+      description: "For edit, the exact prior returned image path/URL.",
     }),
   ),
   images: Type.Optional(
@@ -168,7 +170,7 @@ const ImageGenerateToolSchema = Type.Object({
   model: Type.Optional(
     Type.String({
       description:
-        "Provider/model override, e.g. openai/gpt-image-2; transparent OpenAI: openai/gpt-image-1.5.",
+        "Exact provider/model override. If the user names one, copy it here (for example minimax/image-01 or openai/gpt-image-2; transparent OpenAI: openai/gpt-image-1.5); omit only to use the configured default.",
     }),
   ),
   filename: Type.Optional(
@@ -188,7 +190,8 @@ const ImageGenerateToolSchema = Type.Object({
     }),
   ),
   resolution: optionalStringEnum(SUPPORTED_RESOLUTIONS, {
-    description: "Resolution: 1K, 2K, 4K; useful for Google.",
+    description:
+      "Capability-dependent resolution: 1K, 2K, 4K. Omit for providers that do not support it; unsupported values are ignored.",
   }),
   quality: optionalStringEnum(SUPPORTED_QUALITIES, {
     description: "Quality: low, medium, high, auto.",
