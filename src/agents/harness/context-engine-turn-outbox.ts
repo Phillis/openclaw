@@ -6,7 +6,7 @@ import {
   type TranscriptTurnBoundary,
 } from "../../config/sessions/session-accessor.js";
 import type { TranscriptTurnAdmission } from "../../config/sessions/transcript-entry-anchor.js";
-import type { ContextEngine } from "../../context-engine/types.js";
+import type { ContextEngine, ContextEngineRuntimeSettings } from "../../context-engine/types.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -36,6 +36,7 @@ type AdmittedContextEngineTurnOutboxPayload = Readonly<{
 type AcceptedContextEngineTurnOutboxPayload = Readonly<{
   boundary: TranscriptTurnBoundary;
   isHeartbeat: boolean;
+  runtimeSettings?: ContextEngineRuntimeSettings;
   state: "accepted";
 }>;
 
@@ -43,6 +44,7 @@ type ReadyContextEngineTurnOutboxPayload = Readonly<{
   boundary: TranscriptTurnBoundary;
   isHeartbeat: boolean;
   messages: AgentMessage[];
+  runtimeSettings?: ContextEngineRuntimeSettings;
   state: "ready";
 }>;
 
@@ -195,12 +197,14 @@ export function acceptContextEngineTurnIntent(params: {
   engineId: string;
   isHeartbeat: boolean;
   ownerPluginId?: string;
+  runtimeSettings?: ContextEngineRuntimeSettings;
 }): void {
   writeContextEngineTurnOutboxPayload({
     ...params,
     payload: {
       boundary: params.boundary,
       isHeartbeat: params.isHeartbeat,
+      runtimeSettings: params.runtimeSettings,
       state: "accepted",
     },
   });
@@ -327,6 +331,7 @@ export function recoverContextEngineTurnOutbox(params: {
         boundary: payload.boundary,
         isHeartbeat: payload.isHeartbeat,
         messages: closedTurn.messages,
+        runtimeSettings: payload.runtimeSettings,
       },
     });
   }
@@ -442,6 +447,7 @@ async function commitPendingContextEngineTurn(
         storePath: payload.boundary.admission.storePath,
       },
       isHeartbeat: payload.isHeartbeat,
+      runtimeSettings: payload.runtimeSettings,
     };
     const result = await params.engine.commitTurn?.(commonParams);
     if (!result) {

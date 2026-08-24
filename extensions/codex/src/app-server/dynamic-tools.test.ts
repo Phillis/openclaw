@@ -266,6 +266,70 @@ describe("createCodexDynamicToolBridge", () => {
     expectNoNamespace(specs.find((tool) => tool.name === "message"));
   });
 
+  it("uses explicit display summaries for deferred tool descriptions", () => {
+    const bridge = createCodexDynamicToolBridge({
+      tools: [
+        createTool({
+          name: "message",
+          description: "Long operational guidance retained by the executable tool.",
+          displaySummary: "Send messages.",
+        }),
+      ],
+      signal: new AbortController().signal,
+    });
+
+    const message = flattenSpecsWithNamespace(bridge.specs).find((tool) => tool.name === "message");
+    expect(message).toMatchObject({
+      description: "Send messages.",
+      deferLoading: true,
+    });
+    expect(bridge.availableTools[0]?.description).toBe(
+      "Long operational guidance retained by the executable tool.",
+    );
+  });
+
+  it("falls back to full descriptions for deferred tools without display summaries", () => {
+    const bridge = createCodexDynamicToolBridge({
+      tools: [createTool({ name: "message", description: "Send a message with full guidance." })],
+      signal: new AbortController().signal,
+    });
+
+    expect(
+      flattenSpecsWithNamespace(bridge.specs).find((tool) => tool.name === "message"),
+    ).toMatchObject({
+      description: "Send a message with full guidance.",
+      deferLoading: true,
+    });
+  });
+
+  it("preserves full descriptions for direct and direct-only tools", () => {
+    const bridge = createCodexDynamicToolBridge({
+      tools: [
+        createTool({
+          name: "message",
+          description: "Direct message guidance.",
+          displaySummary: "Message summary.",
+        }),
+        createTool({
+          name: "computer",
+          description: "Direct-only computer guidance.",
+          displaySummary: "Computer summary.",
+          catalogMode: "direct-only",
+        }),
+      ],
+      signal: new AbortController().signal,
+      directToolNames: ["message"],
+    });
+
+    const specs = flattenSpecsWithNamespace(bridge.specs);
+    expect(specs.find((tool) => tool.name === "message")).toMatchObject({
+      description: "Direct message guidance.",
+    });
+    expect(specs.find((tool) => tool.name === "computer")).toMatchObject({
+      description: "Direct-only computer guidance.",
+    });
+  });
+
   it("isolates direct-only tools in Codex's model-only namespace", () => {
     const bridge = createCodexDynamicToolBridge({
       tools: [

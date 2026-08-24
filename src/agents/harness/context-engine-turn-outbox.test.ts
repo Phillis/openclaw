@@ -185,6 +185,25 @@ describe("context-engine turn outbox", () => {
       database,
       engineId: "test",
       isHeartbeat: true,
+      runtimeSettings: {
+        schemaVersion: 1,
+        runtime: {
+          host: "openclaw",
+          mode: "normal",
+          harnessId: "codex",
+          runtimeId: "app-server",
+        },
+        model: {
+          requested: "vision-primary",
+          resolved: "vision-primary",
+          provider: "synthetic",
+          family: null,
+        },
+        contextEngineSelection: { selectedId: "test", source: "configured" },
+        executionHost: { id: "codex", label: "Codex" },
+        limits: { promptTokenBudget: 196_000, maxOutputTokens: 8_000 },
+        diagnostics: { fallbackReason: null, degradedReason: null },
+      },
     });
     const current = await appendTranscriptMessage(target, {
       message: { role: "user", content: "second" },
@@ -252,6 +271,10 @@ describe("context-engine turn outbox", () => {
           { role: "user", content: "first" },
           { role: "assistant", content: "first answer" },
         ],
+        runtimeSettings: expect.objectContaining({
+          model: expect.objectContaining({ provider: "synthetic", resolved: "vision-primary" }),
+          limits: expect.objectContaining({ promptTokenBudget: 196_000 }),
+        }),
       }),
     );
     expect(

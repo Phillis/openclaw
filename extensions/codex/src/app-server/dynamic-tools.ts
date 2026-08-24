@@ -1036,7 +1036,11 @@ function createCodexDynamicToolSpecs(params: {
       specs.push(functionSpec);
       continue;
     }
-    namespaceTools.push({ ...functionSpec, deferLoading: true });
+    namespaceTools.push({
+      ...functionSpec,
+      description: entry.tool.displaySummary?.trim() || functionSpec.description,
+      deferLoading: true,
+    });
   }
   if (namespaceTools.length > 0) {
     specs.push({

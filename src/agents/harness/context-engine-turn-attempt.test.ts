@@ -286,6 +286,25 @@ describe("accepted context-engine turn finalization", () => {
       promptError: false,
       aborted: false,
       yieldAborted: false,
+      tokenBudget: 196_000,
+      contextEngineHostSupport: {
+        id: "codex",
+        label: "Codex",
+        capabilities: [
+          "bootstrap",
+          "assemble-before-prompt",
+          "after-turn",
+          "maintain",
+          "compact",
+          "runtime-llm-complete",
+          "thread-bootstrap-projection",
+        ],
+      },
+      harnessId: "codex",
+      runtimeId: "app-server",
+      providerId: "synthetic",
+      requestedModelId: "vision-primary",
+      modelId: "vision-primary",
     };
 
     await finalizeAcceptedContextEngineTurn({ facts: baseFacts, lease });
@@ -297,6 +316,11 @@ describe("accepted context-engine turn finalization", () => {
           expect.objectContaining({ role: "user", content: "current" }),
           expect.objectContaining({ role: "assistant", content: "answer" }),
         ],
+        runtimeSettings: expect.objectContaining({
+          runtime: expect.objectContaining({ harnessId: "codex", runtimeId: "app-server" }),
+          model: expect.objectContaining({ provider: "synthetic", resolved: "vision-primary" }),
+          limits: expect.objectContaining({ promptTokenBudget: 196_000 }),
+        }),
       }),
     );
     expect(commitTurn.mock.calls[0]?.[0]).not.toHaveProperty("prePromptMessageCount");

@@ -8,6 +8,7 @@ import {
   supportsContextEngineDurableTurnAdvancement,
   type ContextEngineHostSupport,
 } from "../../context-engine/host-compat.js";
+import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
 import type {
   ContextEngineRuntimeContext,
   ContextEngineRuntimeSettings,
@@ -193,6 +194,32 @@ function assertAcceptedTranscriptTarget(facts: ContextEngineTurnAttemptFacts): v
   }
 }
 
+function resolveDurableTurnRuntimeSettings(params: {
+  facts: ContextEngineTurnAttemptFacts;
+  lease: ContextEngineLogicalTurnLease;
+}): ContextEngineRuntimeSettings | undefined {
+  if (params.facts.runtimeSettings) {
+    return params.facts.runtimeSettings;
+  }
+  const contextEngineHost = params.facts.contextEngineHostSupport;
+  if (!contextEngineHost) {
+    return undefined;
+  }
+  return buildContextEngineRuntimeSettings({
+    harnessId: params.facts.harnessId,
+    runtimeId: params.facts.runtimeId,
+    requestedModel: params.facts.requestedModelId,
+    resolvedModel: params.facts.modelId,
+    provider: params.facts.providerId,
+    selectedContextEngineId: params.lease.effectiveEngineId,
+    fallbackReason: params.facts.fallbackReason,
+    degradedReason: params.facts.degradedReason,
+    promptTokenBudget: params.facts.tokenBudget,
+    maxOutputTokens: params.facts.maxOutputTokens,
+    contextEngineHost,
+  });
+}
+
 export async function finalizeAcceptedContextEngineTurn(params: {
   facts: ContextEngineTurnAttemptFacts;
   lease: ContextEngineLogicalTurnLease;
@@ -223,12 +250,14 @@ export async function finalizeAcceptedContextEngineTurn(params: {
       agentId: admission.agentId,
       path: admission.storePath,
     });
+    const runtimeSettings = resolveDurableTurnRuntimeSettings(params);
     acceptContextEngineTurnIntent({
       boundary: params.facts.boundary,
       database,
       engineId: params.lease.effectiveEngineId,
       isHeartbeat: params.facts.isHeartbeat === true,
       ownerPluginId: params.lease.effectiveEnginePluginId,
+      runtimeSettings,
     });
     const closedTurn = readClosedTranscriptTurn({
       boundary: params.facts.boundary,
@@ -256,6 +285,7 @@ export async function finalizeAcceptedContextEngineTurn(params: {
         boundary: params.facts.boundary,
         isHeartbeat: params.facts.isHeartbeat === true,
         messages: closedTurn.messages,
+        runtimeSettings,
       },
     });
     await drainContextEngineTurnOutbox({
