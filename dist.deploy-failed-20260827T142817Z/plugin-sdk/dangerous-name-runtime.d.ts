@@ -1,0 +1,2 @@
+import { n as isDangerousNameMatchingEnabled, r as resolveDangerousNameMatchingEnabled } from "../dangerous-name-matching-iKgUvCXf.js";
+export { isDangerousNameMatchingEnabled, resolveDangerousNameMatchingEnabled };

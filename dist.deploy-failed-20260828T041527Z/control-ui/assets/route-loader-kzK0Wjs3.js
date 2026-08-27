@@ -1,0 +1,1 @@
+import{n as e,t}from"./control-ui-boot-DCZ2Gg_e.js";t();export{e as loadChatRoute};

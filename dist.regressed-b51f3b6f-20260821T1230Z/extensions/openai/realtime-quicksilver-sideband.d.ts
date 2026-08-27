@@ -1,0 +1,2 @@
+import { n as OpenAIQuicksilverSocketFactory, r as connectOpenAIQuicksilverSideband, t as OpenAIQuicksilverSocket } from "../../realtime-quicksilver-sideband-TIZPyDza.js";
+export { OpenAIQuicksilverSocket, OpenAIQuicksilverSocketFactory, connectOpenAIQuicksilverSideband };

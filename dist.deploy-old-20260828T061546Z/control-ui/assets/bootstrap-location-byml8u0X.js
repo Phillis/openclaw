@@ -1,0 +1,1 @@
+import{_u as e,vu as t,yu as n}from"./control-ui-boot-BY2RxHwD.js";e();export{t as normalizeInitialApplicationLocation,n as resolveInitialApplicationLocation};

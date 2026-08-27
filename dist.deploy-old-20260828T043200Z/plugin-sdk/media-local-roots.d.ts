@@ -1,0 +1,2 @@
+import { n as getAgentScopedMediaLocalRootsForSources, t as getAgentScopedMediaLocalRoots } from "../local-roots-CT9Phl4w.js";
+export { getAgentScopedMediaLocalRoots, getAgentScopedMediaLocalRootsForSources };

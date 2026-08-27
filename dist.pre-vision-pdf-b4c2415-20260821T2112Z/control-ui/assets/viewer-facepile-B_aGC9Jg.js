@@ -1,0 +1,1 @@
+import{i as e,n as t,r as n,t as r}from"./viewer-facepile-B9DI5VwS.js";n();export{r as hasMultiplePresenceIdentities,t as hasSessionPresenceViewers,e as presenceViewerLabel};

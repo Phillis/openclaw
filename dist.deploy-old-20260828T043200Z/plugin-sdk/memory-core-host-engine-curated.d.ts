@@ -1,0 +1,2 @@
+import { r as extractProjectKeysFromCuratedEntry, t as CuratedProjectAnnotations } from "../curated-annotations-CJjk-Sha.js";
+export { type CuratedProjectAnnotations, extractProjectKeysFromCuratedEntry };

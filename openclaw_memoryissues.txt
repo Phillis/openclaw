@@ -1,0 +1,45 @@
+I dug into the memory stack — there's a real problem worth telling you about, not just status numbers.
+
+
+What I foundStorage is fine, recall is broken.
+
+
+LanceDB database: ~/.openclaw/memory/lancedb/memories.lance — 323 MB, single table memories, 6,115 rows.
+Rows are intact: schema is id, text, vector (4096-dim), importance, category, createdAt, normalizedText, project, sourceType, sourcePath, sourceTimestamp, agentId, workspace, scope, sessionKey. No corruption at the row level — countRows() returns 6115 cleanly.
+Indices declared: text_idx (FTS on text) and vector_ivf_cosine (IvfFlat on vector).
+LM Studio embeddings endpoint: http://localhost:1234/v1/embeddings returns HTTP 200 in ~0.39s for Qwen3-Embedding-8B. That part is healthy and not the bottleneck.
+
+
+
+The breakagememory_recall currently fails on every query with the same error:
+
+lance error: Not found: Users/phil/.openclaw/memory/lancedb/memories.lance/_indices/
+  b53b4047-102c-48df-91d6-fdaede8ac3e9/index.idx
+
+So the IVF index metadata knows about an index directory b53b4047-…, but the actual index.idx file inside it is missing. The vector index is unrecoverable in its current form. Until that's fixed, every recall — yours, mine, every agent — errors out. Effective memory = zero.
+
+Likely causes (ranked):
+An interrupted optimize/merge, an interrupted backup, or a crash between when the index was committed in metadata and when its files were fully written.
+A Lance version mismatch or stale _transactions reference left over from a process that was killed mid-write.
+
+
+What it is not: storage full, model down, row data gone. 6,115 memories are still there — just the ANN index is dead. FTS might still work as a fallback since its index is separate, but I can't confirm that without the recall tool returning something.
+
+
+What you lost vs. what you have
+Lost for retrieval right now: ANN-similarity search across 6,115 memories.
+Still on disk: every row, every embedding, every provenance field (agent/workspace/project/source).
+Latency when fixed: with LM Studio at ~0.4s for an embedding and Lance IVF on ~6k rows, expect ~0.5–0.8s end-to-end per recall. Not the bottleneck.
+
+
+
+Fix path (recommend in this order)
+Try tbl.optimize() / index rebuild — drop the broken IVF index and re-create it from existing vectors. Row data is preserved; only the index is rebuilt. This should restore recall without re-embedding anything.
+If that fails, drop the index and recreate (createIndex({ vector: { type: "IvfFlat", metric: "Cosine" } })). Still no re-embedding needed.
+Last resort: rebuild the index, then run an integrity check.
+Then verify by running memory_recall on the same 3 queries I just tried — they should return results in <1s.
+
+
+Also worth checking while we're here: the LanceDB backup LaunchAgent is missing. ~/Library/LaunchAgents/ai.openclaw.lancedb-backup.plist doesn't exist — only the migrated .sqlite backups from June are in ~/.openclaw/memory/ (last one 2026-07-01). The daily 03:25 LanceDB backup that TOOLS.md mentions isn't actually scheduled. Want me to fix that as part of recovery so we don't lose the 6,115 memories if this happens again?
+
+Recommendation: I should fix this now. Rebuilding the IVF index from existing vectors is non-destructive — no re-embedding, no data loss, and we can verify with the three failing queries above. Want me to go ahead?

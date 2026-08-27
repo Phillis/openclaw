@@ -1,0 +1,2 @@
+import { F as ProviderAuthResult, N as ProviderAuthContext, b as OpenClawPluginApi, t as definePluginEntry } from "../../plugin-entry-Bvo-51M-.js";
+export { type OpenClawPluginApi, type ProviderAuthContext, type ProviderAuthResult, definePluginEntry };

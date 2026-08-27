@@ -1,0 +1,2 @@
+import { a as pluginRegistryIssueToRepairEffect, i as pluginRegistryIssueToHealthFinding, n as maybeRepairPluginRegistryState, r as maybeRepairStaleManagedNpmBundledPlugins, t as detectPluginRegistryHealthIssues } from "./doctor-plugin-registry--hKGTeDj.js";
+export { detectPluginRegistryHealthIssues, maybeRepairPluginRegistryState, maybeRepairStaleManagedNpmBundledPlugins, pluginRegistryIssueToHealthFinding, pluginRegistryIssueToRepairEffect };

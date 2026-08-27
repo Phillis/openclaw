@@ -62,6 +62,13 @@ import {
 import { processResponsesStream } from "./openai-responses-stream-internal.js";
 import { observeResponsesStream } from "./openai-responses-stream-observer-internal.js";
 import {
+  createOpenAIResponsesTransportHealthFetch,
+  getOpenAIResponsesTransportHealth,
+  OPENCLAW_OPENAI_RESPONSES_TRANSPORT_HEALTH_DISABLED,
+  resolveOpenAIResponsesTransportKey,
+  unwrapOpenAIResponsesTransportOpenError,
+} from "./openai-responses-transport-health.js";
+import {
   createOpenAIResponsesWebSocketStream,
   type OpenAIResponsesWebSocketMode,
   supportsNativeOpenAIResponsesEndpoint,
@@ -165,12 +172,34 @@ export function createOpenAIResponsesClient(
   sessionId?: string,
   fetchOverride?: typeof globalThis.fetch,
 ) {
+  const guardedFetch = fetchOverride ?? buildGuardedModelFetch(model);
+  // The ChatGPT-native Responses transport surfaces 429/408/5xx on streamed SSE
+  // bodies with no SDK backoff. Wrap its fetch with concurrency capping,
+  // rate-limit circuit breaking, and Retry-After/x-ratelimit honoring backoff,
+  // and disable the SDK's own (non-streaming only) retries so we are the single
+  // retry owner. Note: only the chatgpt-responses codex transport is wrapped;
+  // other OpenAI/azure-responses transports keep their existing behavior.
+  const healthEnabled =
+    isOpenAICodexResponsesModel(model) && !OPENCLAW_OPENAI_RESPONSES_TRANSPORT_HEALTH_DISABLED;
+  const healthKey = resolveOpenAIResponsesTransportKey({
+    provider: model.provider,
+    api: model.api,
+    baseUrl: model.baseUrl,
+  });
+  const fetch = healthEnabled
+    ? createOpenAIResponsesTransportHealthFetch(
+        guardedFetch,
+        getOpenAIResponsesTransportHealth(healthKey),
+        healthKey,
+      )
+    : guardedFetch;
   return new OpenAI({
     apiKey,
     baseURL: resolveOpenAIClientBaseUrl(model),
     dangerouslyAllowBrowser: true,
     defaultHeaders: buildOpenAIClientHeaders(model, context, optionHeaders, turnHeaders, sessionId),
-    fetch: fetchOverride ?? buildGuardedModelFetch(model),
+    fetch,
+    ...(healthEnabled ? { maxRetries: 0 } : {}),
     ...buildOpenAISdkClientOptions(model),
   });
 }
@@ -612,19 +641,27 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
         );
         finalizeTransportStream({ stream, output, signal: options?.signal });
       } catch (error) {
+        // Surface the breaker-open failure with its typed identity so the
+        // fallback layer sees an immediate, distinct failure mode rather than a
+        // generic connection error wrapped by the SDK.
+        const transportOpenError = unwrapOpenAIResponsesTransportOpenError(error);
+        const effectiveError = transportOpenError ?? error;
         if (compactRequest) {
-          compactRequest.reject(error);
-          failTransportStream({ stream, output, signal: options?.signal, error });
+          compactRequest.reject(effectiveError);
+          failTransportStream({ stream, output, signal: options?.signal, error: effectiveError });
           return;
         }
-        if (error instanceof ResponsesStreamFailure && error.observation) {
-          logResponsesFailedNoDetails(error.observation);
+        if (effectiveError instanceof ResponsesStreamFailure && effectiveError.observation) {
+          logResponsesFailedNoDetails(effectiveError.observation);
         }
         log.warn(
           `[responses] error provider=${model.provider} api=${model.api} model=${model.id} ` +
-            summarizeOpenAITransportError(error),
+            summarizeOpenAITransportError(effectiveError) +
+            (transportOpenError
+              ? `; circuit breaker open (fail-fast, will not dispatch to avoid hammering 429)`
+              : ""),
         );
-        failTransportStream({ stream, output, signal: options?.signal, error });
+        failTransportStream({ stream, output, signal: options?.signal, error: effectiveError });
       } finally {
         continuationClaim?.release();
         firstEventAbort?.dispose();

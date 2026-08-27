@@ -1,0 +1,6 @@
+import { B as CliBackendPlugin } from "../../types-CbXjz50O.js";
+//#region extensions/anthropic/cli-backend.d.ts
+/** Build the Claude CLI backend plugin descriptor. */
+declare function buildAnthropicCliBackend(): CliBackendPlugin;
+//#endregion
+export { buildAnthropicCliBackend };

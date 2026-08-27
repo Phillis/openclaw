@@ -1,0 +1,1 @@
+import{r as e,t}from"./javascript-DX2C-kp4.js";t();export{e as jsonld};
