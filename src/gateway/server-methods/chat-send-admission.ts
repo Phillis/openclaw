@@ -22,6 +22,10 @@ import {
   interruptSessionWorkAdmissions,
   isCompetingSessionWorkAdmissionActive,
 } from "../../sessions/session-lifecycle-admission.js";
+import {
+  ROTATION_ARCHIVE_ACTOR_TYPE,
+  SESSION_ROTATION_CHANGED_ERROR_REASON,
+} from "../../sessions/session-rotation.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { registerChatAbortController, resolveChatRunExpiresAtMs } from "../chat-abort.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
@@ -324,6 +328,16 @@ export async function admitChatSend(params: {
       allowPendingWorkspace: true,
     });
     if (archivedError) {
+      // A rotation-archived entry is a mid-queue capture across an epoch
+      // boundary, not a user-intended stop. Signal the orchestrator to
+      // re-resolve the current epoch once and re-admit instead of refusing.
+      if (
+        latestEntry?.archivedAt !== undefined &&
+        (latestEntry?.archivedBy as { type?: string } | undefined)?.type ===
+          ROTATION_ARCHIVE_ACTOR_TYPE
+      ) {
+        throw new Error(SESSION_ROTATION_CHANGED_ERROR_REASON);
+      }
       throw new Error(archivedError);
     }
     if (!commitOutcome) {
@@ -435,6 +449,11 @@ export async function admitChatSend(params: {
     if (err instanceof Error && err.message === ACTIVE_LEAF_CHANGED_ERROR_REASON) {
       respondChatActiveLeafChanged(respond);
       return { ok: false as const };
+    }
+    if (err instanceof Error && err.message === SESSION_ROTATION_CHANGED_ERROR_REASON) {
+      // Mid-queue capture across an epoch boundary: the orchestrator re-resolves
+      // the current epoch once and re-admits on the new key (no response yet).
+      return { ok: false as const, retryAfterRotation: true as const };
     }
     respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
     return { ok: false as const };

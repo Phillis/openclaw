@@ -90,6 +90,16 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
     'Per-agent sessions-directory disk budget (for example `500mb`). Defaults to `10gb`; when exceeded, warn mode reports pressure and enforce mode performs oldest-first cleanup (archived transcripts before live sessions). Set `false`, `0`, or `"0"` to disable.',
   "session.maintenance.highWaterBytes":
     "Target size after disk-budget cleanup (high-water mark). Defaults to 80% of maxDiskBytes; set explicitly for tighter reclaim behavior on constrained disks. A value that resolves to zero falls back to the default; negative values are invalid. Disable the budget with maxDiskBytes instead.",
+  "session.rotation":
+    "Bounded-channel controls that rotate long-lived channel-peer conversation sessions and cap shared-main context. When a trigger is configured, the current channel session is archived (rotation, lossless) and a fresh `:rK` session starts; `agent:<id>:main` is protected and instead applies the ceiling. Omit this block for today's unbounded session behavior.",
+  "session.rotation.maxTurns":
+    "Rotate a channel-peer session after this many turns (admission-bumped). The old session is archived by rotation and new turns route to `base:rK`; e.g. 120 keeps admission in the `fits` majority.",
+  "session.rotation.maxAgeHours":
+    "Rotate a channel-peer session once it is older than this many hours since the base session started, bounding total conversation lifetime across epochs.",
+  "session.rotation.ceilingTokens":
+    "Hard token ceiling for long-lived sessions that cannot rotate (e.g. `agent:<id>:main`). When the estimated context reaches this, admission forces a compaction cycle instead of riding the window; fail open if compaction is unavailable. Leave unset for engine-driven behavior only.",
+  "session.rotation.progressFloorTokens":
+    "Target context size below the ceiling that a forced ceiling compaction settles toward. Leave unset to use the provider/engine default floor.",
   cron: "Global scheduler settings for stored automations, run concurrency, delivery fallback, and run-session retention. Keep defaults unless you are scaling automation volume or integrating external webhook receivers.",
   "cron.enabled":
     "Enables automation execution for stored schedules managed by the gateway. Keep enabled for normal reminder/automation flows, and disable only to pause all automation execution without deleting jobs.",

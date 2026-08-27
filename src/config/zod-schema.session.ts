@@ -74,6 +74,15 @@ export const SessionSchema = z
       })
       .strict()
       .optional(),
+    rotation: z
+      .object({
+        maxTurns: z.number().int().positive().optional(),
+        maxAgeHours: z.number().positive().optional(),
+        ceilingTokens: z.number().positive().optional(),
+        progressFloorTokens: z.number().positive().optional(),
+      })
+      .strict()
+      .optional(),
     sharing: z
       .object({
         readOnly: z.boolean().optional(),

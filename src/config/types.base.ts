@@ -242,6 +242,20 @@ export type SessionConfig = {
   sharing?: SessionSharingConfig;
   /** Automatic session store maintenance (pruning, capping, archive retention, disk budget). */
   maintenance?: SessionMaintenanceConfig;
+  /** Bounded channel-session rotation and shared-main ceiling. Absent → feature off. */
+  rotation?: SessionRotationConfig;
+};
+
+/** Bounded channel-peer rotation and context-ceiling triggers (absent → off). */
+export type SessionRotationConfig = {
+  /** Rotate a channel-peer session after this many admission-bumped turns. */
+  maxTurns?: number;
+  /** Rotate a channel-peer session after this many hours since the base session started. */
+  maxAgeHours?: number;
+  /** Hard token ceiling for non-rotatable (protected/main) sessions forcing compaction. */
+  ceilingTokens?: number;
+  /** Target context size below the ceiling a forced ceiling compaction settles toward. */
+  progressFloorTokens?: number;
 };
 
 export type SessionMaintenanceMode = "enforce" | "warn";

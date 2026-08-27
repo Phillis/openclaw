@@ -286,6 +286,12 @@ export type RestartRecoveryRun = {
   lifecycleGeneration: string;
 };
 
+/** Actor marking a session archived by the admission-path session rotation. */
+export type SessionRotationArchiveActor = {
+  type: "rotation";
+  id?: string;
+};
+
 type SessionEntryCore = SessionRestartRecoveryState &
   SessionEntryProvenance &
   Pick<SessionRow, "permissionMode" | "sessionRoot"> & {
@@ -327,8 +333,12 @@ type SessionEntryCore = SessionRestartRecoveryState &
     // codex plugin seam when exchanging thread metadata.
     /** Timestamp (ms) when the session was archived from active session lists. */
     archivedAt?: number;
-    /** Actor that archived the session; cleared when the session is restored. */
-    archivedBy?: SessionCreatedActor;
+    /**
+     * Actor that archived the session (human/agent/system for operator/engine
+     * archives, or type "rotation" for the admission-path rotation). Cleared
+     * when the session is restored.
+     */
+    archivedBy?: SessionCreatedActor | SessionRotationArchiveActor;
     /** Timestamp (ms) when the session was pinned for quick access. */
     pinnedAt?: number;
     /** Timestamp (ms) when an operator client last marked the session read. */
@@ -420,6 +430,15 @@ type SessionEntryCore = SessionRestartRecoveryState &
     usageFamilySessionIds?: string[];
     /** Timestamp (ms) of the last user/channel interaction that should extend idle lifetime. */
     lastInteractionAt?: number;
+    /**
+     * Active rotation epoch of a rotated peer session (`base`=0, `base:r1`=1, ...).
+     * Written by the core admission-triggered rotation; absent for non-rotated sessions.
+     */
+    rotationEpoch?: number;
+    /** Turns served within the current rotation epoch (admission-bumped). */
+    rotationTurnCount?: number;
+    /** Timestamp (ms) when the session rotated to the next epoch key. */
+    lastRotationAt?: number;
     /** Stable first-run start time for subagent sessions, persisted after completion. */
     startedAt?: number;
     /** Latest completed run end time for subagent sessions, persisted after completion. */

@@ -1,10 +1,72 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
+import type { SessionRotationConfig } from "../../config/types.base.js";
+import {
+  isRotationEligibleSessionKey,
+  isRotationEnabled,
+  parseRotatedSessionKey,
+  resolveSessionCeilingEstimate,
+  resolveSessionRotationAdmissionTarget,
+  resolveSessionRotationRetryTarget,
+  runSessionCeilingCycle,
+  type RotationStoreScope,
+} from "../../sessions/session-rotation.js";
 import { admitChatSend } from "./chat-send-admission.js";
 import { runChatSendPreAdmission } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
-import { prepareChatSendSession } from "./chat-send-session.js";
+import { prepareChatSendSession, type PreparedChatSendSession } from "./chat-send-session.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
+
+/** Single bounded re-resolve for a message captured across an epoch boundary. */
+const ROTATION_RETRY_LIMIT = 1;
+
+function resolveRotationStoreScope(session: PreparedChatSendSession): RotationStoreScope {
+  return {
+    agentId: session.agentId,
+    env: process.env,
+    storePath: session.storePath,
+  };
+}
+
+/**
+ * Admission-path rotation + ceiling for one inbound chat.send. Runs once per
+ * request (before the normal prepare/admit) on the freshly-prepared session:
+ * - Ceiling (fail-open) applies to non-rotatable long-lived (main) sessions.
+ * - Rotation applies to rotation-eligible channel-peer sessions.
+ * Returns the request session key the admission should target. If it differs
+ * from `requestSessionKey`, the caller re-prepares on the new epoch key.
+ */
+async function resolveChatSendRotationTarget(params: {
+  session: PreparedChatSendSession;
+  rotation: SessionRotationConfig | undefined;
+  mainKey?: string;
+}): Promise<string> {
+  const { session } = params;
+  const rotation = params.rotation;
+  const requestSessionKey = session.sessionKey;
+  if (!rotation) {
+    return requestSessionKey;
+  }
+  const eligible = isRotationEligibleSessionKey(requestSessionKey, { mainKey: params.mainKey });
+  if (!eligible && rotation.ceilingTokens !== undefined) {
+    await runSessionCeilingCycle({
+      scope: resolveRotationStoreScope(session),
+      sessionKey: requestSessionKey,
+      rotation,
+      estimatedTokens: resolveSessionCeilingEstimate(session.entry),
+    });
+  }
+  if (!isRotationEnabled(rotation) || !eligible) {
+    return requestSessionKey;
+  }
+  const admission = await resolveSessionRotationAdmissionTarget({
+    scope: resolveRotationStoreScope(session),
+    sessionKey: requestSessionKey,
+    rotation,
+    mainKey: params.mainKey,
+  });
+  return admission.sessionKey;
+}
 
 /** Normalize, prepare, and exclusively admit one new chat.send request. */
 export async function prepareAndAdmitChatSend(
@@ -38,41 +100,99 @@ export async function prepareAndAdmitChatSend(
     );
     return undefined;
   }
-  const preparedSession = prepareChatSendSession({
-    request: normalizedRequest.value,
-    context,
-    client,
-  });
-  if (!preparedSession.ok) {
-    respond(
-      false,
-      undefined,
-      typeof preparedSession.error === "string"
-        ? errorShape(ErrorCodes.INVALID_REQUEST, preparedSession.error)
-        : preparedSession.error,
-    );
+  const { value: request } = normalizedRequest;
+  const runtimeConfig = context.getRuntimeConfig?.();
+  const rotationConfig = runtimeConfig?.session?.rotation;
+  const mainKey = runtimeConfig?.session?.mainKey;
+
+  // Rotation/ceiling resolve exactly once per inbound request. A target-key
+  // change (epoch advance) re-prepares and re-admits the same request on the new
+  // key; a mid-queue archived rejection re-resolves the newest epoch once.
+  let rotationResolved = false;
+  let rotationRetriesRemaining = ROTATION_RETRY_LIMIT;
+
+  while (true) {
+    if (!rotationResolved) {
+      rotationResolved = true;
+      const preparedRotation = prepareChatSendSession({ request, context, client });
+      if (!preparedRotation.ok) {
+        respond(
+          false,
+          undefined,
+          typeof preparedRotation.error === "string"
+            ? errorShape(ErrorCodes.INVALID_REQUEST, preparedRotation.error)
+            : preparedRotation.error,
+        );
+        return undefined;
+      }
+      const targetSessionKey = await resolveChatSendRotationTarget({
+        session: preparedRotation.value,
+        rotation: rotationConfig,
+        mainKey,
+      });
+      if (targetSessionKey !== request.p.sessionKey) {
+        request.p.sessionKey = targetSessionKey;
+        continue;
+      }
+    }
+
+    const preparedSession = prepareChatSendSession({ request, context, client });
+    if (!preparedSession.ok) {
+      respond(
+        false,
+        undefined,
+        typeof preparedSession.error === "string"
+          ? errorShape(ErrorCodes.INVALID_REQUEST, preparedSession.error)
+          : preparedSession.error,
+      );
+      return undefined;
+    }
+    const shouldAdmit = await runChatSendPreAdmission({
+      request,
+      session: preparedSession.value,
+      respond,
+      context,
+      client,
+    });
+    if (!shouldAdmit) {
+      return undefined;
+    }
+    const admitted = await admitChatSend({
+      request,
+      session: preparedSession.value,
+      respond,
+      context,
+      client,
+      onAdmissionOwned,
+    });
+    if (admitted?.ok) {
+      return { normalizedRequest, preparedSession, admitted };
+    }
+    if (
+      admitted &&
+      "retryAfterRotation" in admitted &&
+      admitted.retryAfterRotation &&
+      rotationRetriesRemaining > 0
+    ) {
+      rotationRetriesRemaining -= 1;
+      const baseKey = parseRotatedSessionKey(request.p.sessionKey)?.baseKey ?? request.p.sessionKey;
+      const retryTarget = resolveSessionRotationRetryTarget(
+        resolveRotationStoreScope(preparedSession.value),
+        baseKey,
+      );
+      if (retryTarget.targetKey !== request.p.sessionKey) {
+        request.p.sessionKey = retryTarget.targetKey;
+        rotationResolved = true;
+        continue;
+      }
+      // Already on the newest epoch: surface a typed refusal instead of looping.
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "session rotated while starting work"),
+      );
+      return undefined;
+    }
     return undefined;
   }
-  const shouldAdmit = await runChatSendPreAdmission({
-    request: normalizedRequest.value,
-    session: preparedSession.value,
-    respond,
-    context,
-    client,
-  });
-  if (!shouldAdmit) {
-    return undefined;
-  }
-  const admitted = await admitChatSend({
-    request: normalizedRequest.value,
-    session: preparedSession.value,
-    respond,
-    context,
-    client,
-    onAdmissionOwned,
-  });
-  if (!admitted.ok) {
-    return undefined;
-  }
-  return { normalizedRequest, preparedSession, admitted };
 }
