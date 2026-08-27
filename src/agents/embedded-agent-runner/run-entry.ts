@@ -1,5 +1,10 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngineHostSupport } from "../../context-engine/host-compat.js";
+import {
+  recordUsageLedger,
+  resolveUsageLedgerTurnClass,
+  startUsageLedger,
+} from "../../infra/usage-ledger.js";
 import { requireActivePluginRegistry } from "../../plugins/runtime.js";
 import { buildAgentRunTerminalOutcome } from "../agent-run-terminal-outcome.js";
 import { normalizeAgentRunTerminalReceipt } from "../agent-run-terminal-receipt.js";
@@ -28,6 +33,7 @@ import type {
 } from "../model-fallback.types.js";
 import type { ModelManifestNormalizationContext } from "../model-ref-shared.js";
 import { resolveAgentRunAbortLifecycleFields } from "../run-termination.js";
+import type { NormalizedUsage } from "../usage.js";
 import {
   classifyEmbeddedAgentRunResultForModelFallback,
   mergeEmbeddedAgentRunResultForModelFallbackExhaustion,
@@ -329,6 +335,23 @@ function buildTerminal(params: {
   return { outcome, metadata };
 }
 
+/** Resolves the winning provider ref from agentMeta, falling back to the settled candidate. */
+function resolveReportedProvider(params: {
+  agentMeta: Record<string, unknown> | undefined;
+  fallback: string;
+}): string {
+  const raw = params.agentMeta?.provider;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : params.fallback;
+}
+
+function resolveReportedModel(params: {
+  agentMeta: Record<string, unknown> | undefined;
+  fallback: string;
+}): string {
+  const raw = params.agentMeta?.model;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : params.fallback;
+}
+
 /** Runs one logical turn across model candidates and advances only the accepted winner. */
 export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
   params: EmbeddedAgentRunEntryParams<T>,
@@ -586,6 +609,30 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
         });
       }
     };
+    // Settle the usage accounting ledger at the single point where the run's
+    // final provider/model + accumulated usage + agent/session identity all
+    // converge. Defensive: a ledger fault must never affect run behavior.
+    try {
+      startUsageLedger();
+      const agentMeta = (result.meta as { agentMeta?: Record<string, unknown> }).agentMeta;
+      recordUsageLedger({
+        provider: resolveReportedProvider({
+          agentMeta,
+          fallback: settledResult.provider,
+        }),
+        model: resolveReportedModel({
+          agentMeta,
+          fallback: settledResult.model,
+        }),
+        agentId: params.identity.agentId,
+        turnClass: resolveUsageLedgerTurnClass(
+          params.harness.sessionKey ?? params.identity.sessionKey ?? params.identity.sessionId,
+        ),
+        usage: agentMeta?.usage as NormalizedUsage | undefined,
+      });
+    } catch {
+      // non-blocking
+    }
     return { ...settledResult, terminal, settleSessionOverride };
   } finally {
     if (unsettledContextEngineTurnAttempt) {

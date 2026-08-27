@@ -11,6 +11,7 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { loadSessionLogs, loadSessionUsageTimeSeries } from "../../infra/session-cost-usage.js";
+import { snapshotUsageLedger } from "../../infra/usage-ledger.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { createUsageAggregateAccumulator } from "../../shared/usage-aggregates.js";
 import type {
@@ -124,6 +125,12 @@ export const usageHandlers: GatewayRequestHandlers = {
       coldRead,
     });
     respond(true, summary, undefined);
+  },
+  "usage.ledger": async ({ respond }) => {
+    // Read-only snapshot of the in-process usage accounting ledger (see
+    // src/infra/usage-ledger.ts). Returning the detached rollup directly keeps
+    // this handler free of file/session I/O.
+    respond(true, snapshotUsageLedger(), undefined);
   },
   "usage.cost": async ({ respond, params, context, client }) => {
     const dateRange = resolveUsageDateRangeOrRespond(params ?? {}, respond);

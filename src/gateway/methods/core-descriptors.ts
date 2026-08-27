@@ -94,6 +94,7 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["status", "health", "operator.read", "<=2026.7"],
   ["usage.status", "usage", "operator.read", "<=2026.7"],
   ["usage.cost", "usage", "operator.read", "<=2026.7"],
+  ["usage.ledger", "usage", "operator.read", "<=2026.7", { advertise: false }],
   ["tts.status", "tts", "operator.read", "<=2026.7"],
   ["tts.providers", "tts", "operator.read", "<=2026.7"],
   ["tts.personas", "tts", "operator.read", "<=2026.7"],

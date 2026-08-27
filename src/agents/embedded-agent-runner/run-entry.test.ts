@@ -937,4 +937,67 @@ describe("runEmbeddedAgentEntry", () => {
       terminalDisposition: expected.disposition === "visible" ? "visible" : "not-visible",
     });
   });
+
+  it("records the settled run into the usage accounting ledger by provider x model x agent x turn class", async () => {
+    const { resetUsageLedgerForTest, snapshotUsageLedger } =
+      await import("../../infra/usage-ledger.js");
+    const ledgerTestApi = {
+      reset: resetUsageLedgerForTest,
+      snapshot: snapshotUsageLedger,
+      record: (await import("../../infra/usage-ledger.js")).recordUsageLedger,
+    };
+    ledgerTestApi.reset();
+    try {
+      const { runEmbeddedAgentEntry } = await import("./run-entry.js");
+      await runEmbeddedAgentEntry({
+        selection: { cfg: {}, provider: "primary-provider", model: "primary-model" },
+        identity: {
+          runId: "ledger-run",
+          agentId: "qa-agent",
+          sessionId: "session-1",
+          sessionKey: "agent:qa-agent:cron:nightly:run:r1",
+        },
+        harness: {
+          workspaceDir: "/tmp/workspace",
+          preparation: { kind: "direct" },
+          resolveRuntimeOverride: () => undefined,
+        },
+        behavior: { kind: "command-rpc", hasCommittedSideEffect: () => false },
+        sessionOverride: { kind: "preserve" },
+        runCandidate: async (provider, model, options) =>
+          ({
+            payloads: options?.isFinalFallbackAttempt ? [{ text: "done" }] : [],
+            meta: {
+              durationMs: 10,
+              aborted: false,
+              providerStarted: true,
+              stopReason: "completed",
+              agentHarnessResultClassification: options?.isFinalFallbackAttempt
+                ? undefined
+                : "empty",
+              agentMeta: {
+                sessionId: "session-1",
+                provider,
+                model,
+                usage: { input: 40, output: 12, cacheRead: 8, total: 60 },
+              },
+            },
+          }) as EmbeddedAgentRunResult,
+      });
+      const entries = ledgerTestApi.snapshot().filter((e) => e.model === "fallback-model");
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        provider: "fallback-provider",
+        model: "fallback-model",
+        agentId: "qa-agent",
+        turnClass: "cron",
+        calls: 1,
+        inputTokens: 40,
+        outputTokens: 12,
+        cacheReadTokens: 8,
+      });
+    } finally {
+      ledgerTestApi.reset();
+    }
+  });
 });

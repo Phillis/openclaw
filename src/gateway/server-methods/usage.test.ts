@@ -4,7 +4,7 @@
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import { expectDefined } from "@openclaw/normalization-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
@@ -56,7 +56,55 @@ import {
   discoverAllSessions,
   loadCostUsageSummaryFromCache,
 } from "../../infra/session-cost-usage.js";
+import { recordUsageLedger, resetUsageLedgerForTest } from "../../infra/usage-ledger.js";
 import { testApi, usageHandlers } from "./usage.js";
+
+describe("usage.ledger", () => {
+  beforeEach(() => resetUsageLedgerForTest());
+  afterEach(() => resetUsageLedgerForTest());
+
+  it("returns the in-process rollup snapshot read-only", async () => {
+    recordUsageLedger({
+      provider: "anthropic",
+      model: "claude-opus",
+      agentId: "dev",
+      turnClass: "cron",
+      usage: { input: 11, output: 4, total: 15 },
+    });
+    const respond = vi.fn();
+    await expectDefined(
+      usageHandlers["usage.ledger"],
+      'usageHandlers["usage.ledger"] test invariant',
+    )({ respond } as unknown as Parameters<(typeof usageHandlers)["usage.ledger"]>[0]);
+    expect(respond).toHaveBeenCalledTimes(1);
+    const [ok, payload] = expectDefined(
+      respond.mock.calls[0],
+      "respond.mock.calls[0] test invariant",
+    );
+    expect(ok).toBe(true);
+    expect(payload).toEqual([
+      expect.objectContaining({
+        provider: "anthropic",
+        model: "claude-opus",
+        agentId: "dev",
+        turnClass: "cron",
+        calls: 1,
+        inputTokens: 11,
+        outputTokens: 4,
+        totalTokens: 15,
+      }),
+    ]);
+  });
+
+  it("returns an empty list when nothing is tracked", async () => {
+    const respond = vi.fn();
+    await expectDefined(
+      usageHandlers["usage.ledger"],
+      'usageHandlers["usage.ledger"] test invariant',
+    )({ respond } as unknown as Parameters<(typeof usageHandlers)["usage.ledger"]>[0]);
+    expect(respond).toHaveBeenCalledWith(true, [], undefined);
+  });
+});
 
 describe("gateway usage helpers", () => {
   const dayMs = 24 * 60 * 60 * 1000;
