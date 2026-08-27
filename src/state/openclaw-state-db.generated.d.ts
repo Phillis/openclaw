@@ -725,6 +725,14 @@ export interface GithubPublicationRequests {
   worktree_id: string;
 }
 
+export interface LoopGovernorTurnCounts {
+  agent_id: string;
+  alerted: Generated<number>;
+  hour_bucket: number;
+  turn_count: Generated<number>;
+  updated_at_ms: number;
+}
+
 export interface MacosPortGuardianRecords {
   command: string;
   mode: string;
@@ -1563,6 +1571,7 @@ export interface DB {
   gateway_restart_intent: GatewayRestartIntent;
   gateway_restart_sentinel: GatewayRestartSentinel;
   github_publication_requests: GithubPublicationRequests;
+  loop_governor_turn_counts: LoopGovernorTurnCounts;
   macos_port_guardian_records: MacosPortGuardianRecords;
   managed_outgoing_image_records: ManagedOutgoingImageRecords;
   mcp_oauth_pending_authorizations: McpOauthPendingAuthorizations;

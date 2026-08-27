@@ -25,10 +25,37 @@ const AgentEntryConfigSchema = z.preprocess(
   AgentEntrySchema.omit({ id: true }).extend({ default: z.boolean().optional() }),
 );
 
+const LoopGovernorAlertChannelSchema = z
+  .strictObject({
+    channel: z.string().min(1),
+    to: z.string().min(1),
+    accountId: z.string().optional(),
+    threadId: z.union([z.string(), z.number()]).optional(),
+  })
+  .optional();
+
+const LoopGovernorSchema = z
+  .strictObject({
+    agents: z.array(z.string().min(1)),
+    maxTurnsPerHour: z.number().int().min(1),
+    alertChannel: LoopGovernorAlertChannelSchema,
+  })
+  .superRefine((value, ctx) => {
+    if (value.agents.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["agents"],
+        message: "agents.loopGovernor.agents must list at least one agent id",
+      });
+    }
+  })
+  .optional();
+
 export const AgentsSchema = z
   .object({
     ownership: z.literal("explicit").optional(),
     defaults: z.lazy(() => AgentDefaultsSchema).optional(),
+    loopGovernor: LoopGovernorSchema,
     entries: z
       .record(
         z.string().regex(/^[a-z0-9_][a-z0-9_-]{0,63}$/i, "Invalid agent id"),

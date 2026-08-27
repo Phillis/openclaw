@@ -7,6 +7,7 @@ import {
 } from "../process/gateway-work-admission.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { runQueuedStoreWrite, type StoreWriterQueue } from "../shared/store-writer-queue.js";
+import { agentIdFromSessionKey, checkLoopGovernorAdmission } from "./loop-governor.js";
 import { decodeSessionIdentity, normalizeSessionIdentities } from "./session-lifecycle-identity.js";
 import {
   clearSessionWorkAdmissionHandoffs,
@@ -27,6 +28,16 @@ type SessionWorkAdmission = HandoffSessionWorkAdmission & {
   released: Promise<void>;
 };
 
+/** Pick the first agent-scoped session key from the admission identities, if any. */
+function pickAgentSessionKey(identities: readonly string[]): string | undefined {
+  for (const identity of identities) {
+    const raw = decodeSessionIdentity(identity)?.identity ?? identity;
+    if (raw && agentIdFromSessionKey(raw)) {
+      return raw;
+    }
+  }
+  return undefined;
+}
 type SessionLifecycleAdmissionState = {
   lifecycleQueues: Map<string, StoreWriterQueue>;
   mutationQueues: Map<string, StoreWriterQueue>;
@@ -458,6 +469,14 @@ export async function beginSessionWorkAdmission(params: {
       // Recheck immediately before registration to close that admission race.
       if (isGatewaySubordinateWorkAdmissionClosed()) {
         throw new GatewayDrainingError();
+      }
+      // Loop governor: cap non-interactive turns for governed agents. Only the
+      // outermost admission of a turn is counted; nested tool/session ops run
+      // under an existing admission and must never consume governor budget.
+      const currentTurnAdmissions = CURRENT_SESSION_WORK_ADMISSIONS.getStore();
+      if (!currentTurnAdmissions || currentTurnAdmissions.size === 0) {
+        const agentSessionKey = pickAgentSessionKey(identities);
+        checkLoopGovernorAdmission({ sessionKey: agentSessionKey });
       }
       let resolveReleased = () => {};
       const admission: SessionWorkAdmission = {

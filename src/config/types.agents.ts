@@ -171,10 +171,33 @@ export type AgentConfig = {
 
 export type AgentEntryConfig = Omit<AgentConfig, "id">;
 
+export type LoopGovernorAlertChannel = {
+  channel: string;
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+};
+
+export type LoopGovernorConfig = {
+  /** Agent ids governed by the loop budget; only non-interactive turns count. */
+  agents: string[];
+  /** Max non-interactive admissions per agent per UTC hour before parking. */
+  maxTurnsPerHour: number;
+  /** Optional alert delivery target for the once-per-breach-hour notification. */
+  alertChannel?: LoopGovernorAlertChannel;
+};
+
 export type AgentsConfig = {
   ownership?: "explicit";
   defaults?: AgentDefaultsConfig;
   entries?: Record<string, AgentEntryConfig>;
+  /**
+   * Per-agent non-interactive run governor. When present, non-interactive
+   * turns (cron:/subagent:/incognito: shapes) for the listed agents are
+   * capped at maxTurnsPerHour per UTC hour. Interactive DM turns are never
+   * governed. Absent => feature off.
+   */
+  loopGovernor?: LoopGovernorConfig;
   /** Internal non-serialized projection materialized by validation for ID-based runtime code. */
   list?: AgentConfig[];
 };
