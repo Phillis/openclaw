@@ -144,7 +144,24 @@ export function createTerminalTool(opts: TerminalToolOptions = {}): AnyAgentTool
         return jsonResult({ sessions: manager.listAgent(owner) });
       }
 
-      const sessionId = readToolStringParam(params, "sessionId", { required: true });
+      // Session-scoped actions need an opaque terminal session id. An
+      // interactive caller obtains it from action=list; a code-mode exec guest
+      // often cannot. Fall back to the caller's own single agent-owned session
+      // and only demand the param when ownership is genuinely ambiguous —
+      // with a corrective hint.
+      const explicitSessionId = readToolStringParam(params, "sessionId");
+      let sessionId = explicitSessionId;
+      if (!sessionId) {
+        const owned = manager.listAgent(owner);
+        if (owned.length === 1) {
+          sessionId = owned[0]?.sessionId;
+        }
+      }
+      if (!sessionId) {
+        throw new ToolInputError(
+          `sessionId required. Use action=list to find the terminal session id (owner ${owner.agentSessionKey}).`,
+        );
+      }
       if (action === "read") {
         const raw = manager.snapshotAgent(owner, sessionId);
         if (raw === undefined) {
