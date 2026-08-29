@@ -108,23 +108,6 @@ export function codeModeMutationProvenance(
     : undefined;
 }
 
-/**
- * Mutation provenance for one finished Code Mode run's failure details.
- * `"pre-mutation"` only when at least one tracked mutating dispatch settled
- * with an exact typed pre-mutation marker AND no uncertain mutating dispatch
- * remains (every pre-mutation settle decrements the count, so a non-zero
- * count means an unaccounted possibly-mutating outcome). Any other shape -
- * unknown-outcome failures, unsettled dispatches, plain host failures -
- * yields `undefined`, which every consumer treats exactly like unknown.
- */
-export function codeModeMutationProvenance(
-  state: CodeModeBridgeDispatchState,
-): "pre-mutation" | undefined {
-  return state.preMutationFailures > 0 && state.potentiallyMutatingDispatches === 0
-    ? "pre-mutation"
-    : undefined;
-}
-
 // One unreferenced timer owns parked snapshots even when no later exec or wait
 // arrives; otherwise expired runs keep their VM bytes and live tool calls.
 function scheduleActiveRunExpiry(): void {

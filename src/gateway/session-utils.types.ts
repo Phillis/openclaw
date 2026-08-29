@@ -120,7 +120,9 @@ export type GatewaySessionRow = {
   updatedAt: number | null;
   archived?: boolean;
   archivedAt?: number;
-  archivedBy?: SessionEntry["archivedBy"];
+  // The row surface never carries a rotation archive actor: rotation archives
+  // project archivedBy as absent (see resolveRowArchivedBy in session-utils-row).
+  archivedBy?: Exclude<SessionEntry["archivedBy"], { type: "rotation" }>;
   pinned?: boolean;
   pinnedAt?: number;
   unread?: boolean;
