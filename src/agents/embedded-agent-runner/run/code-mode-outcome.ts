@@ -64,6 +64,15 @@ export function installCodeModeOutcomeHook(params: {
       isCodeModeExec &&
       context.assistantMessage.content.filter((entry) => entry.type === "toolCall").length === 1
     ) {
+      // A typed pre-mutation failure (details marker set by the bridge settle
+      // path) provably settled before any guest command was derived, so the
+      // mutation outcome is fully known: continue the turn ordinarily with no
+      // read-only reconciliation candidate and no restricted retry. Any other
+      // value - missing, "unknown", "post-mutation", non-string - keeps the
+      // conservative default below.
+      if (details?.mutationProvenance === "pre-mutation") {
+        return prior;
+      }
       params.onReconciliationCandidate?.();
     }
 

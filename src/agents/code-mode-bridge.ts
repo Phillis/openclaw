@@ -613,6 +613,15 @@ export async function runBridgeRequest(params: {
       ok: false,
       error: bounded.error,
     };
+    // A trusted plugin failure can carry an exact typed provenance marker
+    // (e.g. a Handoff v2 pre-mutation rejection). Copy only the exact
+    // `"pre-mutation"` value off the caught error object; every other value
+    // stays absent so uncertain outcomes keep the conservative default.
+    const provenance = (error as { mutationProvenance?: unknown } | null | undefined)
+      ?.mutationProvenance;
+    if (provenance === "pre-mutation") {
+      settled.mutationProvenance = "pre-mutation";
+    }
     const trustedNoStart = consumeTrustedToolNoStartError(error);
     if (trustedNoStart) {
       registerTrustedToolNoStartError(settled);

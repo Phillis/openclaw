@@ -35,6 +35,7 @@ import {
   cancelPendingBridgeStates,
   cancelPendingBridgeStatesById,
   codeModeAbortedResult,
+  codeModeMutationProvenance,
   codeModeWaitingReason,
   createCodeModeBridgeDispatchState,
   createPendingBridgeStates,
@@ -560,6 +561,17 @@ async function settleCodeModeResult(params: {
     replaySafe: params.replaySafe,
     telemetry: telemetry(params.runtime),
   };
+  if (finalized.status === "failed") {
+    // Typed pre-mutation provenance lands in the failure details only when
+    // every tracked mutating dispatch is accounted for and at least one
+    // settled with exact provenance; the outcome hook consumes this marker
+    // to keep an ordinary typed rejection out of the uncertain-mutation
+    // reconciliation path. All other failures stay marker-free (unknown).
+    const mutationProvenance = codeModeMutationProvenance(params.bridgeDispatch);
+    if (mutationProvenance) {
+      finalized.mutationProvenance = mutationProvenance;
+    }
+  }
   if (finalized.status === "failed" && isCodeModeBridgeRepairEligible(params.bridgeDispatch)) {
     registerRepairableCodeModeFailure(finalized);
   }

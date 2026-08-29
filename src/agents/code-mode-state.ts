@@ -28,6 +28,10 @@ import { ToolInputError } from "./tools/common.js";
 export type CodeModeBridgeDispatchState = {
   started: boolean;
   operations: Map<string, "pending" | ToolEffectReceipt["state"]>;
+  // Tracked mutating dispatches whose failure settled with an exact typed
+  // `"pre-mutation"` provenance marker: the tool provably failed before any
+  // command was derived or journaled, so the outcome is fully known.
+  preMutationFailures: number;
 };
 
 export type PendingBridgeState = PendingBridgeRequest & {
@@ -72,7 +76,7 @@ let nextPendingBridgeSettlementSequence = 0;
 let activeRunExpiryTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function createCodeModeBridgeDispatchState(): CodeModeBridgeDispatchState {
-  return { started: false, operations: new Map() };
+  return { started: false, operations: new Map(), preMutationFailures: 0 };
 }
 
 /** Read the host-only side-effect classification for one Code Mode run. */
@@ -84,6 +88,41 @@ export function isCodeModeBridgeRepairEligible(state: CodeModeBridgeDispatchStat
       (effect) => effect !== "pending" && toolEffectStateProvesNoEffect(effect),
     )
   );
+}
+
+/**
+ * Mutation provenance for one finished Code Mode run's failure details.
+ * `"pre-mutation"` only when at least one tracked mutating dispatch settled
+ * with an exact typed pre-mutation marker AND no uncertain mutating dispatch
+ * remains (every pre-mutation settle is classified as a proved no-effect
+ * operation, so any other state means an unaccounted possibly-mutating
+ * outcome). Any other shape - unknown-outcome failures, unsettled dispatches,
+ * plain host failures - yields `undefined`, which every consumer treats
+ * exactly like unknown.
+ */
+export function codeModeMutationProvenance(
+  state: CodeModeBridgeDispatchState,
+): "pre-mutation" | undefined {
+  return state.preMutationFailures > 0 && isCodeModeBridgeRepairEligible(state)
+    ? "pre-mutation"
+    : undefined;
+}
+
+/**
+ * Mutation provenance for one finished Code Mode run's failure details.
+ * `"pre-mutation"` only when at least one tracked mutating dispatch settled
+ * with an exact typed pre-mutation marker AND no uncertain mutating dispatch
+ * remains (every pre-mutation settle decrements the count, so a non-zero
+ * count means an unaccounted possibly-mutating outcome). Any other shape -
+ * unknown-outcome failures, unsettled dispatches, plain host failures -
+ * yields `undefined`, which every consumer treats exactly like unknown.
+ */
+export function codeModeMutationProvenance(
+  state: CodeModeBridgeDispatchState,
+): "pre-mutation" | undefined {
+  return state.preMutationFailures > 0 && state.potentiallyMutatingDispatches === 0
+    ? "pre-mutation"
+    : undefined;
 }
 
 // One unreferenced timer owns parked snapshots even when no later exec or wait
@@ -419,14 +458,30 @@ export function createPendingBridgeStates(params: {
       promise: completion.then((settled) => {
         // The effect receipt owns classification; consume the predecessor marker
         // so reusing this settled object cannot preserve stale no-start authority.
-        consumeTrustedToolNoStartError(settled);
+        const trustedNoStart = consumeTrustedToolNoStartError(settled);
         const effectReceipt = consumeToolEffectReceipt(settled);
         if (tracksDispatch) {
           params.bridgeDispatch.operations.set(
             request.id,
             effectReceipt?.state ??
-              (recoverySafe ? (settled.ok ? "read_completed" : "failed_no_effect") : "uncertain"),
+              (settled.mutationProvenance === "pre-mutation"
+                ? "failed_no_effect"
+                : recoverySafe
+                  ? (settled.ok ? "read_completed" : "failed_no_effect")
+                  : "uncertain"),
           );
+        }
+        // A typed pre-mutation failure carries exact host-verified provenance:
+        // the tool settled before any command was derived, so it is no longer
+        // an uncertain mutating outcome. Retain the fact for the failure-details stamp.
+        if (
+          tracksDispatch &&
+          !recoverySafe &&
+          !trustedNoStart &&
+          settled.ok === false &&
+          settled.mutationProvenance === "pre-mutation"
+        ) {
+          params.bridgeDispatch.preMutationFailures += 1;
         }
         state.settledSequence = ++nextPendingBridgeSettlementSequence;
         state.settled = settled;

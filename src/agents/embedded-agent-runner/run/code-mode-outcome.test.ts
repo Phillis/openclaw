@@ -12,13 +12,17 @@ function createOutcome(
     repairableFailure?: boolean;
     toolName?: "exec" | "wait";
     terminal?: boolean;
+    mutationProvenance?: unknown;
   } = {},
 ): AfterToolOutcomeContext {
-  const details = {
+  const details: Record<string, unknown> = {
     status: "failed",
     error: "execution failed",
     bridgeDispatchStarted: options.bridgeStarted ?? false,
   };
+  if (options.mutationProvenance !== undefined) {
+    details.mutationProvenance = options.mutationProvenance;
+  }
   if (options.repairableFailure) {
     registerRepairableCodeModeFailure(details);
   }
@@ -94,6 +98,72 @@ describe("Code Mode outcome safety", () => {
       });
     },
   );
+
+  it("continues ordinarily when typed provenance proves the failure settled pre-mutation", async () => {
+    const priorResult = {
+      content: [{ type: "text", text: "prior" }],
+      details: { status: "failed", mutationProvenance: "pre-mutation" },
+      isError: true,
+    };
+    const previous = vi.fn(async () => priorResult);
+    const { agent, onReconciliationCandidate } = createAgent(
+      previous as unknown as Agent["afterToolOutcome"],
+    );
+
+    const result = await agent.afterToolOutcome?.(
+      createOutcome({ bridgeStarted: true, mutationProvenance: "pre-mutation" }),
+    );
+
+    expect(result).toBe(priorResult);
+    expect(result).not.toHaveProperty("terminate");
+    expect(onReconciliationCandidate).not.toHaveBeenCalled();
+  });
+
+  it("still reconciles when provenance is unknown", async () => {
+    const { agent, onReconciliationCandidate } = createAgent();
+
+    await expect(
+      agent.afterToolOutcome?.(
+        createOutcome({ bridgeStarted: true, mutationProvenance: "unknown" }),
+      ),
+    ).resolves.toMatchObject({ isError: true, terminate: true });
+    expect(onReconciliationCandidate).toHaveBeenCalledOnce();
+  });
+
+  it("still reconciles when provenance claims post-mutation", async () => {
+    const { agent, onReconciliationCandidate } = createAgent();
+
+    await expect(
+      agent.afterToolOutcome?.(
+        createOutcome({ bridgeStarted: true, mutationProvenance: "post-mutation" }),
+      ),
+    ).resolves.toMatchObject({ isError: true, terminate: true });
+    expect(onReconciliationCandidate).toHaveBeenCalledOnce();
+  });
+
+  it("treats non-string provenance as unknown", async () => {
+    const { agent, onReconciliationCandidate } = createAgent();
+
+    await expect(
+      agent.afterToolOutcome?.(createOutcome({ bridgeStarted: true, mutationProvenance: 1 })),
+    ).resolves.toMatchObject({ isError: true, terminate: true });
+    expect(onReconciliationCandidate).toHaveBeenCalledOnce();
+  });
+
+  it("keeps wait failures on the restricted-retry path even with pre-mutation provenance", async () => {
+    const { agent, onReconciliationCandidate } = createAgent();
+
+    await expect(
+      agent.afterToolOutcome?.(
+        createOutcome({
+          toolName: "wait",
+          bridgeStarted: true,
+          mutationProvenance: "pre-mutation",
+        }),
+      ),
+    ).resolves.toMatchObject({ isError: true, terminate: true });
+    expect(onReconciliationCandidate).not.toHaveBeenCalled();
+  });
 
   it("sends uncertain bridge side effects to read-only reconciliation", async () => {
     const { agent, onReconciliationCandidate } = createAgent();

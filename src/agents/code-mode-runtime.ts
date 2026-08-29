@@ -97,6 +97,14 @@ export type CodeModeWorkerResult =
       failurePhase: CodeModeFailurePhase;
       bridgeDispatchStarted: boolean;
       output: unknown[];
+      /**
+       * Host-only typed provenance for the failure: set to exactly
+       * `"pre-mutation"` by the settle path when every tracked mutating
+       * dispatch is accounted for and at least one settled with an exact
+       * typed pre-mutation marker. Absent means unknown (the conservative
+       * default); the outcome hook consumes the exact value only.
+       */
+      mutationProvenance?: "pre-mutation";
     };
 
 function normalizeCodeModeRawConfig(value: unknown): Record<string, unknown> | undefined {
