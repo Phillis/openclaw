@@ -1,2 +1,0 @@
-import { n as listTelegramDirectoryPeersFromConfig, t as listTelegramDirectoryGroupsFromConfig } from "../../directory-config-CNZKOgQ4.js";
-export { listTelegramDirectoryGroupsFromConfig, listTelegramDirectoryPeersFromConfig };

@@ -1,2 +1,0 @@
-import { a as requestTelemetryConsent, c as writeWizardConfigFile, i as readValidSetupConfigFile, n as hasQuickstartGatewayOverrides, o as requireRiskAcknowledgement, r as readSetupConfigFileSnapshot, s as resolveQuickstartGatewayDefaults, t as formatQuickstartGatewaySummary } from "./setup.shared-Bl7UavWq.js";
-export { formatQuickstartGatewaySummary, hasQuickstartGatewayOverrides, readSetupConfigFileSnapshot, readValidSetupConfigFile, requestTelemetryConsent, requireRiskAcknowledgement, resolveQuickstartGatewayDefaults, writeWizardConfigFile };

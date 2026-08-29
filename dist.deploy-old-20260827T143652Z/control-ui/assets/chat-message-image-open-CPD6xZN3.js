@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";import{i as t,n,t as r}from"./open-external-url-BlamIP_i.js";function i(e,r,i,a,o){let s=t(r,window.location.href,{allowDataImage:!0});if(!s){a?.();return}if(e){let t={src:s,title:i,...a?{release:a}:{}};o===void 0?e(t):e(t,o);return}a?.(),n(s,{allowDataImage:!0})}var a=e((()=>{r()}));export{i as n,a as t};
-//# sourceMappingURL=chat-message-image-open-CPD6xZN3.js.map

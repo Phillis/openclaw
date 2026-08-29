@@ -1,6 +1,0 @@
-import { t as createMediaProviderRegistry } from "./provider-registry-BM_oavuy.js";
-//#region src/transcripts/provider-registry.ts
-/** Transcript providers use targeted lookup to avoid broad capability discovery. */
-const { listProviders: listTranscriptSourceProviders, getProvider: getTranscriptSourceProvider } = createMediaProviderRegistry("transcriptSourceProviders", { directLookup: true });
-//#endregion
-export { listTranscriptSourceProviders as n, getTranscriptSourceProvider as t };

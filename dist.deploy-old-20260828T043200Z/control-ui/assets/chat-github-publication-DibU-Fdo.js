@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DkW27tQK.js";async function t(e,t){return await e.request(`sessions.github.publish`,{sessionKey:t.sessionKey,idempotencyKey:t.idempotencyKey})}function n(){return(n=e((()=>{})))()}n();export{t as requestGitHubPublication};
-//# sourceMappingURL=chat-github-publication-DibU-Fdo.js.map

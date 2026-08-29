@@ -1,2 +1,0 @@
-import { n as listTelegramDirectoryPeersFromConfig, t as listTelegramDirectoryGroupsFromConfig } from "../../directory-config-Cam-C44V.js";
-export { listTelegramDirectoryGroupsFromConfig, listTelegramDirectoryPeersFromConfig };

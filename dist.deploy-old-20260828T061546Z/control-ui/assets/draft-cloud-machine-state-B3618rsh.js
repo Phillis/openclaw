@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DkW27tQK.js";var t;function n(){return(n=e((()=>{t=class{constructor(){this.overrides=new Map}clear(){this.overrides.clear()}applyPending(e,t){t?this.overrides.set(e,t):this.overrides.delete(e)}resolve(e){return this.overrides.get(e)??``}select(e,t,n,r=!1,i){if(r)return!1;let a=n.find(t=>t.id===e)?.machines?.find(e=>e.id===t);return a?(a.default===!0?this.overrides.delete(e):this.overrides.set(e,a.id),i?.(),!0):!1}}})))()}export{n,t};
-//# sourceMappingURL=draft-cloud-machine-state-B3618rsh.js.map

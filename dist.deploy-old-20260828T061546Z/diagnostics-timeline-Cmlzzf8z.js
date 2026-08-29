@@ -1,2 +1,0 @@
-import { a as measureDiagnosticsTimelineSpan, i as isDiagnosticsTimelineEnabled, n as emitDiagnosticsTimelineEvent, o as measureDiagnosticsTimelineSpanSync, r as getActiveDiagnosticsTimelineSpan, t as emitCompletedDiagnosticsTimelineSpan } from "./diagnostics-timeline-DhDccUEp.js";
-export { emitCompletedDiagnosticsTimelineSpan, emitDiagnosticsTimelineEvent, getActiveDiagnosticsTimelineSpan, isDiagnosticsTimelineEnabled, measureDiagnosticsTimelineSpan, measureDiagnosticsTimelineSpanSync };

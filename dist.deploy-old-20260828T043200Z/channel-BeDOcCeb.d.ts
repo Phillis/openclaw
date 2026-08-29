@@ -1,6 +1,0 @@
-import { t as ChannelPlugin } from "./types.public-BY_aSVd6.js";
-import { t as ResolvedNostrAccount } from "./types-BDPLhhx2.js";
-//#region extensions/nostr/src/channel.d.ts
-declare const nostrPlugin: ChannelPlugin<ResolvedNostrAccount>;
-//#endregion
-export { nostrPlugin as t };

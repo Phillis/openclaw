@@ -1,7 +1,0 @@
-import { o as ModelDefinitionConfig } from "../../types.openclaw-OHssSjQn.js";
-import "../../provider-model-shared-Bps1k4-8.js";
-//#region extensions/together/models.d.ts
-declare const TOGETHER_BASE_URL: string;
-declare const TOGETHER_MODEL_CATALOG: ModelDefinitionConfig[];
-//#endregion
-export { TOGETHER_BASE_URL, TOGETHER_MODEL_CATALOG };

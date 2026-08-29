@@ -1,3 +1,0 @@
-import { _ as DEFAULT_ACCOUNT_ID, b as resolveClickClackAccount, p as clickClackConfigSchema, u as createClickClackClient, v as listClickClackAccountIds, x as resolveDefaultClickClackAccountId, y as listEnabledClickClackAccounts } from "./setup-surface-u7Mgy8Wp.js";
-import { a as setClickClackRuntime, i as getClickClackRuntime, n as buildClickClackTarget, r as parseClickClackTarget, t as clickClackPlugin } from "./channel-DbE7fnUL.js";
-export { DEFAULT_ACCOUNT_ID, buildClickClackTarget, clickClackConfigSchema, clickClackPlugin, createClickClackClient, getClickClackRuntime, listClickClackAccountIds, listEnabledClickClackAccounts, parseClickClackTarget, resolveClickClackAccount, resolveDefaultClickClackAccountId, setClickClackRuntime };

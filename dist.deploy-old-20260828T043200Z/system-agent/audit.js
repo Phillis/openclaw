@@ -1,2 +1,0 @@
-import { i as appendSystemAgentAuditEntry, n as SYSTEM_AGENT_AUDIT_SCOPE, r as SYSTEM_AGENT_AUDIT_STORE_LABEL, t as SYSTEM_AGENT_AUDIT_MAX_ENTRIES } from "../audit-C7t95Ufg.js";
-export { SYSTEM_AGENT_AUDIT_MAX_ENTRIES, SYSTEM_AGENT_AUDIT_SCOPE, SYSTEM_AGENT_AUDIT_STORE_LABEL, appendSystemAgentAuditEntry };

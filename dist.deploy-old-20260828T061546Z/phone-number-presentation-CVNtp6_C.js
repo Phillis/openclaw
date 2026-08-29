@@ -1,9 +1,0 @@
-import { t as formatInternationalPhoneNumberForDisplay } from "./phone-presentation-8hh52y45.js";
-//#region src/infra/phone-number-presentation.ts
-function formatPhoneNumberForCli(raw, options) {
-	const trimmed = raw.trim();
-	const presentation = formatInternationalPhoneNumberForDisplay(options?.allowInternationalDigits === true && /^\d{7,15}$/u.test(trimmed) ? `+${trimmed}` : raw);
-	return presentation && presentation !== raw ? `${presentation} (id: ${raw})` : raw;
-}
-//#endregion
-export { formatPhoneNumberForCli as t };

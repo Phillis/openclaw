@@ -1,2 +1,0 @@
-import { n as getChannelStreamingConfigObject, r as resolveChannelStreamingNativeTransport } from "../streaming-config-readers-B-h0E9Du.js";
-export { getChannelStreamingConfigObject, resolveChannelStreamingNativeTransport };

@@ -1,2 +1,0 @@
-import { F as ProviderAuthResult, N as ProviderAuthContext, b as OpenClawPluginApi, t as definePluginEntry } from "../../plugin-entry-DyrRrRy2.js";
-export { type OpenClawPluginApi, type ProviderAuthContext, type ProviderAuthResult, definePluginEntry };

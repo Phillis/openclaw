@@ -1,2 +1,0 @@
-import { _ as resolveOfficialExternalPluginId, m as loadConfiguredHostedOfficialExternalPluginCatalogEntries, v as resolveOfficialExternalPluginInstall, y as resolveOfficialExternalPluginLabel } from "./official-external-plugin-catalog-CDrgEY7c.js";
-export { loadConfiguredHostedOfficialExternalPluginCatalogEntries, resolveOfficialExternalPluginId, resolveOfficialExternalPluginInstall, resolveOfficialExternalPluginLabel };

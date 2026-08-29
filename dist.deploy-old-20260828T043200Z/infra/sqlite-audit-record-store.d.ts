@@ -1,2 +1,0 @@
-import { n as createSqliteAuditRecordStore, t as SequencedSqliteAuditRecordEntry } from "../sqlite-audit-record-store-BvqF3LV7.js";
-export { SequencedSqliteAuditRecordEntry, createSqliteAuditRecordStore };

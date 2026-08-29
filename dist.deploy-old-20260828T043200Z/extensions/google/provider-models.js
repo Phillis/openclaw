@@ -1,2 +1,0 @@
-import { a as resolveGoogleStaticModelId, i as resolveGoogleGeminiForwardCompatModel, n as isGoogleTextGenerationModelId, r as isModernGoogleModel, t as isGoogleNativeVideoModelId } from "../../provider-models-mmU8GWxC.js";
-export { isGoogleNativeVideoModelId, isGoogleTextGenerationModelId, isModernGoogleModel, resolveGoogleGeminiForwardCompatModel, resolveGoogleStaticModelId };

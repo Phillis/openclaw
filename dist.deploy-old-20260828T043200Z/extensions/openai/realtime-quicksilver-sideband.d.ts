@@ -1,2 +1,0 @@
-import { n as OpenAIQuicksilverSocketFactory, r as connectOpenAIQuicksilverSideband, t as OpenAIQuicksilverSocket } from "../../realtime-quicksilver-sideband-B7km5XUv.js";
-export { OpenAIQuicksilverSocket, OpenAIQuicksilverSocketFactory, connectOpenAIQuicksilverSideband };

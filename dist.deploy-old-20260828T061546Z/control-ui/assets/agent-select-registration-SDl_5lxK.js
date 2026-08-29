@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DkW27tQK.js";import{Ur as t,Wr as n}from"./control-ui-boot-BY2RxHwD.js";function r(){return(r=e((()=>{n(),customElements.get(`openclaw-agent-select`)||customElements.define(`openclaw-agent-select`,t)})))()}export{r as t};
-//# sourceMappingURL=agent-select-registration-SDl_5lxK.js.map

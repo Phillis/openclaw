@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";function t(e,t=/[\s\p{P}\p{S}]/u){if(!e)return`ltr`;for(let r of e)if(!t.test(r))return n.test(r)?`rtl`:`ltr`;return`ltr`}var n,r=e((()=>{n=/\p{Script=Hebrew}|\p{Script=Arabic}|\p{Script=Syriac}|\p{Script=Thaana}|\p{Script=Nko}|\p{Script=Samaritan}|\p{Script=Mandaic}|\p{Script=Adlam}|\p{Script=Phoenician}|\p{Script=Lydian}/u}));export{r as n,t};
-//# sourceMappingURL=text-direction-CXPaoMQD.js.map
