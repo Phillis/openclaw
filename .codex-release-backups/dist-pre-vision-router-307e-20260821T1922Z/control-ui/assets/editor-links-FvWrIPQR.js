@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";function t(e,t,n){let r=t.replaceAll(`\\`,`/`);return`${e}://file${(r.startsWith(`/`)?r:`/${r}`).split(`/`).map((e,t)=>t===1&&/^[a-z]:$/i.test(e)?e:encodeURIComponent(e)).join(`/`)}${n?`:${n}`:``}`}function n(e,n,r){return window.open(t(e,n,r))}var r,i,a=e((()=>{r=[`cursor`,`vscode`,`windsurf`,`zed`],i={cursor:`Cursor`,vscode:`VS Code`,windsurf:`Windsurf`,zed:`Zed`}}));export{n as i,i as n,a as r,r as t};
-//# sourceMappingURL=editor-links-FvWrIPQR.js.map

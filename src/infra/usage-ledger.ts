@@ -224,7 +224,7 @@ export function flushUsageLedger(
 
 /** Returns a detached snapshot of the current rollup (safe for RPC serialization). */
 export function snapshotUsageLedger(): UsageLedgerEntry[] {
-  return entriesInWriteOrder().map((e) => ({ ...e }));
+  return entriesInWriteOrder().map((e) => Object.assign({}, e));
 }
 
 /** Empties the in-memory rollup (tests, day roll-over, gateway teardown). */

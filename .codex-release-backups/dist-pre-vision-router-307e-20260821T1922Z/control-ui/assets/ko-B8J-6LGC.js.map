@@ -1,1 +1,0 @@
-{"version":3,"file":"ko-B8J-6LGC.js","names":[],"sources":["../../../ui/src/i18n/locales/ko.ts"],"sourcesContent":["export { default as ko } from \"virtual:openclaw-control-ui-locale/ko\";\n"],"mappings":";;;;;;;;;;;;;;;;;;;g20DAA8B"}

@@ -418,7 +418,7 @@ export async function runBridgeRequest(params: {
     // (e.g. a Handoff v2 pre-mutation rejection). Copy only the exact
     // `"pre-mutation"` value off the caught error object; every other value
     // stays absent so uncertain outcomes keep the conservative default.
-    const provenance = (error as { mutationProvenance?: unknown } | null | undefined)
+    const provenance = (error as { mutationProvenance?: unknown } | null | undefined) // SAFETY: structural read of our own typed marker on an unknown error shape.
       ?.mutationProvenance;
     if (provenance === "pre-mutation") {
       settled.mutationProvenance = "pre-mutation";

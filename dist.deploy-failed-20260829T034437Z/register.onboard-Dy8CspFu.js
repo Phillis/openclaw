@@ -1,2 +1,0 @@
-import { a as registerOnboardRuntimeOptions, i as registerOnboardRemoteOptions, n as registerOnboardCommand, o as resolveOnboardCommandOptions, r as registerOnboardGatewayOptions, t as registerOnboardAuthOptions } from "./register.onboard-DIDsCdLG.js";
-export { registerOnboardAuthOptions, registerOnboardCommand, registerOnboardGatewayOptions, registerOnboardRemoteOptions, registerOnboardRuntimeOptions, resolveOnboardCommandOptions };

@@ -1,1 +1,0 @@
-.agents-panel-body{gap:var(--space-3);padding:var(--space-3) var(--space-4);min-width:0;display:grid}.agents-panel-body+.agents-panel-body,.settings-kv+.agents-panel-body,.agents-panel-body+.settings-kv{border-top:1px solid color-mix(in srgb, var(--border) 60%, transparent)}.agents-main>.settings-section:not(:first-child){margin-top:var(--space-4)}

@@ -1,2 +1,0 @@
-import { n as getAgentScopedMediaLocalRootsForSources, t as getAgentScopedMediaLocalRoots } from "../local-roots-VmhVpj-x.js";
-export { getAgentScopedMediaLocalRoots, getAgentScopedMediaLocalRootsForSources };

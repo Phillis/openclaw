@@ -524,18 +524,18 @@ async function settleCodeModeResult(params: {
     replaySafe: params.replaySafe,
     telemetry: telemetry(params.runtime),
   };
-  let finalized = output.takeResult(metadata, channels, params.runtime.hasNetworkContent());
-  if (finalized.status === "failed") {
-    // Typed pre-mutation provenance lands in the failure details only when
-    // every tracked mutating dispatch is accounted for and at least one
-    // settled with exact provenance; the outcome hook consumes this marker
-    // to keep an ordinary typed rejection out of the uncertain-mutation
-    // reconciliation path. All other failures stay marker-free (unknown).
-    const mutationProvenance = codeModeMutationProvenance(params.bridgeDispatch);
-    if (mutationProvenance) {
-      finalized = { ...finalized, mutationProvenance };
-    }
-  }
+  // Typed pre-mutation provenance lands in the failure details only when
+  // every tracked mutating dispatch is accounted for and at least one
+  // settled with exact provenance; the outcome hook consumes this marker
+  // to keep an ordinary typed rejection out of the uncertain-mutation
+  // reconciliation path. All other failures stay marker-free (unknown).
+  const mutationProvenance =
+    result.status === "failed" ? codeModeMutationProvenance(params.bridgeDispatch) : undefined;
+  const finalized = output.takeResult(
+    mutationProvenance ? { ...metadata, mutationProvenance } : metadata,
+    channels,
+    params.runtime.hasNetworkContent(),
+  );
   if (finalized.status === "failed" && isCodeModeBridgeRepairEligible(params.bridgeDispatch)) {
     registerRepairableCodeModeFailure(finalized);
   }

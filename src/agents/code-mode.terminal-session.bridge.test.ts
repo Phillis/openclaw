@@ -18,11 +18,10 @@
  */
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyCodeModeCatalog, createCodeModeTools } from "./code-mode.js";
+import { applyCodeModeCatalog } from "./code-mode.js";
 import {
   createCodeModeHarness,
   resetCodeModeTestState,
-  resultDetails,
   runUntilCompleted,
   testing,
 } from "./code-mode.test-support.js";

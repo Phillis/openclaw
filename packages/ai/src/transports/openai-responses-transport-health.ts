@@ -1,7 +1,18 @@
+import type { AssistantMessage } from "@openclaw/llm-core";
 import { parseStrictFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { sleepWithAbort } from "../internal/retry-sleep.js";
+import {
+  logResponsesFailedNoDetails,
+  ResponsesStreamFailure,
+  summarizeOpenAITransportError,
+} from "./openai-responses-debug.js";
+import { isOpenAICodexResponsesModel } from "./openai-transport-params.js";
 import { log } from "./openai-transport-shared.js";
+import { failTransportStream } from "./transport-stream-shared.js";
 import { parseRetryAfterSeconds } from "./transport-utils.js";
+
+/** Minimal structural fetch shape used by the health wrapper. */
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /**
  * Transport health controls for the ChatGPT-native Responses transport
@@ -236,7 +247,7 @@ export class OpenAIResponsesConcurrencyGate {
 }
 
 function abortError(): Error {
-  return new DOMException("The operation was aborted.", "AbortError") as unknown as Error;
+  return new DOMException("The operation was aborted.", "AbortError") as unknown as Error; // SAFETY: DOMException is a valid Error subtype; cast only narrows the static type.
 }
 
 // ============================================================================
@@ -327,7 +338,7 @@ export class OpenAIResponsesCircuitBreaker {
 
   private pruneWindow(nowMs: number): void {
     const cutoff = nowMs - this.windowMs;
-    while (this.rateLimitHistory.length > 0 && this.rateLimitHistory[0]! < cutoff) {
+    while (this.rateLimitHistory.length > 0 && (this.rateLimitHistory[0] ?? Infinity) < cutoff) {
       this.rateLimitHistory.shift();
     }
   }
@@ -369,7 +380,7 @@ export function unwrapOpenAIResponsesTransportOpenError(
     if (current instanceof OpenAIResponsesTransportOpenError) {
       return current;
     }
-    current = (current as { cause?: unknown }).cause;
+    current = (current as { cause?: unknown }).cause; // SAFETY: optional structural read of an unknown-typed cause chain.
   }
   return undefined;
 }
@@ -434,7 +445,7 @@ function readRequestSignal(init: RequestInit | undefined): AbortSignal | undefin
   if (!init || typeof init !== "object") {
     return undefined;
   }
-  return (init as { signal?: AbortSignal }).signal;
+  return (init as { signal?: AbortSignal }).signal; // SAFETY: optional structural read; undefined when absent.
 }
 
 /** A module-level registry of health contexts, keyed by transport endpoint. */
@@ -559,4 +570,76 @@ export function createOpenAIResponsesTransportHealthFetch(
       release();
     }
   };
+}
+
+/** Wrap a guarded model fetch with transport-health enforcement (concurrency
+ *  capping, rate-limit circuit breaking, Retry-After/x-ratelimit honoring
+ *  backoff) for the ChatGPT-native Responses transport, which surfaces
+ *  429/408/5xx on streamed SSE bodies with no SDK backoff. Disables the SDK's
+ *  own (non-streaming only) retries so we are the single retry owner. Only the
+ *  chatgpt-responses codex transport is wrapped; other OpenAI/azure-responses
+ *  transports keep their existing behavior. */
+export function resolveHealthWrappedModelFetch(
+  guardedFetch: FetchLike,
+  model: Parameters<typeof isOpenAICodexResponsesModel>[0],
+): { fetch: FetchLike; healthEnabled: boolean } {
+  const healthEnabled =
+    isOpenAICodexResponsesModel(model) && !OPENCLAW_OPENAI_RESPONSES_TRANSPORT_HEALTH_DISABLED;
+  const healthKey = resolveOpenAIResponsesTransportKey({
+    provider: model.provider,
+    api: model.api,
+    baseUrl: model.baseUrl,
+  });
+  return {
+    fetch: healthEnabled
+      ? createOpenAIResponsesTransportHealthFetch(
+          guardedFetch,
+          getOpenAIResponsesTransportHealth(healthKey),
+          healthKey,
+        )
+      : guardedFetch,
+    healthEnabled,
+  };
+}
+
+/** Surface a breaker-open failure with its typed identity so the fallback layer
+ *  sees an immediate, distinct failure mode rather than a generic connection
+ *  error wrapped by the SDK; settles compact requests and the stream. */
+export function failResponsesTransportWithEffectiveError(args: {
+  error: unknown;
+  model: { provider: string; api?: string; model?: string; id?: string };
+  log: { warn: (message: string) => void };
+  compactRequest?: { reject: (error: unknown) => void } | undefined;
+  stream: import("./transport-stream-shared.js").WritableTransportStream;
+  output: AssistantMessage;
+  signal?: AbortSignal;
+}): void {
+  const transportOpenError = unwrapOpenAIResponsesTransportOpenError(args.error);
+  const effectiveError = transportOpenError ?? args.error;
+  if (args.compactRequest) {
+    args.compactRequest.reject(effectiveError);
+    failTransportStream({
+      stream: args.stream,
+      output: args.output,
+      signal: args.signal,
+      error: effectiveError,
+    });
+    return;
+  }
+  if (effectiveError instanceof ResponsesStreamFailure && effectiveError.observation) {
+    logResponsesFailedNoDetails(effectiveError.observation);
+  }
+  args.log.warn(
+    `[responses] error provider=${args.model.provider} api=${args.model.api} model=${args.model.id ?? args.model.model} ` +
+      summarizeOpenAITransportError(effectiveError) +
+      (transportOpenError
+        ? `; circuit breaker open (fail-fast, will not dispatch to avoid hammering 429)`
+        : ""),
+  );
+  failTransportStream({
+    stream: args.stream,
+    output: args.output,
+    signal: args.signal,
+    error: effectiveError,
+  });
 }

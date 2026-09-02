@@ -1,2 +1,0 @@
-import { n as XaiRealtimeVoiceProtocol, t as XaiRealtimePlaybackMarkOverflowError } from "../../realtime-voice-protocol-DQ2h9sFn.js";
-export { XaiRealtimePlaybackMarkOverflowError, XaiRealtimeVoiceProtocol };

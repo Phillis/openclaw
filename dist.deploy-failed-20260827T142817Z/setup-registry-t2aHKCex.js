@@ -1,2 +1,0 @@
-import { a as runPluginSetupConfigMigrations, i as resolvePluginSetupRegistry, n as resolvePluginSetupCliBackend, r as resolvePluginSetupProviderCore, t as resolvePluginSetupAutoEnableReasons } from "./setup-registry-CN-wV6fv.js";
-export { resolvePluginSetupAutoEnableReasons, resolvePluginSetupCliBackend, resolvePluginSetupProviderCore, resolvePluginSetupRegistry, runPluginSetupConfigMigrations };

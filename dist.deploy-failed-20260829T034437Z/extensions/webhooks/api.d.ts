@@ -1,2 +1,0 @@
-import { b as OpenClawPluginApi, ct as PluginLogger, n as definePluginEntry, r as PluginRuntime } from "../../runtime-api-IAhSVA75.js";
-export { type OpenClawPluginApi, type PluginLogger, type PluginRuntime, definePluginEntry };

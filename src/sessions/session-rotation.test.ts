@@ -14,8 +14,8 @@ import {
   runSessionCeilingCycle,
   runSessionRotationAdmission,
   resolveSessionRotationRetryTarget,
+  isRotationArchivedEntry,
 } from "./session-rotation.js";
-import { isRotationArchivedEntry } from "./session-rotation.js";
 
 const BASE_KEY = "agent:agency:slack:direct:peer-42";
 

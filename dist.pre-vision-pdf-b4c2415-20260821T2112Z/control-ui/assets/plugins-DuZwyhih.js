@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";import{o as t,t as n}from"./control-ui-core-DZ85uRNh.js";function r(e=null){return[{value:`installed`,label:t(`pluginsPage.installedTab`),count:e},{value:`discover`,label:t(`pluginsPage.discoverTab`)},{value:`skills`,label:t(`tabs.skills`)},{value:`workshop`,label:t(`pluginsPage.workshopTab`)}]}var i,a=e((()=>{n(),i=`plugins-hub-panel`})),o=e((()=>{}));export{r as i,i as n,a as r,o as t};
-//# sourceMappingURL=plugins-DuZwyhih.js.map

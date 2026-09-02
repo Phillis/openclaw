@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";function t(e,t=Date.now()){e.viewTicket&&e.viewTicketTtlMs&&i.set(e,t)}function n(e,t,n=Date.now()){e.viewTicket&&e.viewTicketTtlMs&&i.set(e,i.get(t)??n)}function r(e,t=Date.now()){let n=e.viewTicketTtlMs;if(!e.viewTicket||!n)return;let r=i.get(e);return r===void 0?n:Math.max(0,n-(t-r))}var i,a=e((()=>{i=new WeakMap}));export{r as i,a as n,t as r,n as t};
-//# sourceMappingURL=widget-ticket-lifetime-aysHDtwy.js.map

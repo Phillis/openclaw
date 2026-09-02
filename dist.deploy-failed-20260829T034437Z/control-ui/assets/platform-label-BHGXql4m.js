@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DkW27tQK.js";function t(e){let[t=``,...r]=e.trim().split(/\s+/u),i=t===t.toLowerCase()?`${t.charAt(0).toUpperCase()}${t.slice(1)}`:t;return[n[t.toLowerCase()]??i,...r].join(` `)}var n;function r(){return(r=e((()=>{n={macos:`macOS`,darwin:`macOS`,win32:`Windows`,windows:`Windows`,linux:`Linux`,ios:`iOS`,ipados:`iPadOS`,watchos:`watchOS`,android:`Android`,web:`Web`}})))()}export{t as n,r as t};
-//# sourceMappingURL=platform-label-BHGXql4m.js.map

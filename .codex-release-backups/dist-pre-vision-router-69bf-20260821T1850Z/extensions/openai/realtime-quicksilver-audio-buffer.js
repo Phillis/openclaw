@@ -1,2 +1,0 @@
-import { n as OpenAIQuicksilverPendingAudio, t as OPENAI_QUICKSILVER_RELAY_FRAME_BYTES } from "../../realtime-quicksilver-audio-buffer-ZY82NjqB.js";
-export { OPENAI_QUICKSILVER_RELAY_FRAME_BYTES, OpenAIQuicksilverPendingAudio };

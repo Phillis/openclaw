@@ -1,3 +1,0 @@
-import { ELEVENLABS_TALK_PROVIDER_ID, migrateElevenLabsLegacyTalkConfig } from "./config-compat.js";
-import { ELEVENLABS_TALK_LEGACY_CONFIG_RULES, hasLegacyTalkFields, legacyConfigRules, normalizeCompatibilityConfig } from "./doctor-contract.js";
-export { ELEVENLABS_TALK_LEGACY_CONFIG_RULES, ELEVENLABS_TALK_PROVIDER_ID, hasLegacyTalkFields, legacyConfigRules, migrateElevenLabsLegacyTalkConfig, normalizeCompatibilityConfig };

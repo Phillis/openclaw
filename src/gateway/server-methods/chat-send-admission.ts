@@ -52,17 +52,13 @@ import {
   resolveRestartSafeChatAdmission,
 } from "./chat-restart-recovery.js";
 import { assertExpectedLeafActive } from "./chat-send-active-leaf.js";
+import { respondKnownChatSendError } from "./chat-send-known-errors.js";
 import {
-  ACTIVE_LEAF_CHANGED_ERROR_REASON,
   inspectGoalChatSendRetry,
-  respondChatActiveLeafChanged,
   respondChatSessionRoutingChanged,
 } from "./chat-send-pre-admission.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
-import {
-  captureAdmittedChatSendSessionSettings,
-  SESSION_SETTINGS_CHANGED_ERROR_REASON,
-} from "./chat-send-session-settings.js";
+import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
 import { normalizeOptionalChatText, normalizeUnknownChatText } from "./chat-text-normalization.js";
 import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
@@ -330,7 +326,7 @@ export async function admitChatSend(params: {
       // re-resolve the current epoch once and re-admit instead of refusing.
       if (
         latestEntry?.archivedAt !== undefined &&
-        (latestEntry?.archivedBy as { type?: string } | undefined)?.type ===
+        (latestEntry?.archivedBy as { type?: string } | undefined)?.type === // SAFETY: structural read of the archived actor discriminator.
           ROTATION_ARCHIVE_ACTOR_TYPE
       ) {
         throw new Error(SESSION_ROTATION_CHANGED_ERROR_REASON);
@@ -460,28 +456,9 @@ export async function admitChatSend(params: {
       );
       return { ok: false as const };
     }
-    if (err instanceof Error && err.message === SESSION_ROUTING_CHANGED_ERROR_REASON) {
-      respondChatSessionRoutingChanged(respond);
-      return { ok: false as const };
-    }
-    if (err instanceof Error && err.message === ACTIVE_LEAF_CHANGED_ERROR_REASON) {
-      respondChatActiveLeafChanged(respond);
-      return { ok: false as const };
-    }
-    if (err instanceof Error && err.message === SESSION_ROTATION_CHANGED_ERROR_REASON) {
-      // Mid-queue capture across an epoch boundary: the orchestrator re-resolves
-      // the current epoch once and re-admits on the new key (no response yet).
-      return { ok: false as const, retryAfterRotation: true as const };
-    }
-    if (err instanceof Error && err.message === SESSION_SETTINGS_CHANGED_ERROR_REASON) {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, "Session settings changed before send. Retry.", {
-          details: { reason: SESSION_SETTINGS_CHANGED_ERROR_REASON },
-        }),
-      );
-      return { ok: false as const };
+    const knownErrorOutcome = respondKnownChatSendError(err, respond);
+    if (knownErrorOutcome) {
+      return knownErrorOutcome;
     }
     respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
     return { ok: false as const };

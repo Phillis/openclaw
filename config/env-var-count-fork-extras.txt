@@ -1,0 +1,2 @@
+# Phillis fork env vars intentionally carried beyond the upstream budget:
+OPENCLAW_OPENAI_RESPONSES_TRANSPORT_HEALTH_DISABLED

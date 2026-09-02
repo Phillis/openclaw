@@ -1,1 +1,0 @@
-{"version":3,"file":"ru-C5C81P-w.js","names":[],"sources":["../../../ui/src/i18n/locales/ru.ts"],"sourcesContent":["export { default as ru } from \"virtual:openclaw-control-ui-locale/ru\";\n"],"mappings":";;;;;;;;;;;;;;;;;;;4upFAA8B"}

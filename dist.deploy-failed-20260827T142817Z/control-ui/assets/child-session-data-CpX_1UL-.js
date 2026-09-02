@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";import{n as t,t as n}from"./paged-session-rows-C8hiLoFL.js";async function r(e){let t=e.pageSize??i;return n({list:n=>e.sessions.list({spawnedBy:e.parentKey,...n>0?{offset:n}:{},limit:t,includeGlobal:!1,includeUnknown:!1,configuredAgentsOnly:!0}),isCurrent:e.isCurrent,missingResultError:`child session list returned no result`,mapPageRows:e=>{let t=Date.now();return e.map(e=>({...e,runtimeSampledAt:t}))}})}var i,a=e((()=>{t(),i=100}));export{a as n,r as t};
-//# sourceMappingURL=child-session-data-CpX_1UL-.js.map

@@ -512,7 +512,7 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
               result: mergeEmbeddedAgentRunResultForModelFallbackExhaustion({
                 latestResult: latestResult.result,
                 preferredResult: preferredResult.result,
-              }) as T,
+              }) as T, // SAFETY: provider-generic replay contract guarantees the T-shaped payload.
               turnAttempt: latestResult.turnAttempt,
             }),
           }),
@@ -549,7 +549,7 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
               ...fallbackResult.result.result.meta,
               ...abortFields,
             },
-          } as T)
+          } as T) // SAFETY: provider-generic replay contract guarantees the T-shaped payload.
         : fallbackResult.result.result;
     const outcome =
       fallbackResult.outcome === "exhausted" ? ("exhausted" as const) : ("completed" as const);
@@ -614,7 +614,7 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
     // converge. Defensive: a ledger fault must never affect run behavior.
     try {
       startUsageLedger();
-      const agentMeta = (result.meta as { agentMeta?: Record<string, unknown> }).agentMeta;
+      const agentMeta = (result.meta as { agentMeta?: Record<string, unknown> }).agentMeta; // SAFETY: optional structural read of provider metadata.
       recordUsageLedger({
         provider: resolveReportedProvider({
           agentMeta,
@@ -628,7 +628,7 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
         turnClass: resolveUsageLedgerTurnClass(
           params.harness.sessionKey ?? params.identity.sessionKey ?? params.identity.sessionId,
         ),
-        usage: agentMeta?.usage as NormalizedUsage | undefined,
+        usage: agentMeta?.usage as NormalizedUsage | undefined, // SAFETY: providers emit the normalized usage shape when present.
       });
     } catch {
       // non-blocking

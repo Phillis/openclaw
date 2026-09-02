@@ -1,1 +1,0 @@
-{"version":3,"file":"es-B9wOpF0k.js","names":[],"sources":["../../../ui/src/i18n/locales/es.ts"],"sourcesContent":["export { default as es } from \"virtual:openclaw-control-ui-locale/es\";\n"],"mappings":""}

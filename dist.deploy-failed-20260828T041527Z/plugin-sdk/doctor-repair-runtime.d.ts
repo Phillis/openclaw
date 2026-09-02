@@ -1,3 +1,0 @@
-import { r as OpenClawStateDatabaseSchemaMigration } from "../openclaw-state-db-contract-BbwGU0Ve.js";
-import { a as detectOpenClawStateDatabaseSchemaMigrations, i as repairOpenClawStateDatabaseSchema, n as detectPluginInstallPathIssue, r as formatPluginInstallPathIssue, t as removePluginFromConfig } from "../doctor-repair-runtime-OeCTFJYP.js";
-export { type OpenClawStateDatabaseSchemaMigration, detectOpenClawStateDatabaseSchemaMigrations, detectPluginInstallPathIssue, formatPluginInstallPathIssue, removePluginFromConfig, repairOpenClawStateDatabaseSchema };

@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DkW27tQK.js";var t,n;function r(){return(r=e((()=>{t=class{constructor(){this.alert=null,this.askedPresented=!1,this.listeners=new Set}subscribe(e){return this.listeners.add(e),()=>this.listeners.delete(e)}present(e){this.alert=e,this.askedPresented=!1,this.emit()}dismiss(){this.alert=null,this.emit()}askIfReady(e){let t=this.alert;!t||this.askedPresented||(this.askedPresented=!0,e(t.question))}emit(){for(let e of this.listeners)e()}},n=new t})))()}export{r as n,n as t};
-//# sourceMappingURL=custodian-alert-store-BIkN3I10.js.map

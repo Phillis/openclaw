@@ -1,2 +1,0 @@
-import { a as resolveActiveMemoryBackendConfig, i as getActiveMemorySearchManagerCore, n as closeActiveMemorySearchManagerCore, r as closeActiveMemorySearchManagersCore } from "./memory-runtime-CVV4sSeL.js";
-export { closeActiveMemorySearchManagerCore as closeActiveMemorySearchManager, closeActiveMemorySearchManagersCore as closeActiveMemorySearchManagers, getActiveMemorySearchManagerCore as getActiveMemorySearchManager, resolveActiveMemoryBackendConfig };

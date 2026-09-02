@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";function t(e){return e.status===`missing`?!0:Array.isArray(e.profiles)?e.profiles.some(e=>e.type===`oauth`||e.type===`token`):!1}async function n(e,t){let n={...t?.refresh?{refresh:!0}:{},agentId:t.agentId};return(t?.signal?await e.request(`models.authStatus`,n,{signal:t.signal}):await e.request(`models.authStatus`,n))??r}var r,i=e((()=>{r={ts:0,providers:[]}}));export{t as n,n as r,i as t};
-//# sourceMappingURL=model-auth-D7ZoDTCF.js.map

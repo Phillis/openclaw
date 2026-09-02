@@ -157,7 +157,9 @@ describe("concurrency gate", () => {
       const release = await gate.acquire();
       active += 1;
       peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await new Promise((resolve) => {
+        setTimeout(resolve, 5);
+      });
       active -= 1;
       release();
     };
@@ -171,7 +173,7 @@ describe("concurrency gate", () => {
     const first = await gate.acquire();
     expect(gate.pending).toBe(0);
     let thirdResolved = false;
-    gate.acquire().then((release) => {
+    void gate.acquire().then((release) => {
       thirdResolved = true;
       release();
     });

@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";async function t(e,t){let n=t.name?.trim(),r=t.baseRef?.trim();return e.request(`worktrees.create`,{repoRoot:t.repoRoot.trim(),...n?{name:n}:{},...r?{baseRef:r}:{}})}var n=e((()=>{}));export{n,t};
-//# sourceMappingURL=create-worktree-CR2KdmyB.js.map

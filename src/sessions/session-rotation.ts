@@ -187,14 +187,15 @@ export function resolveCurrentRotationEpoch(
       }
     }
   }
-  const epoch = bestEpoch >= 0 ? bestEpoch : 0;
+  const epoch = Math.max(bestEpoch, 0);
   return { epoch, key: epoch === 0 ? baseKey : buildRotatedSessionKey(baseKey, epoch) };
 }
 
 function isArchivedRotationEntry(entry: SessionEntry | undefined): boolean {
   return (
     entry?.archivedAt !== undefined &&
-    (entry?.archivedBy as { type?: string } | undefined)?.type === ROTATION_ARCHIVE_ACTOR_TYPE
+    (entry?.archivedBy as { type?: string } | undefined)?.type === // SAFETY: structural read of the rotation actor discriminator.
+      ROTATION_ARCHIVE_ACTOR_TYPE
   );
 }
 

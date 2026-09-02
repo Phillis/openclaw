@@ -39,13 +39,7 @@ import {
   OpenAIResponsesWebSocketSafeRetryError,
   type OpenAIResponsesOptions,
 } from "./openai-responses-contracts.js";
-import {
-  logResponsesFailedNoDetails,
-  ResponsesStreamFailure,
-  safeDebugValue,
-  summarizeOpenAITransportError,
-  summarizeResponsesPayload,
-} from "./openai-responses-debug.js";
+import { safeDebugValue, summarizeResponsesPayload } from "./openai-responses-debug.js";
 import {
   buildOpenAIResponsesCompactSystemMessage,
   buildOpenAIResponsesParams,
@@ -62,11 +56,8 @@ import {
 import { processResponsesStream } from "./openai-responses-stream-internal.js";
 import { observeResponsesStream } from "./openai-responses-stream-observer-internal.js";
 import {
-  createOpenAIResponsesTransportHealthFetch,
-  getOpenAIResponsesTransportHealth,
-  OPENCLAW_OPENAI_RESPONSES_TRANSPORT_HEALTH_DISABLED,
-  resolveOpenAIResponsesTransportKey,
-  unwrapOpenAIResponsesTransportOpenError,
+  failResponsesTransportWithEffectiveError,
+  resolveHealthWrappedModelFetch,
 } from "./openai-responses-transport-health.js";
 import {
   createOpenAIResponsesWebSocketStream,
@@ -90,7 +81,6 @@ import {
 import { sanitizeResponsesImagePayload } from "./responses-image-payload-sanitizer.js";
 import {
   createWritableTransportEventStream,
-  failTransportStream,
   finalizeTransportStream,
   mergeTransportMetadata,
   notifyProviderStreamOpened,
@@ -173,26 +163,7 @@ export function createOpenAIResponsesClient(
   fetchOverride?: typeof globalThis.fetch,
 ) {
   const guardedFetch = fetchOverride ?? buildGuardedModelFetch(model);
-  // The ChatGPT-native Responses transport surfaces 429/408/5xx on streamed SSE
-  // bodies with no SDK backoff. Wrap its fetch with concurrency capping,
-  // rate-limit circuit breaking, and Retry-After/x-ratelimit honoring backoff,
-  // and disable the SDK's own (non-streaming only) retries so we are the single
-  // retry owner. Note: only the chatgpt-responses codex transport is wrapped;
-  // other OpenAI/azure-responses transports keep their existing behavior.
-  const healthEnabled =
-    isOpenAICodexResponsesModel(model) && !OPENCLAW_OPENAI_RESPONSES_TRANSPORT_HEALTH_DISABLED;
-  const healthKey = resolveOpenAIResponsesTransportKey({
-    provider: model.provider,
-    api: model.api,
-    baseUrl: model.baseUrl,
-  });
-  const fetch = healthEnabled
-    ? createOpenAIResponsesTransportHealthFetch(
-        guardedFetch,
-        getOpenAIResponsesTransportHealth(healthKey),
-        healthKey,
-      )
-    : guardedFetch;
+  const { fetch, healthEnabled } = resolveHealthWrappedModelFetch(guardedFetch, model);
   return new OpenAI({
     apiKey,
     baseURL: resolveOpenAIClientBaseUrl(model),
@@ -641,27 +612,15 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
         );
         finalizeTransportStream({ stream, output, signal: options?.signal });
       } catch (error) {
-        // Surface the breaker-open failure with its typed identity so the
-        // fallback layer sees an immediate, distinct failure mode rather than a
-        // generic connection error wrapped by the SDK.
-        const transportOpenError = unwrapOpenAIResponsesTransportOpenError(error);
-        const effectiveError = transportOpenError ?? error;
-        if (compactRequest) {
-          compactRequest.reject(effectiveError);
-          failTransportStream({ stream, output, signal: options?.signal, error: effectiveError });
-          return;
-        }
-        if (effectiveError instanceof ResponsesStreamFailure && effectiveError.observation) {
-          logResponsesFailedNoDetails(effectiveError.observation);
-        }
-        log.warn(
-          `[responses] error provider=${model.provider} api=${model.api} model=${model.id} ` +
-            summarizeOpenAITransportError(effectiveError) +
-            (transportOpenError
-              ? `; circuit breaker open (fail-fast, will not dispatch to avoid hammering 429)`
-              : ""),
-        );
-        failTransportStream({ stream, output, signal: options?.signal, error: effectiveError });
+        failResponsesTransportWithEffectiveError({
+          error,
+          model,
+          log,
+          compactRequest,
+          stream,
+          output,
+          signal: options?.signal,
+        });
       } finally {
         continuationClaim?.release();
         firstEventAbort?.dispose();

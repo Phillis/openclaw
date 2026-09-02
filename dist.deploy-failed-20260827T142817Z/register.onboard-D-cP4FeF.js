@@ -1,2 +1,0 @@
-import { a as resolveTailscaleResetOnExitFlag, i as resolveInstallDaemonFlag, n as registerOnboardAuthOptions, o as validateOnboardAuthOptionValues, r as registerOnboardCommand, t as pickOnboardAuthOptionValues } from "./register.onboard-CqHFi1jw.js";
-export { pickOnboardAuthOptionValues, registerOnboardAuthOptions, registerOnboardCommand, resolveInstallDaemonFlag, resolveTailscaleResetOnExitFlag, validateOnboardAuthOptionValues };

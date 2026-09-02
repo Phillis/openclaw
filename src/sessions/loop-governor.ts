@@ -132,9 +132,7 @@ function readTurnCount(
       .where("agent_id", "=", agentId)
       .where("hour_bucket", "=", hourBucket),
   ).rows[0];
-  return row
-    ? { count: Number(row.turn_count), alerted: Number(row.alerted) }
-    : { count: 0, alerted: 0 };
+  return row ? { count: row.turn_count, alerted: row.alerted } : { count: 0, alerted: 0 };
 }
 
 function upsertTurnCount(
@@ -200,8 +198,8 @@ export function checkLoopGovernorAdmission(params: {
   const sessionKey = normalizeOptionalString(params.sessionKey) ?? undefined;
   const onAlert =
     params.onAlert ??
-    ((text: string, policy: LoopGovernorPolicy) =>
-      deliverLoopGovernorAlert(text, policy, { sessionKey }));
+    ((text: string, alertPolicy: LoopGovernorPolicy) =>
+      deliverLoopGovernorAlert(text, alertPolicy, { sessionKey }));
   try {
     ensureSchema(params.stateOptions ?? {});
     const state = openOpenClawStateDatabase(params.stateOptions ?? {});

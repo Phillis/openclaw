@@ -448,7 +448,9 @@ export function createPendingBridgeStates(params: {
               (settled.mutationProvenance === "pre-mutation"
                 ? "failed_no_effect"
                 : recoverySafe
-                  ? (settled.ok ? "read_completed" : "failed_no_effect")
+                  ? settled.ok
+                    ? "read_completed"
+                    : "failed_no_effect"
                   : "uncertain"),
           );
         }
@@ -459,7 +461,7 @@ export function createPendingBridgeStates(params: {
           tracksDispatch &&
           !recoverySafe &&
           !trustedNoStart &&
-          settled.ok === false &&
+          !settled.ok &&
           settled.mutationProvenance === "pre-mutation"
         ) {
           params.bridgeDispatch.preMutationFailures += 1;

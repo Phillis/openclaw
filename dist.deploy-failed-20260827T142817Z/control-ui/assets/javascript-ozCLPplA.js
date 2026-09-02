@@ -1,1 +1,0 @@
-import{r as e,t}from"./javascript-CJn6m2_Z.js";t();export{e as jsonld};

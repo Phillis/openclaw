@@ -62,6 +62,18 @@ export function collectEnvVarNames(root = process.cwd(), options: { staged?: boo
       names.add(match[0]);
     }
   }
+  // Phillis fork: intentional extra OPENCLAW_* vars carried on top of upstream
+  // (see config/env-var-count-fork-extras.txt). Explicitly excluded from the
+  // upstream-vs-budget ratchet so the fork delta stays greppable and reviewed.
+  const forkExtrasPath = path.join(root, "config/env-var-count-fork-extras.txt");
+  if (fs.existsSync(forkExtrasPath)) {
+    for (const extra of fs.readFileSync(forkExtrasPath, "utf8").split("\n")) {
+      const trimmed = extra.trim();
+      if (trimmed && !trimmed.startsWith("#")) {
+        names.delete(trimmed);
+      }
+    }
+  }
   return [...names].toSorted((left, right) => (left < right ? -1 : left > right ? 1 : 0));
 }
 

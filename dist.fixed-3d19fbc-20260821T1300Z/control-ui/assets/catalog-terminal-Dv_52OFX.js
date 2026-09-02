@@ -1,2 +1,0 @@
-import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";import{It as t,Pt as n}from"./control-ui-core-Gyba8RbL.js";function r(e){window.dispatchEvent(new CustomEvent(n,{detail:e}))}function i(e){r({open:!0,catalog:e})}function a(e){r({open:!0,terminalSessionId:e})}var o=e((()=>{t()}));export{i as n,a as r,o as t};
-//# sourceMappingURL=catalog-terminal-Dv_52OFX.js.map
