@@ -486,6 +486,12 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
       required: false,
       type: "string",
     });
+    expect(pluginWorkflow.on.workflow_dispatch.inputs.target_context_ref).toEqual({
+      default: "",
+      description: "Canonical release context for an exact-SHA frozen-target validation",
+      required: false,
+      type: "string",
+    });
     expect(preflight.outputs.node_test_exclude_patterns_json).toBe(
       "${{ steps.node_test_exclusions.outputs.patterns_json }}",
     );
@@ -496,19 +502,36 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
         "persist-credentials": false,
         ref: "${{ github.sha }}",
         path: ".plugin-prerelease-trusted",
-        "sparse-checkout": "src/plugins/npm-install-security-scan.release.test.ts",
         "sparse-checkout-cone-mode": false,
       },
     });
-    expect(installInventory?.run).toContain(
-      '"$trusted_checkout/src/plugins/npm-install-security-scan.release.test.ts"',
+    expect(trustedCheckout.with?.["sparse-checkout"]).toBe(
+      [
+        "src/plugins/npm-install-security-scan.release.test.ts",
+        "scripts/lib/npm-json-output.mts",
+        "",
+      ].join("\n"),
     );
     expect(installInventory?.run).toContain(
-      "src/plugins/npm-install-security-scan.release.test.ts",
+      [
+        "install -m 0644 \\",
+        '  "$trusted_checkout/src/plugins/npm-install-security-scan.release.test.ts" \\',
+        "  src/plugins/npm-install-security-scan.release.test.ts",
+      ].join("\n"),
+    );
+    expect(installInventory?.run).toContain(
+      [
+        "install -m 0644 \\",
+        '  "$trusted_checkout/scripts/lib/npm-json-output.mts" \\',
+        "  scripts/lib/npm-json-output.mts",
+      ].join("\n"),
     );
     expect(installInventory?.run).toContain('rm -rf -- "$trusted_checkout"');
     expect(runNodeShard?.env?.NODE_TEST_EXCLUDE_PATTERNS_JSON).toBe(
       "${{ needs.preflight.outputs.node_test_exclude_patterns_json }}",
+    );
+    expect(runNodeShard?.env?.OPENCLAW_RELEASE_TARGET_CONTEXT_REF).toBe(
+      "${{ inputs.target_context_ref }}",
     );
     expect(runNodeShard?.run).toContain('process.env.NODE_TEST_EXCLUDE_PATTERNS_JSON ?? "[]"');
     expect(runNodeShard?.run).toContain('pattern.slice("src/plugins/".length)');
@@ -535,6 +558,7 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
     expect(pluginDispatch?.run).toContain(
       '-f node_test_exclude_patterns_json="$PLUGIN_PRERELEASE_NODE_EXCLUDE_PATTERNS_JSON"',
     );
+    expect(pluginDispatch?.run).toContain('args+=(-f target_context_ref="$TARGET_CONTEXT_REF")');
     expect(pluginDispatch?.run).toContain("- Frozen-target Node test omissions:");
     expect(evidenceReuse?.env?.PLUGIN_PRERELEASE_NODE_EXCLUDE_PATTERNS_JSON).toBe(
       "${{ inputs.plugin_prerelease_node_exclude_patterns_json }}",
@@ -603,7 +627,7 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
     expect(buildDistStep.env).toEqual({ NODE_OPTIONS: "--max-old-space-size=8192" });
     expect(staticShard).toEqual({
       if: "needs.preflight.outputs.run_plugin_prerelease_static == 'true'",
-      name: "${{ matrix.check_name }}",
+      name: "${{ matrix.check_name || 'plugin-prerelease-static-shard' }}",
       needs: ["preflight"],
       permissions: {
         contents: "read",
@@ -703,6 +727,8 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
         "${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.run_ios_build || 'false' }}",
       OPENCLAW_CI_RUN_MACOS:
         "${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.run_macos || 'false' }}",
+      OPENCLAW_CI_RUN_MACOS_NODE:
+        "${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.run_macos_node || 'false' }}",
       OPENCLAW_CI_RUN_NATIVE_I18N:
         "${{ github.event_name == 'workflow_dispatch' && 'true' || steps.changed_scope.outputs.run_native_i18n || 'false' }}",
       OPENCLAW_CI_RUN_NODE:
