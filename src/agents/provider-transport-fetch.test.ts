@@ -2323,3 +2323,183 @@ describe("buildGuardedModelFetch", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
+  it("retries a pre-stream 500 once and returns the recovered 200 response", async () => {
+    const model = makeProviderModelFixture<"openai-completions">({
+      id: "glm-5.3-flash",
+      provider: "opencode-go",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        response: new Response("500 Internal server error", { status: 500 }),
+        finalUrl: "https://api.openai.com/v1/responses",
+        release: vi.fn(async () => undefined),
+      })
+      .mockResolvedValueOnce({
+        response: new Response("data: ok\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+        finalUrl: "https://api.openai.com/v1/responses",
+        release: vi.fn(async () => undefined),
+      });
+    fetchWithSsrFGuardMock.mockImplementation(fetchMock);
+
+    const response = await buildGuardedModelFetch(model)(
+      "https://api.openai.com/v1/responses",
+      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
+    );
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await response.text();
+  });
+
+  it("retries twice (500 -> 502 -> 200) before giving up", async () => {
+    const model = makeProviderModelFixture<"openai-completions">({
+      id: "glm-5.3-flash",
+      provider: "opencode-go",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        response: new Response("bad", { status: 500 }),
+        finalUrl: "https://api.openai.com/v1/responses",
+        release: vi.fn(async () => undefined),
+      })
+      .mockResolvedValueOnce({
+        response: new Response("bad gateway", { status: 502 }),
+        finalUrl: "https://api.openai.com/v1/responses",
+        release: vi.fn(async () => undefined),
+      })
+      .mockResolvedValueOnce({
+        response: new Response("data: ok\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+        finalUrl: "https://api.openai.com/v1/responses",
+        release: vi.fn(async () => undefined),
+      });
+    fetchWithSsrFGuardMock.mockImplementation(fetchMock);
+
+    const response = await buildGuardedModelFetch(model)(
+      "https://api.openai.com/v1/responses",
+      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
+    );
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await response.text();
+  });
+
+  it("gives up after the bounded retries and surfaces the last 5xx", async () => {
+    const model = makeProviderModelFixture<"openai-completions">({
+      id: "glm-5.3-flash",
+      provider: "opencode-go",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+    });
+    const release = vi.fn(async () => undefined);
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        response: new Response("500 Internal server error", { status: 500 }),
+        finalUrl: "https://api.openai.com/v1/responses",
+        release: vi.fn(async () => undefined),
+      }),
+    );
+    fetchWithSsrFGuardMock.mockImplementation(fetchMock);
+
+    const response = await buildGuardedModelFetch(model)(
+      "https://api.openai.com/v1/responses",
+      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
+    );
+    expect(response.status).toBe(500);
+    // 1 initial + 2 retries = 3 attempts, then the 5xx surfaces.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await response.text();
+  });
+
+  it("does NOT retry a 200 SSE response", async () => {
+    const model = makeProviderModelFixture<"openai-completions">({
+      id: "glm-5.3-flash",
+      provider: "opencode-go",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      response: new Response(openResponseStreamText("data: hello"), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }).body ? new Response("data: hello\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }) : new Response("data: hello\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+      finalUrl: "https://api.openai.com/v1/responses",
+      release: vi.fn(async () => undefined),
+    });
+    fetchWithSsrFGuardMock.mockImplementation(fetchMock);
+
+    const response = await buildGuardedModelFetch(model)(
+      "https://api.openai.com/v1/responses",
+      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
+    );
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await response.text();
+  });
+
+  it("does NOT retry a 4xx (only 500/502/503/504 are retried)", async () => {
+    const model = makeProviderModelFixture<"openai-completions">({
+      id: "glm-5.3-flash",
+      provider: "opencode-go",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      response: new Response("bad request", { status: 400 }),
+      finalUrl: "https://api.openai.com/v1/responses",
+      release: vi.fn(async () => undefined),
+    });
+    fetchWithSsrFGuardMock.mockImplementation(fetchMock);
+
+    const response = await buildGuardedModelFetch(model)(
+      "https://api.openai.com/v1/responses",
+      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
+    );
+    expect(response.status).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await response.text();
+  });
+
+  it("does NOT retry when the request body is not replayable (Request-form body)", async () => {
+    const model = makeProviderModelFixture<"openai-completions">({
+      id: "glm-5.3-flash",
+      provider: "opencode-go",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      response: new Response("500 Internal server error", { status: 500 }),
+      finalUrl: "https://api.openai.com/v1/responses",
+      release: vi.fn(async () => undefined),
+    });
+    fetchWithSsrFGuardMock.mockImplementation(fetchMock);
+
+    const request = new Request("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+      headers: { "content-type": "application/json" },
+    });
+    const response = await buildGuardedModelFetch(model)(request);
+    expect(response.status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await response.text();
+  });
+});

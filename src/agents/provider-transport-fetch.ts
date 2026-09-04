@@ -942,6 +942,25 @@ export function buildGuardedModelFetch(
         `dispatcher=${result.dispatcherReused ? "reused" : "new"} ` +
         `contentType=${response.headers.get("content-type") ?? ""}`,
     );
+    // PHIL-FORK (BUG-018, 2026-09-04): transient pre-stream 5xx responses from
+    // provider transports can terminate embedded agent runs outright — the
+    // failover policy defers to plugin/harness-owned transports for
+    // timeout-classified failures, and some provider transports (e.g.
+    // opencode-go) do not self-retry. A 5xx returned as a plain error body
+    // BEFORE any SSE stream started means the provider never processed the
+    // request, so a bounded transport-level retry is safe (the request body is
+    // replayable: string/Uint8Array JSON bodies only). Live evidence: a single
+    // HTTP 500 at 2026-09-04T17:14:57Z killed a 33-minute QA run despite two
+    // configured fallback models.
+    response = await retryTransientPreStream5xx({
+      model,
+      response,
+      result,
+      guardedFetchOptions,
+      log,
+      fetchStartedAt,
+      signal: localServiceSignal,
+    });
     if (shouldBypassLongSdkRetry(response)) {
       const headers = new Headers(response.headers);
       headers.set("x-should-retry", "false");
@@ -974,4 +993,89 @@ export function buildGuardedModelFetch(
       : sanitizeOpenAISdkSseResponse(response, { synthesizeJsonAsSse });
   };
 }
+/** Pre-stream 5xx statuses eligible for the bounded transport retry. */
+const TRANSPORT_5XX_RETRY_STATUSES = new Set([500, 502, 503, 504]);
+/** Bounded backoff schedule for the transport-level 5xx retry. */
+const TRANSPORT_5XX_RETRY_DELAY_MS = [2_000, 5_000];
+
+function isReplayableModelFetchBody(
+  init: typeof baseInit,
+): boolean {
+  const body = (init as { body?: unknown } | undefined)?.body;
+  return (
+    body == null ||
+    typeof body === "string" ||
+    body instanceof Uint8Array ||
+    body instanceof ArrayBuffer
+  );
+}
+
+async function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal || signal.aborted) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * PHIL-FORK (BUG-018): retry transient pre-stream 5xx responses up to twice
+ * with bounded backoff. Only plain (non-SSE) error bodies are retried — an
+ * SSE response means the provider accepted and started the request, where a
+ * replay could duplicate model work. Each retry re-issues the same guarded
+ * fetch options (same SSRF policy, dispatcher pool, timeout budget), so all
+ * transport guards apply to the retried request.
+ */
+async function retryTransientPreStream5xx(params: {
+  model: Model;
+  response: Response;
+  result: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;
+  guardedFetchOptions: Parameters<typeof fetchWithSsrFGuard>[0];
+  log: {
+    warn: (message: string) => void;
+  };
+  fetchStartedAt: number;
+  signal?: AbortSignal;
+}): Promise<Response> {
+  const { model, result, guardedFetchOptions, log } = params;
+  let response = params.response;
+  let current = params.result;
+  if (!isReplayableModelFetchBody(guardedFetchOptions.init)) {
+    return response;
+  }
+  for (let attempt = 0; attempt < TRANSPORT_5XX_RETRY_DELAY_MS.length; attempt += 1) {
+    if (!TRANSPORT_5XX_RETRY_STATUSES.has(response.status)) {
+      return response;
+    }
+    if (/\btext\/event-stream\b/i.test(response.headers.get("content-type") ?? "")) {
+      return response;
+    }
+    const delay = TRANSPORT_5XX_RETRY_DELAY_MS[attempt];
+    log.warn(
+      `[model-fetch] transient ${response.status} from provider=${model.provider} ` +
+        `api=${model.api} model=${model.id} — transport retry ` +
+        `${attempt + 1}/${TRANSPORT_5XX_RETRY_DELAY_MS.length} in ${delay}ms`,
+    );
+    await sleepAbortable(delay, params.signal);
+    current = await fetchWithSsrFGuard(guardedFetchOptions);
+    response = current.response;
+    emitModelTransportDebug(
+      log,
+      `[model-fetch] response provider=${model.provider} api=${model.api} model=${model.id} ` +
+        `status=${response.status} elapsedMs=${Date.now() - params.fetchStartedAt} ` +
+        `dispatcher=${current.dispatcherReused ? "reused" : "new"} ` +
+        `contentType=${response.headers.get("content-type") ?? ""} ` +
+        `transportRetry=${attempt + 1}`,
+    );
+  }
+  return response;
+}
+
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
