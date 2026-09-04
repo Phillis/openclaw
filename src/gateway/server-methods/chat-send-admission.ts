@@ -56,10 +56,7 @@ import {
   respondChatSessionRoutingChanged,
 } from "./chat-send-pre-admission.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
-import {
-  captureAdmittedChatSendSessionSettings,
-  SESSION_SETTINGS_CHANGED_ERROR_REASON,
-} from "./chat-send-session-settings.js";
+import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
 import { prepareGoalChatSendSession, type PreparedChatSendSession } from "./chat-send-session.js";
 import { normalizeOptionalChatText, normalizeUnknownChatText } from "./chat-text-normalization.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
