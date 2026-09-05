@@ -31,7 +31,7 @@ import {
   type SsrFPolicy,
 } from "../infra/net/ssrf.js";
 import type { Model } from "../llm/types.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
+import { createSubsystemLogger, type SubsystemLogger } from "../logging/subsystem.js";
 import { resolveDebugProxySettings } from "../proxy-capture/env.js";
 import {
   containsSecretSentinel,
@@ -825,10 +825,11 @@ export function buildGuardedModelFetch(
     if (!error || typeof error !== "object") {
       return `type=${typeof error}`;
     }
+    // SAFETY: narrowed to a non-null object by the guard above; index reads never assume a type.
     const record = error as Record<string, unknown>;
     const cause =
       record.cause && typeof record.cause === "object"
-        ? (record.cause as Record<string, unknown>)
+        ? (record.cause as Record<string, unknown>) // SAFETY: narrowed to a non-null object by the inline typeof check.
         : undefined;
     const read = (value: unknown) => (typeof value === "string" ? value : typeof value);
     return [
@@ -955,7 +956,6 @@ export function buildGuardedModelFetch(
     response = await retryTransientPreStream5xx({
       model,
       response,
-      result,
       guardedFetchOptions,
       log,
       fetchStartedAt,
@@ -999,7 +999,8 @@ const TRANSPORT_5XX_RETRY_STATUSES = new Set([500, 502, 503, 504]);
 const TRANSPORT_5XX_RETRY_DELAY_MS = [2_000, 5_000];
 
 function isReplayableModelFetchBody(
-  init: typeof baseInit,
+  // SAFETY: structural body-only view of the guarded fetch init; baseInit's full type is closure-local.
+  init: { body?: unknown } | undefined,
 ): boolean {
   const body = (init as { body?: unknown } | undefined)?.body;
   return (
@@ -1036,17 +1037,13 @@ async function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
 async function retryTransientPreStream5xx(params: {
   model: Model;
   response: Response;
-  result: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;
   guardedFetchOptions: Parameters<typeof fetchWithSsrFGuard>[0];
-  log: {
-    warn: (message: string) => void;
-  };
+  log: SubsystemLogger;
   fetchStartedAt: number;
   signal?: AbortSignal;
 }): Promise<Response> {
-  const { model, result, guardedFetchOptions, log } = params;
+  const { model, guardedFetchOptions } = params;
   let response = params.response;
-  let current = params.result;
   if (!isReplayableModelFetchBody(guardedFetchOptions.init)) {
     return response;
   }
@@ -1057,20 +1054,20 @@ async function retryTransientPreStream5xx(params: {
     if (/\btext\/event-stream\b/i.test(response.headers.get("content-type") ?? "")) {
       return response;
     }
-    const delay = TRANSPORT_5XX_RETRY_DELAY_MS[attempt];
-    log.warn(
+    const delay = TRANSPORT_5XX_RETRY_DELAY_MS[attempt] ?? 0;
+    params.log.warn(
       `[model-fetch] transient ${response.status} from provider=${model.provider} ` +
         `api=${model.api} model=${model.id} — transport retry ` +
         `${attempt + 1}/${TRANSPORT_5XX_RETRY_DELAY_MS.length} in ${delay}ms`,
     );
     await sleepAbortable(delay, params.signal);
-    current = await fetchWithSsrFGuard(guardedFetchOptions);
-    response = current.response;
+    const retried = await fetchWithSsrFGuard(guardedFetchOptions);
+    response = retried.response;
     emitModelTransportDebug(
-      log,
+      params.log,
       `[model-fetch] response provider=${model.provider} api=${model.api} model=${model.id} ` +
         `status=${response.status} elapsedMs=${Date.now() - params.fetchStartedAt} ` +
-        `dispatcher=${current.dispatcherReused ? "reused" : "new"} ` +
+        `dispatcher=${retried.dispatcherReused ? "reused" : "new"} ` +
         `contentType=${response.headers.get("content-type") ?? ""} ` +
         `transportRetry=${attempt + 1}`,
     );

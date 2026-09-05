@@ -2403,7 +2403,6 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
       api: "openai-completions",
       baseUrl: "https://opencode.ai/zen/go/v1",
     });
-    const release = vi.fn(async () => undefined);
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve({
         response: new Response("500 Internal server error", { status: 500 }),

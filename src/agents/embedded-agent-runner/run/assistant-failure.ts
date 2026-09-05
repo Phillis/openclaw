@@ -24,6 +24,10 @@ import type { TraceAttempt } from "../types.js";
 import { handleAssistantFailover, isShortWindowRateLimitMessage } from "./assistant-failover.js";
 import { isCurrentAttemptReplaySafe } from "./attempt-terminal-evidence.js";
 import { createFailoverDecisionLogger } from "./failover-observation.js";
+import {
+  isMidStreamDropWithoutFinishReason,
+  MAX_MIDSTREAM_DROP_RETRIES,
+} from "./midstream-drop-retry.js";
 import { resolveRunFailoverDecision } from "./failover-policy.js";
 import { shouldRetrySilentErrorAssistantTurn } from "./incomplete-turn-recovery.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
@@ -143,8 +147,59 @@ export async function handleEmbeddedAssistantFailure(input: {
       assistantProfileFailureReason,
     });
   }
+  // PHIL-FORK (BUG-019): mid-stream drop retry block moved below the
+  // imageDimensionError declaration it shares context with.
   const cloudCodeAssistFormatError = input.attempt.cloudCodeAssistFormatError;
   const imageDimensionError = parseImageDimensionError(failedAssistant?.errorMessage ?? "");
+  // PHIL-FORK (BUG-019, 2026-09-04): a stream that ended without
+  // finish_reason leaves the conversation state unchanged (partial streamed
+  // content is discarded; the live evidence message carried content: [] and
+  // zero usage), so a bounded full re-request is safe even though the attempt
+  // accumulated streamed text. This must run BEFORE the silent-error gate,
+  // which requires empty assistantTexts and therefore cannot absorb a
+  // mid-stream drop. Replay-safety is still enforced: the current attempt
+  // must have no uncommitted side-effect-bearing work.
+  const midStreamDropFailure =
+    !authFailure &&
+    !rateLimitFailure &&
+    !billingFailure &&
+    !terminalInterrupted &&
+    !promptError &&
+    !terminalAssistantError &&
+    isCurrentAttemptReplaySafe(input.attempt) &&
+    isMidStreamDropWithoutFinishReason(failedAssistant);
+  if (midStreamDropFailure) {
+    if (input.emptyErrorRetries < MAX_MIDSTREAM_DROP_RETRIES) {
+      const emptyErrorRetries = input.emptyErrorRetries + 1;
+      log.warn(
+        `[mid-stream-drop-retry] stream ended without finish_reason; partial ` +
+          `content discarded, conversation unchanged; resubmitting ` +
+          `attempt=${emptyErrorRetries}/${MAX_MIDSTREAM_DROP_RETRIES} ` +
+          `provider=${failedAssistant?.provider ?? input.provider} ` +
+          `model=${failedAssistant?.model ?? input.modelId} ` +
+          `sessionKey=${input.runParams.sessionKey ?? input.runParams.sessionId}`,
+      );
+      return buildOutcome(input, {
+        action: "retry",
+        emptyErrorRetries,
+        assistantProfileFailureReason,
+      });
+    }
+    // Local budget exhausted: consult the transient retry controller so the
+    // established rotate/fallback policy (profile rotation, then model
+    // fallback when configured) can move off a persistently flaky provider.
+    if (await input.maybeRetryTransient({ reason: "unknown", retryAfterMs: undefined })) {
+      log.warn(
+        `[mid-stream-drop-retry] local budget exhausted; transient controller ` +
+          `granted same-model retry provider=${failedAssistant?.provider ?? input.provider} ` +
+          `model=${failedAssistant?.model ?? input.modelId}`,
+      );
+      return buildOutcome(input, {
+        action: "retry",
+        assistantProfileFailureReason,
+      });
+    }
+  }
   // Classified reasons consult the failover retry controller so a zero-output
   // failure draws from the single transient budget instead of stacking silent
   // retries on top of it; only reasons the controller cannot classify use the
