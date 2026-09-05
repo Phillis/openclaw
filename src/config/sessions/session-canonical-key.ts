@@ -164,6 +164,26 @@ export function scanCanonicalSqliteSessionEntries(
       continue;
     }
     if (row.entry_valid !== 1) {
+      /*
+       * BUG-024 (2026-09-05): a session reset racing a live turn's afterTurn
+       * flush lands in the terminal combination (non-empty entry_json +
+       * entry_valid=-1 + retained window) because entry_json and entry_valid
+       * are written by different statements in different code paths. The
+       * validator previously threw for this state, taking down EVERY surface
+       * for the agent (Slack, bridges, webchat, cron, subagent recovery).
+       * Self-heal: treat (-1 + non-empty + retained window) as the tolerated
+       * invalidation — the session rebuilds from the retained window on next
+       * use, exactly what `openclaw doctor --fix` does, but without requiring
+       * an operator to stop the gateway. The rebuildable state ("{}" + -1)
+       * above remains the fast path; this branch only catches the race
+       * residue.
+       */
+      if (
+        row.entry_valid === -1 &&
+        row.retained_window_id === row.current_session_id
+      ) {
+        continue;
+      }
       throw canonicalSessionKeyMigrationRequiredError(
         `invalid persisted session row requires repair for ${row.session_key}`,
       );

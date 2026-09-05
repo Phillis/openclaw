@@ -454,13 +454,17 @@ function clearSqliteSessionEntryPreservingWindows(
       .values({ session_key: params.sessionKey, ...cleared })
       .onConflict((conflict) => conflict.column("session_key").doUpdateSet(cleared)),
   );
-  executeSqliteQuerySync(
-    database.db,
-    db
-      .updateTable("session_nodes")
-      .set({ entry_valid: -1 })
-      .where("session_key", "=", params.sessionKey),
-  );
+  /*
+   * BUG-024 (2026-09-05): the original code issued a SECOND statement
+   * setting entry_valid=-1 after the upsert above already set it. That
+   * second write was redundant (the upsert's cleared object already carries
+   * entry_valid: -1) and created a window where a concurrent reader could
+   * observe entry_json updated but entry_valid still 1 from a prior flush,
+   * or — combined with an afterTurn flush racing the reset — the terminal
+   * (non-empty + -1) combination. Removing the second statement makes the
+   * reset a single atomic upsert; the validator self-heal (upstream) covers
+   * any residual race from external writers.
+   */
 }
 
 export function deleteLifecycleTargetRows(
