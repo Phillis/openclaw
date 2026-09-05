@@ -205,12 +205,16 @@ export async function recoverEmbeddedRunOverflow(
   if (
     !isCompactionFailure &&
     input.attemptCompactionCount > 0 &&
+    // At most ONE full-resize retry: re-shipping the un-resized prompt is only
+    // worth one attempt; further overflows must escalate to compaction below.
+    input.state.overflowNoCompactionRetries < 1 &&
     input.state.overflowCompactionAttempts < MAX_OVERFLOW_COMPACTION_ATTEMPTS
   ) {
     input.markOwnedTranscriptRetry();
     input.state.overflowCompactionAttempts += 1;
+    input.state.overflowNoCompactionRetries += 1;
     log.warn(
-      `context overflow persisted after in-attempt compaction (attempt ${input.state.overflowCompactionAttempts}/${MAX_OVERFLOW_COMPACTION_ATTEMPTS}); retrying prompt without additional compaction for ${input.provider}/${input.modelId}`,
+      `context overflow persisted after in-attempt compaction (attempt ${input.state.overflowCompactionAttempts}/${MAX_OVERFLOW_COMPACTION_ATTEMPTS}); retrying prompt without additional compaction (full-resize retry ${input.state.overflowNoCompactionRetries}/1) for ${input.provider}/${input.modelId}`,
     );
     if (preflightRecovery?.source === "mid-turn") {
       input.prepareCurrentTranscriptRetry();
@@ -220,7 +224,7 @@ export async function recoverEmbeddedRunOverflow(
 
   if (
     !isCompactionFailure &&
-    input.attemptCompactionCount === 0 &&
+    (input.attemptCompactionCount === 0 || input.state.overflowNoCompactionRetries >= 1) &&
     input.state.overflowCompactionAttempts < MAX_OVERFLOW_COMPACTION_ATTEMPTS
   ) {
     if (log.isEnabled("debug")) {
@@ -355,15 +359,20 @@ export async function recoverEmbeddedRunOverflow(
       : false;
     if (hasOversized) {
       input.state.toolResultTruncationAttempted = true;
+      input.state.overflowTruncationAttempts += 1;
+      const estimatedOverflowTokens =
+        observedOverflowTokens ?? preflightEstimatedPromptTokens ?? input.contextTokenBudget;
       log.warn(
         `[context-overflow-recovery] Attempting tool result truncation for ${input.provider}/${input.modelId} ` +
-          `(contextWindow=${input.contextTokenBudget} tokens)`,
+          `(contextWindow=${input.contextTokenBudget} tokens) ` +
+          `truncationAttempt=${input.state.overflowTruncationAttempts}/1 estimatedTokens=${estimatedOverflowTokens}`,
       );
       const truncResult = truncateToolResults();
       if (truncResult.truncated) {
         input.markOwnedTranscriptRetry();
         log.info(
-          `[context-overflow-recovery] Truncated ${truncResult.truncatedCount} tool result(s); retrying prompt`,
+          `[context-overflow-recovery] Truncated ${truncResult.truncatedCount} tool result(s) ` +
+            `(truncationAttempt=${input.state.overflowTruncationAttempts}/1 estimatedTokens=${estimatedOverflowTokens}); retrying prompt`,
         );
         if (preflightRecovery?.source === "mid-turn") {
           input.prepareCurrentTranscriptRetry();

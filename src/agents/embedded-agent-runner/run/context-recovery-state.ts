@@ -10,6 +10,9 @@ export function createEmbeddedRunContextRecoveryState() {
     lastContextBudgetStatus: undefined as EmbeddedAgentMeta["contextBudgetStatus"],
     overflowCompactionAttempts: 0,
     timeoutCompactionAttempts: 0,
+    // Full-resize (no-compaction) prompt retries after overflow are capped at one per run.
+    overflowNoCompactionRetries: 0,
+    overflowTruncationAttempts: 0,
     toolResultTruncationAttempted: false,
     transportDropContinuations: 0,
     observeContextAccounting(event: EmbeddedContextAccountingEvent) {
