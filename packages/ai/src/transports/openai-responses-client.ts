@@ -34,13 +34,7 @@ import {
   OpenAIResponsesWebSocketSafeRetryError,
   type OpenAIResponsesOptions,
 } from "./openai-responses-contracts.js";
-import {
-  logResponsesFailedNoDetails,
-  ResponsesStreamFailure,
-  safeDebugValue,
-  summarizeOpenAITransportError,
-  summarizeResponsesPayload,
-} from "./openai-responses-debug.js";
+import { safeDebugValue, summarizeResponsesPayload } from "./openai-responses-debug.js";
 import { recordResponsesInputReplay } from "./openai-responses-input-replay.js";
 import {
   buildOpenAIResponsesParams,

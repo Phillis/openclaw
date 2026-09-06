@@ -20,6 +20,11 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "archivedAt",
   "archivedBy",
   "archiveReason",
+  // fork (session.rotation): per-entry rotation state — reserved so plugin
+  // slots can never collide with the rotation bookkeeping fields.
+  "lastRotationAt",
+  "rotationEpoch",
+  "rotationTurnCount",
   "pinnedAt",
   "lastReadAt",
   "agentStatus",
