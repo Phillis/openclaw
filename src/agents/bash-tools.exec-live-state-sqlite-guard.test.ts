@@ -170,3 +170,49 @@ describeNonWin("exec live OpenClaw state SQLite guard", () => {
     });
   });
 });
+
+describe("live-state sqlite guard: read-only URI opens (2026-09-06 friction fix)", () => {
+  it("permits mode=ro queries against the control-plane database inside the state dir", async () => {
+    await withTempDir("live-state-ro-guard-", async (tempDir) => {
+      const stateDir = path.join(tempDir, "state");
+      await fs.mkdir(stateDir, { recursive: true });
+      const dbPath = path.join(stateDir, "plugins", "control-plane.sqlite");
+      await fs.mkdir(path.dirname(dbPath), { recursive: true });
+      await fs.writeFile(dbPath, "");
+      const guardContext = { stateDir, workdir: tempDir };
+      const kind = await detectUnsafeExecControlShellCommand(
+        `sqlite3 "file:${dbPath}?mode=ro" "SELECT count(*) FROM audit_events;"`,
+        guardContext,
+      );
+      expect(kind).toBeNull();
+    });
+  });
+
+  it("permits immutable=1 snapshots but still blocks plain/writer opens", async () => {
+    await withTempDir("live-state-ro-guard-", async (tempDir) => {
+      const stateDir = path.join(tempDir, "state");
+      await fs.mkdir(stateDir, { recursive: true });
+      const dbPath = path.join(stateDir, "live.sqlite");
+      await fs.writeFile(dbPath, "");
+      const guardContext = { stateDir, workdir: tempDir };
+      expect(
+        await detectUnsafeExecControlShellCommand(
+          `sqlite3 "file:${dbPath}?immutable=1" "SELECT 1;"`,
+          guardContext,
+        ),
+      ).toBeNull();
+      expect(
+        await detectUnsafeExecControlShellCommand(
+          `sqlite3 "${dbPath}" "INSERT INTO t VALUES (1);"`,
+          guardContext,
+        ),
+      ).toBe("live-state-sqlite");
+      expect(
+        await detectUnsafeExecControlShellCommand(
+          `sqlite3 "file:${dbPath}?mode=rw" "SELECT 1;"`,
+          guardContext,
+        ),
+      ).toBe("live-state-sqlite");
+    });
+  });
+});

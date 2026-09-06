@@ -247,6 +247,21 @@ function targetsLiveStateSqliteDatabase(
   // Resolve existing ancestors so an alias outside the state root cannot hide that ownership.
   const canonicalStateDir = resolvePathViaExistingAncestorSync(stateDir);
   return parseSqliteDatabaseTokens(argv).some((databaseToken) => {
+    /*
+     * Read-only URI opens cannot corrupt live state: `mode=ro` never writes
+     * (and refuses to create missing WAL sidecars), `immutable=1` additionally
+     * never touches them. The live-WAL join concern this guard protects
+     * against is a writer hazard. Diagnostics (e.g. the handoff-v2 plugin's
+     * documented control-plane read pattern) rely on mode=ro queries; blocking
+     * them forced operator workarounds and false-positive approval loops
+     * (2026-09-06 friction report). Fail closed on anything else: only an
+     * EXPLICIT read-only/immutable query parameter in the database token
+     * itself is trusted.
+     */
+    const readOnlyUriOpen = /[?&](mode=ro|immutable=1)(?:&|$)/u.test(databaseToken);
+    if (readOnlyUriOpen) {
+      return false;
+    }
     const expandedTarget = expandSqliteDatabaseToken(databaseToken, stateDir);
     if (!expandedTarget) {
       return false;
