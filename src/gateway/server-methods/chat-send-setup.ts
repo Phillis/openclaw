@@ -1,6 +1,12 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import {
+  isBridgeSessionKey,
+  performBridgeSessionRollover,
+} from "../../agents/embedded-agent-runner/run/bridge-session-rollover.js";
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
 import type { SessionRotationConfig } from "../../config/types.base.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   isRotationEligibleSessionKey,
   isRotationEnabled,
@@ -16,6 +22,8 @@ import { runChatSendPreAdmission } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
 import { prepareChatSendSession, type PreparedChatSendSession } from "./chat-send-session.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
+
+const log = createSubsystemLogger("gateway/chat-send");
 
 /** Single bounded re-resolve for a message captured across an epoch boundary. */
 const ROTATION_RETRY_LIMIT = 1;
@@ -49,12 +57,33 @@ async function resolveChatSendRotationTarget(params: {
   }
   const eligible = isRotationEligibleSessionKey(requestSessionKey, { mainKey: params.mainKey });
   if (!eligible && rotation.ceilingTokens !== undefined) {
-    await runSessionCeilingCycle({
+    const ceiling = await runSessionCeilingCycle({
       scope: resolveRotationStoreScope(session),
       sessionKey: requestSessionKey,
       rotation,
       estimatedTokens: resolveSessionCeilingEstimate(session.entry),
     });
+    // Bridge sessions (agent:*:pi / agent:*:handoff-*) have no human to type
+    // /reset: past the ceiling the turn dies mid-run in the embedded-run
+    // overflow branch. Rotate to a fresh window BEFORE the caller's re-prepare
+    // so this delivery is admitted exactly once against the fresh entry;
+    // fail-open like compaction — never block admission on a failed rollover.
+    if (ceiling.compactRequested && isBridgeSessionKey(requestSessionKey)) {
+      try {
+        await performBridgeSessionRollover({
+          agentId: session.agentId,
+          config: session.cfg,
+          sessionKey: requestSessionKey,
+          workspaceDir: resolveAgentWorkspaceDir(session.cfg, session.agentId),
+        });
+      } catch (error) {
+        log.warn(
+          `[session-ceiling] bridge rollover failed for ${requestSessionKey}; admitting anyway: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
   if (!isRotationEnabled(rotation) || !eligible) {
     return requestSessionKey;

@@ -29,6 +29,16 @@ export type BridgeSessionRolloverParams = {
 };
 
 /**
+ * Bridge sessions (agent:*:pi / agent:*:handoff-*) are non-interactive: nobody
+ * can type /reset, so ceiling/overflow recovery must roll them over
+ * automatically. Shared by the overflow-recovery branch and the chat.send
+ * admission ceiling so both paths key on one definition.
+ */
+export function isBridgeSessionKey(sessionKey: string): boolean {
+  return /\bagent:[^:]+:(pi|handoff-[^:]+.*)$/.test(sessionKey);
+}
+
+/**
  * Rotates the bridge session entry to a fresh window in one transaction.
  * Returns false when there is no persisted entry to rotate (nothing to reset).
  * Throws only on storage failure; callers must catch and fall back to the

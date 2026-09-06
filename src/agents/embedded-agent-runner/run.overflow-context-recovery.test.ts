@@ -27,9 +27,13 @@ const mocks = vi.hoisted(() => ({
   warn: vi.fn(),
 }));
 
-vi.mock("./run/bridge-session-rollover.js", () => ({
-  performBridgeSessionRollover: mocks.rollover,
-}));
+vi.mock("./run/bridge-session-rollover.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./run/bridge-session-rollover.js")>();
+  return {
+    isBridgeSessionKey: actual.isBridgeSessionKey,
+    performBridgeSessionRollover: mocks.rollover,
+  };
+});
 
 vi.mock("./context-engine-maintenance.js", () => ({
   runContextEngineMaintenance: mocks.maintenance,

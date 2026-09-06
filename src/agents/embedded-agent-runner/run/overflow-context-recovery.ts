@@ -23,7 +23,7 @@ import {
   sessionLikelyHasOversizedToolResults,
   truncateOversizedToolResultsInSessionManager,
 } from "../tool-result-truncation.js";
-import { performBridgeSessionRollover } from "./bridge-session-rollover.js";
+import { isBridgeSessionKey, performBridgeSessionRollover } from "./bridge-session-rollover.js";
 import {
   compactEmbeddedRunForRecovery,
   type EmbeddedRunCompactionRecoveryInput,
@@ -193,7 +193,7 @@ export async function recoverEmbeddedRunOverflow(
    * to reset or switch models.
    */
   const bridgeSessionKey = input.runParams?.sessionKey ?? "";
-  const isBridgeSession = /\bagent:[^:]+:(pi|handoff-[^:]+.*)$/.test(bridgeSessionKey);
+  const isBridgeSession = isBridgeSessionKey(bridgeSessionKey);
   const bridgeRolloverText =
     "Context overflow: prompt too large for the model. " +
     "This bridge session has been rotated to a fresh window; " +
