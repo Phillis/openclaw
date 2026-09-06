@@ -175,6 +175,7 @@ export async function runEmbeddedAttemptSettledPhase(
     history: {
       contextEnginePromptAuthority,
       contextEngineAssemblySucceeded,
+      contextEngineEstimatedTokens,
       unwindowedContextEngineMessagesForPrecheck,
     },
     isProbeSession,
@@ -287,6 +288,7 @@ export async function runEmbeddedAttemptSettledPhase(
         ...(input.activeContextEngine ? { activeContextEngine: input.activeContextEngine } : {}),
         compactionReplayEnabled: sessionRuntime.transport.compactionReplayEnabled,
         contextEngineAssemblySucceeded,
+        ...(contextEngineEstimatedTokens !== undefined ? { contextEngineEstimatedTokens } : {}),
         contextEnginePromptAuthority,
         includeBoundaryTimestamp,
         ...(boundaryTimezone ? { timezone: boundaryTimezone } : {}),

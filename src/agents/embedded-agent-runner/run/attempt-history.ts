@@ -425,6 +425,8 @@ type SettingsManager = Pick<
 type PreparedEmbeddedAttemptHistory = {
   contextEnginePromptAuthority: NonNullable<AssembleResult["promptAuthority"]>;
   contextEngineAssemblySucceeded: boolean;
+  /** Estimated tokens from the engine's own AssembleResult, when assembly succeeded. */
+  contextEngineEstimatedTokens?: number;
   unwindowedContextEngineMessagesForPrecheck?: AgentMessage[];
 };
 
@@ -603,6 +605,7 @@ export async function prepareEmbeddedAttemptHistory(input: {
 
   let contextEnginePromptAuthority: NonNullable<AssembleResult["promptAuthority"]> = "assembled";
   let contextEngineAssemblySucceeded = false;
+  let contextEngineEstimatedTokens: number | undefined;
   let unwindowedContextEngineMessagesForPrecheck: AgentMessage[] | undefined;
   if (input.activeContextEngine) {
     try {
@@ -662,6 +665,7 @@ export async function prepareEmbeddedAttemptHistory(input: {
       }
       contextEnginePromptAuthority = assembled.promptAuthority ?? "assembled";
       contextEngineAssemblySucceeded = true;
+      contextEngineEstimatedTokens = assembled.estimatedTokens;
       if (contextEnginePromptAuthority === "preassembly_may_overflow") {
         unwindowedContextEngineMessagesForPrecheck = preassemblyMessages;
       }
@@ -684,6 +688,7 @@ export async function prepareEmbeddedAttemptHistory(input: {
   return {
     contextEnginePromptAuthority,
     contextEngineAssemblySucceeded,
+    ...(contextEngineEstimatedTokens !== undefined ? { contextEngineEstimatedTokens } : {}),
     ...(unwindowedContextEngineMessagesForPrecheck
       ? { unwindowedContextEngineMessagesForPrecheck }
       : {}),

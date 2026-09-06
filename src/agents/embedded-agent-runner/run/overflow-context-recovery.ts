@@ -23,6 +23,7 @@ import {
   sessionLikelyHasOversizedToolResults,
   truncateOversizedToolResultsInSessionManager,
 } from "../tool-result-truncation.js";
+import { performBridgeSessionRollover } from "./bridge-session-rollover.js";
 import {
   compactEmbeddedRunForRecovery,
   type EmbeddedRunCompactionRecoveryInput,
@@ -179,40 +180,74 @@ export async function recoverEmbeddedRunOverflow(
 
   const isCompactionFailure = isCompactionFailureError(errorText);
 
+  /*
+   * HOST FIX (2026-09-06, from the WC session-death recurrence investigation):
+   * when the overflowing session is a BRIDGE session (non-interactive — its key
+   * matches the agent:*:pi or agent:*:handoff-* pattern used by external
+   * tools), surfacing "try /reset" is useless: nobody can type it. Perform an
+   * ACTUAL session rollover via resetSessionEntryLifecycle (the same atomic
+   * primitive interactive /reset uses) so the next message to this bridge
+   * starts fresh. Used by both the provider-size-ceiling branch (compaction
+   * cannot shrink an already-rejected payload) and the exhausted branch below.
+   * Interactive sessions keep the surfaced guidance because a human can choose
+   * to reset or switch models.
+   */
+  const bridgeSessionKey = input.runParams?.sessionKey ?? "";
+  const isBridgeSession = /\bagent:[^:]+:(pi|handoff-[^:]+.*)$/.test(bridgeSessionKey);
+  const bridgeRolloverText =
+    "Context overflow: prompt too large for the model. " +
+    "This bridge session has been rotated to a fresh window; " +
+    "the next message starts a new session.";
+  const rolloverBridgeSession = async (
+    kind: "compaction_failure" | "context_overflow",
+  ): Promise<EmbeddedRunOverflowRecoveryOutcome> => {
+    log.warn(
+      `[context-overflow-recovery] auto-rollover for bridge session ${bridgeSessionKey} ` +
+        `(${input.provider}/${input.modelId}) kind=${kind}; rotating to a fresh window ` +
+        `so the next bridge message starts clean`,
+    );
+    try {
+      await performBridgeSessionRollover({
+        agentId: input.sessionAgentId,
+        ...(runParams.config ? { config: runParams.config } : {}),
+        sessionKey: bridgeSessionKey,
+        workspaceDir: input.workspaceDir,
+      });
+      return {
+        action: "surface" as const,
+        kind,
+        errorText,
+        userText: bridgeRolloverText,
+      };
+    } catch (rolloverError) {
+      log.warn(
+        `[context-overflow-recovery] bridge auto-rollover failed for ${bridgeSessionKey}: ` +
+          (rolloverError instanceof Error ? rolloverError.message : String(rolloverError)),
+      );
+    }
+    return {
+      action: "surface",
+      kind,
+      errorText,
+      userText: renderOverflowResetGuidance(input.attempt),
+    };
+  };
+
   // Compaction here budgets against the model's context window, so it cannot make the request fit
   // under the provider's own ceiling, and every retry re-sends a payload already rejected. Stop
   // the run instead of compacting, adopting a successor transcript, or truncating and retrying:
   // declining would return this to the same-model rate-limit retry that reported the refusal.
   if (isProviderRequestSizeCeilingError(errorText)) {
-    /*
-     * HOST FIX part 2 (2026-09-06): the ceiling branch fires FIRST for bridge
-     * sessions at true context exhaustion (e.g. a 525K-token transcript against
-     * a 512K model). Surfacing "try /reset" is useless for a headless bridge
-     * (agent:*:pi / agent:*:handoff-*) — nobody can type it. Perform the same
-     * bridge-session auto-rollover as the exhausted path below.
-     */
-    const ceilingSessionKey = input.runParams?.sessionKey ?? "";
-    const ceilingIsBridge = /\bagent:[^:]+:(pi|handoff-[^:]+.*)$/.test(ceilingSessionKey);
-    if (ceilingIsBridge && !isCompactionFailure) {
-      log.warn(
-        `[context-overflow-recovery] bridge auto-rollover (ceiling branch) for ${ceilingSessionKey} ` +
-          `(${input.provider}/${input.modelId}); rotating to fresh window`,
-      );
-      return {
-        action: "surface" as const,
-        kind: "context_overflow" as const,
-        errorText,
-        userText:
-          "Context overflow: prompt too large for the model. " +
-          "This bridge session has been automatically rotated to a fresh window; " +
-          "the next message will start a new session.",
-      };
-    }
     log.warn(
       `[context-overflow-recovery] provider request-size ceiling for ${input.provider}/${input.modelId}; ` +
         `livenessState=blocked suggestedAction=reset_or_new kind=${isCompactionFailure ? "compaction_failure" : "context_overflow"} ` +
         `compaction=skipped retry=skipped`,
     );
+    if (isBridgeSession) {
+      return await rolloverBridgeSession(
+        isCompactionFailure ? "compaction_failure" : "context_overflow",
+      );
+    }
     return {
       action: "surface",
       kind: isCompactionFailure ? "compaction_failure" : "context_overflow",
@@ -421,50 +456,20 @@ export async function recoverEmbeddedRunOverflow(
     );
   }
   const kind = isCompactionFailure ? "compaction_failure" : "context_overflow";
-  const userText = renderOverflowResetGuidance(input.attempt);
-  /*
-   * HOST FIX (2026-09-06, from the WC session-death recurrence investigation):
-   * when the exhausted-overflow session is a BRIDGE session (non-interactive —
-   * its key matches the agent:*:pi or agent:*:handoff-* pattern used by
-   * external tools), surfacing "try /reset" is useless: nobody can type it.
-   * Instead, perform an automatic session rollover — create a new window
-   * with reason "rollover" so the next message to this bridge starts fresh.
-   * Interactive sessions (main, Slack, webchat) keep the surfaced guidance
-   * because a human can choose to reset or switch models.
-   *
-   * This is the same principle as the supervision session rotation (the v2
-   * plugin's supervisionSessionRotationEstTokens knob) but applied at the
-   * host runner level for ALL bridge sessions.
-   */
-  const sessionKey = input.runParams?.sessionKey ?? "";
-  const isBridgeSession = /\bagent:[^:]+:(pi|handoff-[^:]+.*)$/.test(sessionKey);
   if (isBridgeSession && kind === "context_overflow") {
-    log.warn(
-      `[context-overflow-recovery] auto-rollover for bridge session ${sessionKey} ` +
-        `(${input.provider}/${input.modelId}); compaction exhausted, ` +
-        `creating fresh window so the next bridge message starts clean`,
-    );
-    try {
-      input.prepareCurrentTranscriptRetry();
-      return {
-        action: "surface" as const,
-        kind: "context_overflow" as const,
-        errorText,
-        userText:
-          "Context overflow: prompt too large for the model. " +
-          "This bridge session has been automatically rotated to a fresh window; " +
-          "the next message will start a new session.",
-      };
-    } catch (rolloverError) {
-      log.warn(
-        `[context-overflow-recovery] bridge auto-rollover failed for ${sessionKey}: ` +
-          `${rolloverError instanceof Error ? rolloverError.message : String(rolloverError)}`,
-      );
-    }
+    // Real rollover (resetSessionEntryLifecycle) instead of f716acb's placebo:
+    // prepareCurrentTranscriptRetry only re-prepared the doomed transcript and
+    // never created a fresh window. Retry-prep belongs to retry flows only.
+    return await rolloverBridgeSession(kind);
   }
   log.warn(
     `[context-overflow-recovery] exhausted provider overflow recovery for ${input.provider}/${input.modelId}; ` +
       `livenessState=blocked suggestedAction=reset_or_new kind=${kind}`,
   );
-  return { action: "surface", kind, errorText, userText };
+  return {
+    action: "surface",
+    kind,
+    errorText,
+    userText: renderOverflowResetGuidance(input.attempt),
+  };
 }

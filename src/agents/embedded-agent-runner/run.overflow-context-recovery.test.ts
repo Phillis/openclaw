@@ -21,9 +21,14 @@ const mocks = vi.hoisted(() => ({
   maintenance: vi.fn(),
   markProviderPromptRejected: vi.fn(),
   resetNoRealConversationTokenSnapshot: vi.fn(),
+  rollover: vi.fn(async () => true),
   sessionLikelyHasOversizedToolResults: vi.fn(() => false),
   truncateOversizedToolResults: vi.fn(),
   warn: vi.fn(),
+}));
+
+vi.mock("./run/bridge-session-rollover.js", () => ({
+  performBridgeSessionRollover: mocks.rollover,
 }));
 
 vi.mock("./context-engine-maintenance.js", () => ({
@@ -235,6 +240,7 @@ describe("recoverEmbeddedRunOverflow", () => {
     mocks.maintenance.mockReset();
     mocks.markProviderPromptRejected.mockReset();
     mocks.resetNoRealConversationTokenSnapshot.mockReset();
+    mocks.rollover.mockReset().mockResolvedValue(true);
     mocks.sessionLikelyHasOversizedToolResults.mockReset().mockReturnValue(false);
     mocks.truncateOversizedToolResults.mockReset().mockReturnValue({
       truncated: false,
@@ -843,5 +849,109 @@ describe("recoverEmbeddedRunOverflow", () => {
     }
     expect(result.userText).toContain("/reset");
     expect(result.userText).toContain("/new");
+  });
+
+  it("performs a real rollover on the exhausted branch for a bridge session", async () => {
+    const state = createEmbeddedRunContextRecoveryState();
+    state.overflowCompactionAttempts = 3;
+    const input = makeInput({
+      state,
+      runParams: {
+        runId: "run-1",
+        sessionId: "session-1",
+        sessionKey: "agent:oscar:pi",
+        config: {},
+        workspaceDir: "/tmp/workspace",
+        prompt: "continue",
+        timeoutMs: 1_000,
+      },
+    });
+
+    const result = await recoverEmbeddedRunOverflow(input);
+
+    expect(result).toMatchObject({ action: "surface", kind: "context_overflow" });
+    if (result.action !== "surface") {
+      throw new Error("Expected exhausted overflow recovery to surface");
+    }
+    expect(result.userText).toContain("rotated to a fresh window");
+    expect(mocks.rollover).toHaveBeenCalledOnce();
+    expect(mocks.rollover).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey: "agent:oscar:pi", agentId: "main" }),
+    );
+    // The placebo retry-prep belongs to retry flows only, never the rollover path.
+    expect(input.prepareCurrentTranscriptRetry).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the surfaced guidance when the bridge rollover throws", async () => {
+    mocks.rollover.mockRejectedValueOnce(new Error("sqlite locked"));
+    const state = createEmbeddedRunContextRecoveryState();
+    state.overflowCompactionAttempts = 3;
+    const input = makeInput({
+      state,
+      runParams: {
+        runId: "run-1",
+        sessionId: "session-1",
+        sessionKey: "agent:oscar:pi",
+        config: {},
+        workspaceDir: "/tmp/workspace",
+        prompt: "continue",
+        timeoutMs: 1_000,
+      },
+    });
+
+    const result = await recoverEmbeddedRunOverflow(input);
+
+    expect(result).toMatchObject({
+      action: "surface",
+      kind: "context_overflow",
+      userText: expect.stringContaining("/reset"),
+    });
+    expect(mocks.rollover).toHaveBeenCalledOnce();
+    expect(mocks.warn).toHaveBeenCalledWith(expect.stringContaining("bridge auto-rollover failed"));
+  });
+
+  it("rolls over a bridge session on the provider request-size ceiling branch", async () => {
+    const promptError = new Error(
+      "413 Request too large for model `openai/gpt-oss-120b` in organization `org_x` " +
+        "service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 8098, " +
+        "please reduce your message size and try again.",
+    );
+    const input = makeInput({
+      promptError,
+      runParams: {
+        runId: "run-1",
+        sessionId: "session-1",
+        sessionKey: "agent:oscar:handoff-supervision",
+        config: {},
+        workspaceDir: "/tmp/workspace",
+        prompt: "continue",
+        timeoutMs: 1_000,
+      },
+    });
+
+    const result = await recoverEmbeddedRunOverflow(input);
+
+    expect(result).toMatchObject({ action: "surface", kind: "context_overflow" });
+    if (result.action !== "surface") {
+      throw new Error("Expected ceiling overflow recovery to surface");
+    }
+    expect(result.userText).toContain("rotated to a fresh window");
+    expect(mocks.rollover).toHaveBeenCalledOnce();
+    expect(mocks.compact).not.toHaveBeenCalled();
+  });
+
+  it("keeps interactive-session surface guidance without any rollover", async () => {
+    const state = createEmbeddedRunContextRecoveryState();
+    state.overflowCompactionAttempts = 3;
+    const input = makeInput({ state });
+
+    const result = await recoverEmbeddedRunOverflow(input);
+
+    expect(result).toMatchObject({
+      action: "surface",
+      kind: "context_overflow",
+      userText: expect.stringContaining("/reset"),
+    });
+    expect(mocks.rollover).not.toHaveBeenCalled();
   });
 });

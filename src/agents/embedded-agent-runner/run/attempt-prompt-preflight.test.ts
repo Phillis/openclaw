@@ -1,11 +1,27 @@
 import { captureOpenAIResponsesCompaction } from "@openclaw/ai/transports";
 import type { Model } from "@openclaw/llm-core";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { testing } from "../../openai-transport-stream.test-support.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { SessionManager } from "../../sessions/index.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
 import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
+
+const logMocks = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  isEnabled: vi.fn(() => false),
+}));
+
+vi.mock("../logger.js", () => ({
+  log: {
+    debug: logMocks.debug,
+    info: logMocks.info,
+    warn: logMocks.warn,
+    isEnabled: logMocks.isEnabled,
+  },
+}));
 import {
   handleEmbeddedAttemptMidTurnPrecheck,
   prepareEmbeddedAttemptPromptPreflight,
@@ -62,6 +78,109 @@ function createSessionManagerWithMessage(message: AgentMessage): SessionManager 
 }
 
 describe("attempt prompt preflight", () => {
+  beforeEach(() => {
+    for (const mock of Object.values(logMocks)) {
+      mock.mockReset();
+    }
+    logMocks.isEnabled.mockReturnValue(false);
+  });
+
+  it("keeps the precheck active and records pressure when the engine estimate exceeds the attempt budget", async () => {
+    const state: Parameters<typeof prepareEmbeddedAttemptPromptPreflight>[0]["state"] = {
+      contextBudgetStatus: undefined,
+      preflightRecovery: undefined,
+      promptError: null,
+      promptErrorSource: null,
+      skipPromptSubmission: false,
+    };
+    const result = await prepareEmbeddedAttemptPromptPreflight({
+      attempt,
+      compactionReplayEnabled: true,
+      activeContextEngine: {
+        info: { id: "owner", name: "Owner", ownsCompaction: true },
+      },
+      contextEngineAssemblySucceeded: true,
+      contextEnginePromptAuthority: "assembled",
+      // Fallback chain moved the run to a 524K-context model while the engine
+      // assembled ~800K tokens; the precheck must not be skipped.
+      contextEngineEstimatedTokens: 800_000,
+      contextTokenBudget: 524_288,
+      hookMessagesForCurrentPrompt: [],
+      includeBoundaryTimestamp: false,
+      promptForPrecheck: "hello",
+      reserveTokens: 100,
+      sessionMessageCount: 0,
+      state,
+      systemPrompt: "",
+      toolResultMaxChars: 1_000,
+    });
+
+    // The gate keeps the precheck active: the budget check runs and records its
+    // status instead of the plain skip (which would return the state unchanged).
+    expect(result.contextBudgetStatus).toBeDefined();
+    expect(result.skipPromptSubmission).toBe(false);
+    expect(result.promptError).toBeNull();
+    expect(logMocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "engine estimate 800000 exceeds attempt budget 524288; keeping host precheck active",
+      ),
+    );
+  });
+
+  it("takes the preemptive overflow path instead of shipping when the engine estimate overflows a replay window", async () => {
+    const owner = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "covered" }],
+      model: attempt.model.id,
+    });
+    const item = { type: "compaction" as const, id: "cmp_gate", encrypted_content: "opaque" };
+    captureOpenAIResponsesCompaction(
+      owner,
+      item,
+      "retained-users",
+      attempt.model,
+      testing.buildOpenAIResponsesReasoningReplayMetadata(attempt.model, attempt),
+      [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "retained content ".repeat(130_000) }],
+        },
+        item,
+      ],
+    );
+    const result = await prepareEmbeddedAttemptPromptPreflight({
+      attempt,
+      compactionReplayEnabled: true,
+      activeContextEngine: {
+        info: { id: "owner", name: "Owner", ownsCompaction: true },
+      },
+      contextEngineAssemblySucceeded: true,
+      contextEnginePromptAuthority: "assembled",
+      contextEngineEstimatedTokens: 800_000,
+      contextTokenBudget: 524_288,
+      hookMessagesForCurrentPrompt: [owner],
+      includeBoundaryTimestamp: false,
+      promptForPrecheck: "follow-up",
+      reserveTokens: 100,
+      sessionMessageCount: 1,
+      systemPrompt: "",
+      toolResultMaxChars: 1_000,
+      state: {
+        contextBudgetStatus: undefined,
+        preflightRecovery: undefined,
+        promptError: null,
+        promptErrorSource: null,
+        skipPromptSubmission: false,
+      },
+    });
+
+    expect(result.skipPromptSubmission).toBe(true);
+    expect(result.promptErrorSource).toBe("precheck");
+    expect(result.promptError?.message).toBe(PREEMPTIVE_OVERFLOW_ERROR_TEXT);
+    expect(logMocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining("keeping host precheck active"),
+    );
+  });
   it.each([
     "oversized",
     "unwindowed",
@@ -345,6 +464,67 @@ describe("attempt prompt preflight", () => {
       hookMessagesForCurrentPrompt: [],
       includeBoundaryTimestamp: false,
       promptForPrecheck: "x".repeat(4_000),
+      reserveTokens: 20,
+      sessionMessageCount: 0,
+      state,
+      systemPrompt: "",
+      toolResultMaxChars: 1_000,
+    });
+
+    expect(result).toEqual(state);
+  });
+
+  it("preserves the compaction-owner skip when the engine estimate fits the budget", async () => {
+    const state: Parameters<typeof prepareEmbeddedAttemptPromptPreflight>[0]["state"] = {
+      contextBudgetStatus: undefined,
+      preflightRecovery: undefined,
+      promptError: null,
+      promptErrorSource: null,
+      skipPromptSubmission: false,
+    };
+    const result = await prepareEmbeddedAttemptPromptPreflight({
+      attempt,
+      compactionReplayEnabled: true,
+      activeContextEngine: {
+        info: { id: "owner", name: "Owner", ownsCompaction: true },
+      },
+      contextEngineAssemblySucceeded: true,
+      contextEnginePromptAuthority: "assembled",
+      contextEngineEstimatedTokens: 1_000,
+      contextTokenBudget: 524_288,
+      hookMessagesForCurrentPrompt: [],
+      includeBoundaryTimestamp: false,
+      promptForPrecheck: "hello",
+      reserveTokens: 20,
+      sessionMessageCount: 0,
+      state,
+      systemPrompt: "",
+      toolResultMaxChars: 1_000,
+    });
+
+    expect(result).toEqual(state);
+  });
+
+  it("preserves the compaction-owner skip when no engine estimate is available", async () => {
+    const state: Parameters<typeof prepareEmbeddedAttemptPromptPreflight>[0]["state"] = {
+      contextBudgetStatus: undefined,
+      preflightRecovery: undefined,
+      promptError: null,
+      promptErrorSource: null,
+      skipPromptSubmission: false,
+    };
+    const result = await prepareEmbeddedAttemptPromptPreflight({
+      attempt,
+      compactionReplayEnabled: true,
+      activeContextEngine: {
+        info: { id: "owner", name: "Owner", ownsCompaction: true },
+      },
+      contextEngineAssemblySucceeded: true,
+      contextEnginePromptAuthority: "assembled",
+      contextTokenBudget: 524_288,
+      hookMessagesForCurrentPrompt: [],
+      includeBoundaryTimestamp: false,
+      promptForPrecheck: "hello",
       reserveTokens: 20,
       sessionMessageCount: 0,
       state,
