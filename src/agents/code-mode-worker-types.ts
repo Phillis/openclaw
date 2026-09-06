@@ -34,17 +34,7 @@ export type PendingBridgeRequest = {
   args: unknown[];
 };
 
-export type SettledBridgeRequest = { id: string } & Result<unknown, string> & {
-    /**
-     * Host-only provenance marker copied from a typed plugin failure whose
-     * error object provably settled before any guest command was derived or
-     * journaled (e.g. a Handoff v2 pre-mutation rejection). Never replayed to
-     * the guest: the worker reads only `id`/`ok`/`value`/`error`. Any other
-     * value (including `"unknown"` or `"post-mutation"`) must not be set —
-     * absence is the safe default.
-     */
-    mutationProvenance?: "pre-mutation";
-  };
+export type SettledBridgeRequest = { id: string } & Result<unknown, string>;
 
 type SerializedCodeModeNamespaceValue =
   | { kind: "array"; items: SerializedCodeModeNamespaceValue[] }

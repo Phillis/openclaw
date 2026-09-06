@@ -17,23 +17,12 @@ import type {
   SettledBridgeRequest,
 } from "./code-mode-runtime.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
-import {
-  consumeToolEffectReceipt,
-  toolEffectStateProvesNoEffect,
-  type ToolEffectReceipt,
-} from "./tool-effect-receipt.js";
-import { consumeTrustedToolNoStartError } from "./tool-result-error.js";
 import type { ToolSearchRuntime } from "./tool-search-runtime.js";
 import type { ToolSearchToolContext } from "./tool-search-types.js";
 import { ToolInputError } from "./tools/common.js";
 
 export type CodeModeBridgeDispatchState = {
   started: boolean;
-  operations: Map<string, "pending" | ToolEffectReceipt["state"]>;
-  // Tracked mutating dispatches whose failure settled with an exact typed
-  // `"pre-mutation"` provenance marker: the tool provably failed before any
-  // command was derived or journaled, so the outcome is fully known.
-  preMutationFailures: number;
 };
 
 export type PendingBridgeState = PendingBridgeRequest & {
@@ -141,36 +130,7 @@ export function createCodeModeRunOwner(ctx: ToolSearchToolContext) {
 }
 
 export function createCodeModeBridgeDispatchState(): CodeModeBridgeDispatchState {
-  return { started: false, operations: new Map(), preMutationFailures: 0 };
-}
-
-/** Read the host-only side-effect classification for one Code Mode run. */
-export function isCodeModeBridgeRepairEligible(state: CodeModeBridgeDispatchState): boolean {
-  return (
-    state.started &&
-    state.operations.size > 0 &&
-    [...state.operations.values()].every(
-      (effect) => effect !== "pending" && toolEffectStateProvesNoEffect(effect),
-    )
-  );
-}
-
-/**
- * Mutation provenance for one finished Code Mode run's failure details.
- * `"pre-mutation"` only when at least one tracked mutating dispatch settled
- * with an exact typed pre-mutation marker AND no uncertain mutating dispatch
- * remains (every pre-mutation settle is classified as a proved no-effect
- * operation, so any other state means an unaccounted possibly-mutating
- * outcome). Any other shape - unknown-outcome failures, unsettled dispatches,
- * plain host failures - yields `undefined`, which every consumer treats
- * exactly like unknown.
- */
-export function codeModeMutationProvenance(
-  state: CodeModeBridgeDispatchState,
-): "pre-mutation" | undefined {
-  return state.preMutationFailures > 0 && isCodeModeBridgeRepairEligible(state)
-    ? "pre-mutation"
-    : undefined;
+  return { started: false };
 }
 
 // One unreferenced timer owns parked snapshots even when no later exec or wait
@@ -377,22 +337,25 @@ function isPendingBridgeRequestReplaySafe(
   return binding ? runtime.isReplaySafeExactId(binding.id) : false;
 }
 
-export function createPendingBridgeStates(params: {
-  pendingRequests: PendingBridgeRequest[];
-  config: CodeModeConfig;
-  runtime: ToolSearchRuntime;
-  catalogProjection: CodeModeCatalogProjection;
-  namespaceRuntime: CodeModeNamespaceRuntime;
-  parentToolCallId: string;
-  codeModeRunId: string;
-  remainingMs: number;
-  activeRunId?: string;
-  ctx: ToolSearchToolContext;
-  signal: AbortSignal;
-  onUpdate?: AgentToolUpdateCallback;
-  bridgeDispatch: CodeModeBridgeDispatchState;
-}): PendingBridgeState[] {
-  return params.pendingRequests.map((request) => {
+export function createPendingBridgeStates(
+  pendingRequests: PendingBridgeRequest[],
+  params: {
+    config: CodeModeConfig;
+    runtime: ToolSearchRuntime;
+    catalogProjection: CodeModeCatalogProjection;
+    namespaceRuntime: CodeModeNamespaceRuntime;
+    parentToolCallId: string;
+    codeModeRunId: string;
+    remainingMs: number;
+    activeRunId?: string;
+    ctx: ToolSearchToolContext;
+    signal: AbortSignal;
+    onUpdate?: AgentToolUpdateCallback;
+    bridgeDispatch: CodeModeBridgeDispatchState;
+  },
+): PendingBridgeState[] {
+  // Pending siblings retain dispatch context, never the original request batch.
+  return pendingRequests.map((request) => {
     // Bridge calls start immediately while the VM snapshot is stored. Their
     // settled values are later replayed into QuickJS by the wait tool.
     const abortController = new AbortController();
@@ -404,15 +367,8 @@ export function createPendingBridgeStates(params: {
     if (params.signal.aborted) {
       onAbort();
     }
-    const tracksDispatch = request.method !== "sleep";
-    // Discovery is read-only; replay-safe actions such as agentSpawn may still mutate.
-    const recoverySafe =
-      ["search", "describe", "skillsList", "skillsRead"].includes(request.method) ||
-      (["nodes", "callValue"].includes(request.method) &&
-        isPendingBridgeRequestReplaySafe(request, params.runtime, params.catalogProjection));
-    if (tracksDispatch) {
+    if (request.method !== "sleep") {
       params.bridgeDispatch.started = true;
-      params.bridgeDispatch.operations.set(request.id, "pending");
     }
     const bridgeCall = runBridgeRequest({
       runtime: params.runtime,
@@ -427,48 +383,20 @@ export function createPendingBridgeStates(params: {
       signal,
       onUpdate: params.onUpdate,
     });
-    const completion = raceWithAbortSignal(bridgeCall, signal).catch(
-      (): SettledBridgeRequest => ({
-        id: request.id,
-        ok: false,
-        error: signal.reason instanceof Error ? signal.reason.message : BRIDGE_CLOSED_MESSAGE,
-      }),
-    );
+    const completion = raceWithAbortSignal(bridgeCall, signal).catch((): SettledBridgeRequest => ({
+      id: request.id,
+      ok: false,
+      error: signal.reason instanceof Error ? signal.reason.message : BRIDGE_CLOSED_MESSAGE,
+    }));
     const state: PendingBridgeState = {
       ...request,
       promise: completion.then((settled) => {
         params.signal.removeEventListener("abort", onAbort);
-        // The effect receipt owns classification; consume the predecessor marker
-        // so reusing this settled object cannot preserve stale no-start authority.
-        const trustedNoStart = consumeTrustedToolNoStartError(settled);
-        const effectReceipt = consumeToolEffectReceipt(settled);
-        if (tracksDispatch) {
-          params.bridgeDispatch.operations.set(
-            request.id,
-            effectReceipt?.state ??
-              (settled.mutationProvenance === "pre-mutation"
-                ? "failed_no_effect"
-                : recoverySafe
-                  ? settled.ok
-                    ? "read_completed"
-                    : "failed_no_effect"
-                  : "uncertain"),
-          );
-        }
-        // A typed pre-mutation failure carries exact host-verified provenance:
-        // the tool settled before any command was derived, so it is no longer
-        // an uncertain mutating outcome. Retain the fact for the failure-details stamp.
-        if (
-          tracksDispatch &&
-          !recoverySafe &&
-          !trustedNoStart &&
-          !settled.ok &&
-          settled.mutationProvenance === "pre-mutation"
-        ) {
-          params.bridgeDispatch.preMutationFailures += 1;
-        }
         state.settledSequence = ++nextPendingBridgeSettlementSequence;
         state.settled = settled;
+        // Only the response is needed until guest replay; live calls keep their own request.
+        state.args = [];
+        state.cancel = undefined;
         if (state.method === "agentWait" && params.activeRunId) {
           const active = activeRuns.get(params.activeRunId);
           if (active?.pending.includes(state)) {

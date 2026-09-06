@@ -161,7 +161,6 @@ export const MessagesSchema = z
       })
       .strict()
       .optional(),
-    suppressToolErrors: z.boolean().optional(),
   })
   .strict()
   .optional();
