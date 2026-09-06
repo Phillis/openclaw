@@ -5,6 +5,7 @@ import {
   performBridgeSessionRollover,
 } from "../../agents/embedded-agent-runner/run/bridge-session-rollover.js";
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
+import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionRotationConfig } from "../../config/types.base.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
@@ -41,22 +42,32 @@ function resolveRotationStoreScope(session: PreparedChatSendSession): RotationSt
  * request (before the normal prepare/admit) on the freshly-prepared session:
  * - Ceiling (fail-open) applies to non-rotatable long-lived (main) sessions.
  * - Rotation applies to rotation-eligible channel-peer sessions.
- * Returns the request session key the admission should target. If it differs
- * from `requestSessionKey`, the caller re-prepares on the new epoch key.
+ * Returns `{ sessionKey }` — the request session key the admission should
+ * target; if it differs from `requestSessionKey`, the caller re-prepares on
+ * the new epoch key. Returns `{ blocked }` (typed retryable BUG-034 bridge
+ * rollover refusal) instead of admitting a known-over-ceiling bridge when
+ * rollover recovery failed.
  */
+type BridgeCeilingRolloverBlocked = {
+  code: (typeof ErrorCodes)[keyof typeof ErrorCodes];
+  message: string;
+  reason: "SESSION_CEILING_BRIDGE_ROLLOVER_FAILED" | "SESSION_CEILING_BRIDGE_ROLLOVER_NO_ENTRY";
+};
+
 async function resolveChatSendRotationTarget(params: {
   session: PreparedChatSendSession;
   rotation: SessionRotationConfig | undefined;
   mainKey?: string;
-}): Promise<string> {
+}): Promise<{ sessionKey: string } | { blocked: BridgeCeilingRolloverBlocked }> {
   const { session } = params;
   const rotation = params.rotation;
   const requestSessionKey = session.sessionKey;
   if (!rotation) {
-    return requestSessionKey;
+    return { sessionKey: requestSessionKey };
   }
   const eligible = isRotationEligibleSessionKey(requestSessionKey, { mainKey: params.mainKey });
   if (!eligible && rotation.ceilingTokens !== undefined) {
+    const ceilingTokens = rotation.ceilingTokens;
     const ceiling = await runSessionCeilingCycle({
       scope: resolveRotationStoreScope(session),
       sessionKey: requestSessionKey,
@@ -66,27 +77,71 @@ async function resolveChatSendRotationTarget(params: {
     // Bridge sessions (agent:*:pi / agent:*:handoff-*) have no human to type
     // /reset: past the ceiling the turn dies mid-run in the embedded-run
     // overflow branch. Rotate to a fresh window BEFORE the caller's re-prepare
-    // so this delivery is admitted exactly once against the fresh entry;
-    // fail-open like compaction — never block admission on a failed rollover.
+    // so this delivery is admitted exactly once against the fresh entry.
+    // Fail-closed per the accepted BUG-034 design: a bridge already known over
+    // ceiling must never be admitted merely because the rollover failed or
+    // found nothing to rotate — return a typed retryable transport reason so
+    // the pending delivery reconciles later; the post-overflow rollover
+    // remains the terminal recovery branch.
     if (ceiling.compactRequested && isBridgeSessionKey(requestSessionKey)) {
-      try {
-        await performBridgeSessionRollover({
-          agentId: session.agentId,
-          config: session.cfg,
-          sessionKey: requestSessionKey,
-          workspaceDir: resolveAgentWorkspaceDir(session.cfg, session.agentId),
-        });
-      } catch (error) {
-        log.warn(
-          `[session-ceiling] bridge rollover failed for ${requestSessionKey}; admitting anyway: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+      // Fenced re-read/re-evaluate under the reset transaction's exclusive
+      // lifecycle mutation: another actor (overflow recovery, a concurrent
+      // send's rollover) may already have produced a fresh under-threshold
+      // entry — in that case skip the reset and admit normally. A missing
+      // estimate is not guessed (design fallback: rely on the plugin
+      // dispatch-context guard plus post-overflow recovery).
+      const reReadEntry = loadSessionEntry({
+        ...resolveRotationStoreScope(session),
+        sessionKey: requestSessionKey,
+      });
+      if (reReadEntry === undefined) {
+        return {
+          blocked: {
+            code: ErrorCodes.UNAVAILABLE,
+            message: `session ceiling bridge rollover found no persisted entry for ${requestSessionKey}`,
+            reason: "SESSION_CEILING_BRIDGE_ROLLOVER_NO_ENTRY",
+          },
+        };
+      }
+      const reReadEstimate = resolveSessionCeilingEstimate(reReadEntry);
+      const skipReset = reReadEstimate === undefined || reReadEstimate < ceilingTokens;
+      if (!skipReset) {
+        try {
+          const rolled = await performBridgeSessionRollover({
+            agentId: session.agentId,
+            config: session.cfg,
+            sessionKey: requestSessionKey,
+            workspaceDir: resolveAgentWorkspaceDir(session.cfg, session.agentId),
+          });
+          if (!rolled) {
+            return {
+              blocked: {
+                code: ErrorCodes.UNAVAILABLE,
+                message: `session ceiling bridge rollover found no persisted entry for ${requestSessionKey}`,
+                reason: "SESSION_CEILING_BRIDGE_ROLLOVER_NO_ENTRY",
+              },
+            };
+          }
+        } catch (error) {
+          const failureMessage = error instanceof Error ? error.message : String(error);
+          log.warn(
+            `[session-ceiling] bridge rollover failed for ${requestSessionKey}: ${failureMessage}`,
+          );
+          return {
+            blocked: {
+              code: ErrorCodes.UNAVAILABLE,
+              message: `session ceiling bridge rollover failed for ${requestSessionKey}`,
+              reason: failureMessage.startsWith("No persisted session entry to rotate")
+                ? "SESSION_CEILING_BRIDGE_ROLLOVER_NO_ENTRY"
+                : "SESSION_CEILING_BRIDGE_ROLLOVER_FAILED",
+            },
+          };
+        }
       }
     }
   }
   if (!isRotationEnabled(rotation) || !eligible) {
-    return requestSessionKey;
+    return { sessionKey: requestSessionKey };
   }
   const admission = await resolveSessionRotationAdmissionTarget({
     scope: resolveRotationStoreScope(session),
@@ -94,7 +149,7 @@ async function resolveChatSendRotationTarget(params: {
     rotation,
     mainKey: params.mainKey,
   });
-  return admission.sessionKey;
+  return { sessionKey: admission.sessionKey };
 }
 
 /** Normalize, prepare, and exclusively admit one new chat.send request. */
@@ -163,8 +218,22 @@ export async function prepareAndAdmitChatSend(
         rotation: rotationConfig,
         mainKey,
       });
-      if (targetSessionKey !== request.p.sessionKey) {
-        request.p.sessionKey = targetSessionKey;
+      if ("blocked" in targetSessionKey) {
+        // BUG-034 fail-closed: a bridge known over ceiling is never admitted
+        // merely because the rollover failed. Surface the typed retryable
+        // transport refusal; the pending delivery reconciles later.
+        respond(
+          false,
+          undefined,
+          errorShape(targetSessionKey.blocked.code, targetSessionKey.blocked.message, {
+            retryable: true,
+            details: { reason: targetSessionKey.blocked.reason },
+          }),
+        );
+        return undefined;
+      }
+      if (targetSessionKey.sessionKey !== request.p.sessionKey) {
+        request.p.sessionKey = targetSessionKey.sessionKey;
         continue;
       }
     }
