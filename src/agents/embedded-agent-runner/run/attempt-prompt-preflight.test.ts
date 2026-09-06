@@ -101,9 +101,11 @@ describe("attempt prompt preflight", () => {
       },
       contextEngineAssemblySucceeded: true,
       contextEnginePromptAuthority: "assembled",
-      // Fallback chain moved the run to a 524K-context model while the engine
-      // assembled ~800K tokens; the precheck must not be skipped.
-      contextEngineEstimatedTokens: 800_000,
+      // Production case (2026-09-06): a supervision lane assembled at 421,429
+      // tokens against a 524,288 budget. Under the raw budget, but over the
+      // overhead-adjusted effective budget (floor(524288 * 0.8) = 419430), so
+      // the precheck must not be skipped.
+      contextEngineEstimatedTokens: 421_429,
       contextTokenBudget: 524_288,
       hookMessagesForCurrentPrompt: [],
       includeBoundaryTimestamp: false,
@@ -122,7 +124,7 @@ describe("attempt prompt preflight", () => {
     expect(result.promptError).toBeNull();
     expect(logMocks.warn).toHaveBeenCalledWith(
       expect.stringContaining(
-        "engine estimate 800000 exceeds attempt budget 524288; keeping host precheck active",
+        "engine estimate 421429 exceeds effective attempt budget 419430 (raw 524288, overhead ratio 0.8); keeping host precheck active",
       ),
     );
   });
@@ -156,7 +158,7 @@ describe("attempt prompt preflight", () => {
       },
       contextEngineAssemblySucceeded: true,
       contextEnginePromptAuthority: "assembled",
-      contextEngineEstimatedTokens: 800_000,
+      contextEngineEstimatedTokens: 421_429,
       contextTokenBudget: 524_288,
       hookMessagesForCurrentPrompt: [owner],
       includeBoundaryTimestamp: false,
@@ -491,6 +493,39 @@ describe("attempt prompt preflight", () => {
       contextEngineAssemblySucceeded: true,
       contextEnginePromptAuthority: "assembled",
       contextEngineEstimatedTokens: 1_000,
+      contextTokenBudget: 524_288,
+      hookMessagesForCurrentPrompt: [],
+      includeBoundaryTimestamp: false,
+      promptForPrecheck: "hello",
+      reserveTokens: 20,
+      sessionMessageCount: 0,
+      state,
+      systemPrompt: "",
+      toolResultMaxChars: 1_000,
+    });
+
+    expect(result).toEqual(state);
+  });
+
+  it("preserves the compaction-owner skip when the engine estimate is just under the effective budget", async () => {
+    const state: Parameters<typeof prepareEmbeddedAttemptPromptPreflight>[0]["state"] = {
+      contextBudgetStatus: undefined,
+      preflightRecovery: undefined,
+      promptError: null,
+      promptErrorSource: null,
+      skipPromptSubmission: false,
+    };
+    const result = await prepareEmbeddedAttemptPromptPreflight({
+      attempt,
+      compactionReplayEnabled: true,
+      activeContextEngine: {
+        info: { id: "owner", name: "Owner", ownsCompaction: true },
+      },
+      contextEngineAssemblySucceeded: true,
+      contextEnginePromptAuthority: "assembled",
+      // Under floor(524288 * 0.8) = 419430, the overhead-adjusted gate keeps
+      // deferring overflow admission to the compaction owner.
+      contextEngineEstimatedTokens: 419_000,
       contextTokenBudget: 524_288,
       hookMessagesForCurrentPrompt: [],
       includeBoundaryTimestamp: false,
