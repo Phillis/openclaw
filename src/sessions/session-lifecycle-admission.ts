@@ -15,7 +15,7 @@ import {
 } from "../process/gateway-work-admission.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { runQueuedStoreWrite, type StoreWriterQueue } from "../shared/store-writer-queue.js";
-import { agentIdFromSessionKey, checkLoopGovernorAdmission } from "./loop-governor.js";
+import { checkLoopGovernorAdmissionForAdmissionScope } from "./loop-governor.js";
 import { decodeSessionIdentity, normalizeSessionIdentities } from "./session-lifecycle-identity.js";
 import {
   clearSessionWorkAdmissionHandoffs,
@@ -31,17 +31,6 @@ export {
 } from "./session-work-admission-handoff.js";
 
 export const SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS = 15_000;
-
-/** Pick the first agent-scoped session key from the admission identities, if any. */
-function pickAgentSessionKey(identities: readonly string[]): string | undefined {
-  for (const identity of identities) {
-    const raw = decodeSessionIdentity(identity)?.identity ?? identity;
-    if (raw && agentIdFromSessionKey(raw)) {
-      return raw;
-    }
-  }
-  return undefined;
-}
 
 type SessionWorkAdmission = HandoffSessionWorkAdmission & {
   lifecycleGeneration: string;
@@ -443,9 +432,8 @@ export function getSessionWorkAdmissionRelease(
 
   // A gateway turn can adopt an outer reply admission and open its own inner
   // admission. Self-archive must wait for both owners to release the session.
-  return Promise.all(Array.from(matchingAdmissions, (admission) => admission.released)).then(
-    () => undefined,
-  );
+  const releases = Array.from(matchingAdmissions, (admission) => admission.released);
+  return Promise.all(releases).then(() => undefined);
 }
 
 /** Completion of a named owner that is starting or actively working on a session. */
@@ -471,11 +459,10 @@ export function collectActiveSessionWorkAdmissions(
 ): Map<string, Set<string>> {
   const targets = new Map<string, Set<string>>();
   for (const [normalizedIdentity, admissions] of ACTIVE_SESSION_WORK_ADMISSIONS) {
-    if (
-      ![...admissions].some(
-        (admission) => admission.phase === "acquired" && (!owners || owners.has(admission)),
-      )
-    ) {
+    const hasActiveAdmission = [...admissions].some(
+      (admission) => admission.phase === "acquired" && (!owners || owners.has(admission)),
+    );
+    if (!hasActiveAdmission) {
       continue;
     }
     const decoded = decodeSessionIdentity(normalizedIdentity);
@@ -649,13 +636,7 @@ export async function beginSessionWorkAdmission(params: {
       signal,
       run: async () => {
         const current = new Set(CURRENT_SESSION_WORK_ADMISSIONS.getStore());
-        // Loop governor: cap non-interactive turns for governed agents. Only the
-        // outermost admission of a turn is counted; nested tool/session ops run
-        // under an existing admission and must never consume governor budget.
-        if (current.size === 0) {
-          const agentSessionKey = pickAgentSessionKey(identities);
-          checkLoopGovernorAdmission({ sessionKey: agentSessionKey });
-        }
+        checkLoopGovernorAdmissionForAdmissionScope(current.size === 0, identities);
         current.add(admission);
         await CURRENT_SESSION_WORK_ADMISSIONS.run(current, params.assertAllowed);
         if (isGatewaySubordinateWorkAdmissionClosed()) {

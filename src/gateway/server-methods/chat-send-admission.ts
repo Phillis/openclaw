@@ -16,7 +16,6 @@ import {
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
 import { SESSION_ROUTING_CHANGED_ERROR_REASON } from "../../config/sessions/main-session.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
-import { createAbortError } from "../../infra/abort-signal.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { claimAgentRunContext, clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
@@ -25,16 +24,9 @@ import {
   interruptSessionWorkAdmissions,
   isCompetingSessionWorkAdmissionActive,
 } from "../../sessions/session-lifecycle-admission.js";
-import {
-  ROTATION_ARCHIVE_ACTOR_TYPE,
-  SESSION_ROTATION_CHANGED_ERROR_REASON,
-} from "../../sessions/session-rotation.js";
+import { throwIfRotationArchivedMidQueue } from "../../sessions/session-rotation.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
-import {
-  isChatAbortControllerEntryAbortable,
-  registerChatAbortController,
-  resolveChatRunExpiresAtMs,
-} from "../chat-abort.js";
+import { registerChatAbortController, resolveChatRunExpiresAtMs } from "../chat-abort.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX, type DedupeEntry } from "../server-shared.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
@@ -50,6 +42,7 @@ import {
   resolveRestartSafeChatAdmission,
 } from "./chat-restart-recovery.js";
 import { assertExpectedLeafActive } from "./chat-send-active-leaf.js";
+import { assertChatSendAdmissionOwnsBinding } from "./chat-send-admission-binding.js";
 import { respondKnownChatSendError } from "./chat-send-known-errors.js";
 import {
   inspectGoalChatSendRetry,
@@ -338,16 +331,7 @@ export async function admitChatSend(params: {
       allowPendingWorkspace: true,
     });
     if (archivedError) {
-      // A rotation-archived entry is a mid-queue capture across an epoch
-      // boundary, not a user-intended stop. Signal the orchestrator to
-      // re-resolve the current epoch once and re-admit instead of refusing.
-      if (
-        latestEntry?.archivedAt !== undefined &&
-        (latestEntry?.archivedBy as { type?: string } | undefined)?.type === // SAFETY: structural read of the archived actor discriminator.
-          ROTATION_ARCHIVE_ACTOR_TYPE
-      ) {
-        throw new Error(SESSION_ROTATION_CHANGED_ERROR_REASON);
-      }
+      throwIfRotationArchivedMidQueue(latestEntry);
       throw new Error(archivedError);
     }
     if (!commitOutcome) {
@@ -610,18 +594,12 @@ export async function admitChatSend(params: {
     if (binding.sessionKey !== sessionKey) {
       return;
     }
-    if (
-      context.chatAbortControllers.get(clientRunId) !== sessionBinding ||
-      lifecycleGeneration !== getAgentEventLifecycleGeneration() ||
-      !acquiredGatewayWorkAdmission.isActive() ||
-      !isChatAbortControllerEntryAbortable(sessionBinding) ||
-      sessionBinding.registrationCleanupRequested ||
-      sessionBinding.projectSessionActive === false ||
-      sessionBinding.projectSessionTerminalPending ||
-      sessionBinding.projectSessionTerminalPersisted
-    ) {
-      throw createAbortError("chat session preparation no longer owns its admission");
-    }
+    assertChatSendAdmissionOwnsBinding({
+      currentAbortControllerBinding: context.chatAbortControllers.get(clientRunId),
+      sessionBinding,
+      lifecycleGeneration,
+      acquiredGatewayWorkAdmission,
+    });
     sessionBinding.sessionId = binding.sessionId;
   };
   let gatewayWorkAdmissionRetains = 1;

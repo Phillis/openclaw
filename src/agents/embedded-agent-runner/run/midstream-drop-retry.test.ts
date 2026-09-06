@@ -77,9 +77,7 @@ function makeMidStreamDropInput(options?: {
     previousRetryFailoverReason: null,
     maybeMarkAuthProfileFailure: vi.fn(async () => {}),
     getTransientRetryCount: () => 0,
-    maybeRetryTransient: vi.fn(
-      options?.maybeRetryTransient ?? (async () => false),
-    ),
+    maybeRetryTransient: vi.fn(options?.maybeRetryTransient ?? (async () => false)),
     advanceAuthProfile: vi.fn(async () => false),
     advanceRateLimitAuthProfile: vi.fn(async () => false),
     traceAttempts: [],
@@ -107,9 +105,9 @@ describe("isMidStreamDropWithoutFinishReason", () => {
       } as AssistantMessage),
     ).toBe(false);
     expect(isMidStreamDropWithoutFinishReason(undefined)).toBe(false);
-    expect(
-      isMidStreamDropWithoutFinishReason({ stopReason: "error" } as AssistantMessage),
-    ).toBe(false);
+    expect(isMidStreamDropWithoutFinishReason({ stopReason: "error" } as AssistantMessage)).toBe(
+      false,
+    );
   });
 
   it("rejects provider-authored error text (refusal semantics must stay terminal)", () => {

@@ -403,3 +403,21 @@ export async function runSessionCeilingCycle(params: {
   }
   return { compactRequested: true, admitted: true };
 }
+
+/**
+ * A rotation-archived entry is a mid-queue capture across an epoch boundary,
+ * not a user-intended stop. Throws the typed rotation reason so the chat-send
+ * orchestrator re-resolves the current epoch once and re-admits instead of
+ * refusing (known-errors contract: retryAfterRotation).
+ */
+export function throwIfRotationArchivedMidQueue(
+  latestEntry: { archivedAt?: unknown; archivedBy?: unknown } | undefined | null,
+): void {
+  if (
+    latestEntry?.archivedAt !== undefined &&
+    (latestEntry.archivedBy as { type?: string } | undefined)?.type === // SAFETY: structural read of the archived actor discriminator.
+      ROTATION_ARCHIVE_ACTOR_TYPE
+  ) {
+    throw new Error(SESSION_ROTATION_CHANGED_ERROR_REASON);
+  }
+}

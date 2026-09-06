@@ -180,10 +180,7 @@ export function scanCanonicalSqliteSessionEntries(
        * above remains the fast path; this branch only catches the race
        * residue.
        */
-      if (
-        row.entry_valid === -1 &&
-        row.retained_window_id === row.current_session_id
-      ) {
+      if (row.entry_valid === -1 && row.retained_window_id === row.current_session_id) {
         continue;
       }
       throw canonicalSessionKeyMigrationRequiredError(

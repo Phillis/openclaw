@@ -4,6 +4,7 @@ import type { FailoverReason } from "../failover/signal.js";
 import type { ContextEngineTurnAttemptFacts } from "../harness/context-engine-turn-attempt.js";
 import type { ModelFallbackRunOptions } from "../model-fallback-attempt.js";
 import type { runWithModelFallback } from "../model-fallback-runner.js";
+import { recordTurnAttempt } from "./run-entry.turn-attempt-helper.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 
 type FallbackRunnerParams = Parameters<typeof runWithModelFallback<EmbeddedAgentRunResult>>[0];
@@ -97,47 +98,6 @@ function createDirectHarness() {
     preparation: { kind: "direct" as const },
     resolveRuntimeOverride: () => undefined,
   };
-}
-
-function recordTurnAttempt(
-  record: ((facts: ContextEngineTurnAttemptFacts) => void) | undefined,
-  label: string,
-): void {
-  if (!record) {
-    throw new Error("expected context-engine turn candidate callback");
-  }
-  record({
-    boundary: {
-      admission: {
-        agentId: "main",
-        sessionId: label,
-        sessionKey: `agent:main:${label}`,
-        storePath: `/${label}.sqlite`,
-        generation: "generation-1",
-        entryId: `${label}-user`,
-        rawSeq: 1,
-        effectiveParentId: null,
-        activeMessagePosition: 0,
-        logicalTurnId: `${label}-turn`,
-        role: "user",
-      },
-      terminal: {
-        agentId: "main",
-        sessionId: label,
-        sessionKey: `agent:main:${label}`,
-        storePath: `/${label}.sqlite`,
-        generation: "generation-1",
-        entryId: `${label}-assistant`,
-        rawSeq: 2,
-        effectiveParentId: `${label}-user`,
-        activeMessagePosition: 1,
-      },
-    },
-    sessionIdUsed: label,
-    promptError: false,
-    aborted: false,
-    yieldAborted: false,
-  });
 }
 
 describe("runEmbeddedAgentEntry", () => {

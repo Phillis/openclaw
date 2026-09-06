@@ -2349,10 +2349,10 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
       });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)(
-      "https://api.openai.com/v1/responses",
-      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
-    );
+    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+    });
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     await response.text();
@@ -2387,10 +2387,10 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
       });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)(
-      "https://api.openai.com/v1/responses",
-      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
-    );
+    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+    });
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     await response.text();
@@ -2412,10 +2412,10 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
     );
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)(
-      "https://api.openai.com/v1/responses",
-      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
-    );
+    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+    });
     expect(response.status).toBe(500);
     // 1 initial + 2 retries = 3 attempts, then the 5xx surfaces.
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -2433,22 +2433,24 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
       response: new Response(openResponseStreamText("data: hello"), {
         status: 200,
         headers: { "content-type": "text/event-stream" },
-      }).body ? new Response("data: hello\n", {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      }) : new Response("data: hello\n", {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      }),
+      }).body
+        ? new Response("data: hello\n", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          })
+        : new Response("data: hello\n", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
       finalUrl: "https://api.openai.com/v1/responses",
       release: vi.fn(async () => undefined),
     });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)(
-      "https://api.openai.com/v1/responses",
-      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
-    );
+    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+    });
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await response.text();
@@ -2468,10 +2470,10 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
     });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)(
-      "https://api.openai.com/v1/responses",
-      { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true }) },
-    );
+    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+    });
     expect(response.status).toBe(400);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await response.text();

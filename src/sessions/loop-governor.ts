@@ -26,6 +26,7 @@ import {
   isSubagentSessionKey,
   parseAgentSessionKey,
 } from "./session-key-utils.js";
+import { decodeSessionIdentity } from "./session-lifecycle-identity.js";
 
 const log = createSubsystemLogger("loop-governor");
 
@@ -172,6 +173,30 @@ function upsertTurnCount(
  * admissions always return true. Fail-open: a state read/write error logs and
  * admits rather than hanging a supervisor loop.
  */
+/**
+ * Loop governor: cap non-interactive turns for governed agents. Only the
+ * outermost admission of a turn is counted; nested tool/session ops run under
+ * an existing admission and must never consume governor budget.
+ */
+export function checkLoopGovernorAdmissionForAdmissionScope(
+  outermostAdmission: boolean,
+  identities: readonly string[],
+  stateOptions?: OpenClawStateDatabaseOptions,
+): void {
+  if (!outermostAdmission) {
+    return;
+  }
+  let agentSessionKey: string | undefined;
+  for (const identity of identities) {
+    const raw = decodeSessionIdentity(identity)?.identity ?? identity;
+    if (raw && agentIdFromSessionKey(raw)) {
+      agentSessionKey = raw;
+      break;
+    }
+  }
+  checkLoopGovernorAdmission({ sessionKey: agentSessionKey, stateOptions });
+}
+
 export function checkLoopGovernorAdmission(params: {
   sessionKey: string | undefined | null;
   stateOptions?: OpenClawStateDatabaseOptions;
