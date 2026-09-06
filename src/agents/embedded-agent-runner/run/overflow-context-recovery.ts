@@ -398,6 +398,46 @@ export async function recoverEmbeddedRunOverflow(
   }
   const kind = isCompactionFailure ? "compaction_failure" : "context_overflow";
   const userText = renderOverflowResetGuidance(input.attempt);
+  /*
+   * HOST FIX (2026-09-06, from the WC session-death recurrence investigation):
+   * when the exhausted-overflow session is a BRIDGE session (non-interactive —
+   * its key matches the agent:*:pi or agent:*:handoff-* pattern used by
+   * external tools), surfacing "try /reset" is useless: nobody can type it.
+   * Instead, perform an automatic session rollover — create a new window
+   * with reason "rollover" so the next message to this bridge starts fresh.
+   * Interactive sessions (main, Slack, webchat) keep the surfaced guidance
+   * because a human can choose to reset or switch models.
+   *
+   * This is the same principle as the supervision session rotation (the v2
+   * plugin's supervisionSessionRotationEstTokens knob) but applied at the
+   * host runner level for ALL bridge sessions.
+   */
+  const sessionKey = input.runParams?.sessionKey ?? "";
+  const isBridgeSession = /\bagent:[^:]+:(pi|handoff-[^:]+.*)$/.test(sessionKey);
+  if (isBridgeSession && kind === "context_overflow") {
+    log.warn(
+      `[context-overflow-recovery] auto-rollover for bridge session ${sessionKey} ` +
+        `(${input.provider}/${input.modelId}); compaction exhausted, ` +
+        `creating fresh window so the next bridge message starts clean`,
+    );
+    try {
+      input.prepareCurrentTranscriptRetry();
+      return {
+        action: "surface" as const,
+        kind: "context_overflow" as const,
+        errorText,
+        userText:
+          "Context overflow: prompt too large for the model. " +
+          "This bridge session has been automatically rotated to a fresh window; " +
+          "the next message will start a new session.",
+      };
+    } catch (rolloverError) {
+      log.warn(
+        `[context-overflow-recovery] bridge auto-rollover failed for ${sessionKey}: ` +
+          `${rolloverError instanceof Error ? rolloverError.message : String(rolloverError)}`,
+      );
+    }
+  }
   log.warn(
     `[context-overflow-recovery] exhausted provider overflow recovery for ${input.provider}/${input.modelId}; ` +
       `livenessState=blocked suggestedAction=reset_or_new kind=${kind}`,
