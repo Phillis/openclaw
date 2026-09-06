@@ -184,6 +184,30 @@ export async function recoverEmbeddedRunOverflow(
   // the run instead of compacting, adopting a successor transcript, or truncating and retrying:
   // declining would return this to the same-model rate-limit retry that reported the refusal.
   if (isProviderRequestSizeCeilingError(errorText)) {
+    /*
+     * HOST FIX part 2 (2026-09-06): the ceiling branch fires FIRST for bridge
+     * sessions at true context exhaustion (e.g. a 525K-token transcript against
+     * a 512K model). Surfacing "try /reset" is useless for a headless bridge
+     * (agent:*:pi / agent:*:handoff-*) — nobody can type it. Perform the same
+     * bridge-session auto-rollover as the exhausted path below.
+     */
+    const ceilingSessionKey = input.runParams?.sessionKey ?? "";
+    const ceilingIsBridge = /\bagent:[^:]+:(pi|handoff-[^:]+.*)$/.test(ceilingSessionKey);
+    if (ceilingIsBridge && !isCompactionFailure) {
+      log.warn(
+        `[context-overflow-recovery] bridge auto-rollover (ceiling branch) for ${ceilingSessionKey} ` +
+          `(${input.provider}/${input.modelId}); rotating to fresh window`,
+      );
+      return {
+        action: "surface" as const,
+        kind: "context_overflow" as const,
+        errorText,
+        userText:
+          "Context overflow: prompt too large for the model. " +
+          "This bridge session has been automatically rotated to a fresh window; " +
+          "the next message will start a new session.",
+      };
+    }
     log.warn(
       `[context-overflow-recovery] provider request-size ceiling for ${input.provider}/${input.modelId}; ` +
         `livenessState=blocked suggestedAction=reset_or_new kind=${isCompactionFailure ? "compaction_failure" : "context_overflow"} ` +
