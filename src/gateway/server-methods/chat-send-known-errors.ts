@@ -6,7 +6,6 @@ import { SESSION_ROUTING_CHANGED_ERROR_REASON } from "../../config/sessions/main
 import { SESSION_ROTATION_CHANGED_ERROR_REASON } from "../../sessions/session-rotation.js";
 import {
   ACTIVE_LEAF_CHANGED_ERROR_REASON,
-  respondChatActiveLeafChanged,
   respondChatSessionRoutingChanged,
 } from "./chat-send-pre-admission.js";
 import { SESSION_SETTINGS_CHANGED_ERROR_REASON } from "./chat-send-session-settings.js";
@@ -31,7 +30,15 @@ export function respondKnownChatSendError(
       respondChatSessionRoutingChanged(respond);
       return { ok: false };
     case ACTIVE_LEAF_CHANGED_ERROR_REASON:
-      respondChatActiveLeafChanged(respond);
+      // 2026.9.2: upstream folded respondChatActiveLeafChanged into
+      // respondChatSendAdmissionError; keep the exact response shape here.
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "active branch changed; review and retry", {
+          details: { reason: ACTIVE_LEAF_CHANGED_ERROR_REASON },
+        }),
+      );
       return { ok: false };
     case SESSION_ROTATION_CHANGED_ERROR_REASON:
       // Mid-queue capture across an epoch boundary: the orchestrator re-resolves
