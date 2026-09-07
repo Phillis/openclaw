@@ -2,7 +2,10 @@ import { getRuntimeConfig } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { retireQuestionChannelGateway } from "../infra/question-channel-runtime.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
-import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
+import {
+  bindGatewayContextResolver,
+  bindLifetimeGatewayContextResolver,
+} from "../plugins/runtime/gateway-request-scope.js";
 import { createGatewayChatMetadataLifecycle } from "./server-chat-metadata-lifecycle.js";
 import type { startGatewayCoreRuntime } from "./server-core-runtime.js";
 import { attachInitialGatewayLifetimeSidecars } from "./server-lifetime-sidecars.js";
@@ -284,6 +287,11 @@ export async function prepareGatewayKernelRequestRuntime(params: {
     gatewayRequestContext.resolveGatewayContext,
     runtime.resolvePluginGatewayContext,
   );
+  // Plugin runtime availability probes (runtime.gateway.isAvailable) run from
+  // tick loops and timers outside any request scope; publish the fenced
+  // lifetime resolver so they answer from this instance instead of reporting
+  // permanently false between requests.
+  bindLifetimeGatewayContextResolver(gatewayRequestContext.resolveGatewayContext);
   const hostLifecycle = params.hostLifecycle;
   if (hostLifecycle) {
     gatewayRequestContext.hostLifecycle = {

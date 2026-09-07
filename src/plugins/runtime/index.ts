@@ -22,6 +22,10 @@ import {
   listRuntimeVideoGenerationProviders,
 } from "../../video-generation/runtime.js";
 import { listWebSearchProviders, runWebSearch } from "../../web-search/runtime.js";
+import {
+  getLifetimeGatewayContextResolver,
+  getPluginRuntimeGatewayRequestScope,
+} from "./gateway-request-scope.js";
 import { createRuntimeAgent } from "./runtime-agent.js";
 import { createRuntimeBase } from "./runtime-base.js";
 import { defineCachedValue } from "./runtime-cache.js";
@@ -49,7 +53,16 @@ function createRuntimeGateway(): PluginRuntime["gateway"] {
   return {
     isAvailable: async () => {
       const runtime = await loadGatewayPluginRuntime();
-      return runtime.hasInProcessGatewayContext();
+      const scope = getPluginRuntimeGatewayRequestScope();
+      if (scope?.resolveGatewayContext || scope?.context) {
+        // While a request scope is active, request-scoped resolution owns the answer.
+        return runtime.hasInProcessGatewayContext();
+      }
+      // Tick loops, timers, and service intervals run outside any request scope;
+      // fall back to the hosting Gateway's lifetime in-process context binding so
+      // availability probes do not report permanently false between requests.
+      // Without a binding (no in-process Gateway) this still resolves false.
+      return runtime.hasInProcessGatewayContext(getLifetimeGatewayContextResolver());
     },
     request: async (method, params, options) => {
       const runtime = await loadGatewayPluginRuntime();

@@ -77,6 +77,32 @@ const gatewayContextResolvers = resolveGlobalSingleton<WeakMap<object, GatewayCo
   () => new WeakMap(),
 );
 
+const LIFETIME_GATEWAY_CONTEXT_RESOLVER_KEY: unique symbol = Symbol.for(
+  "openclaw.lifetimeGatewayContextResolver",
+);
+
+const lifetimeGatewayContextResolver = resolveGlobalSingleton<{
+  resolveGatewayContext?: GatewayContextResolver;
+}>(LIFETIME_GATEWAY_CONTEXT_RESOLVER_KEY, () => ({}));
+
+/**
+ * Publishes the hosting Gateway's lifetime in-process context resolver.
+ * Plugin tick loops, timers, and service intervals run outside any request
+ * scope, so availability probes (runtime.gateway.isAvailable) must fall back
+ * to this binding instead of reporting permanently false on quiet boards.
+ * The published resolver is availability-fenced by its producer; request-scoped
+ * resolvers still win while a request is being served.
+ */
+export function bindLifetimeGatewayContextResolver(
+  resolver: GatewayContextResolver | undefined,
+): void {
+  lifetimeGatewayContextResolver.resolveGatewayContext = resolver;
+}
+
+export function getLifetimeGatewayContextResolver(): GatewayContextResolver | undefined {
+  return lifetimeGatewayContextResolver.resolveGatewayContext;
+}
+
 export function bindGatewayContextResolver(
   owner: object,
   resolver: GatewayContextResolver | undefined,

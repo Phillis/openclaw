@@ -551,6 +551,7 @@ beforeEach(() => {
 afterEach(() => {
   setActiveDegradedPlugins([]);
   serverPluginsModule.clearFallbackGatewayContext();
+  gatewayRequestScopeModule.bindLifetimeGatewayContextResolver(undefined);
   runtimeRegistryModule.resetPluginRuntimeStateForTest();
   resetGlobalHookRunner();
 });
@@ -1558,6 +1559,77 @@ describe("loadGatewayPlugins", () => {
     expect(await runtime.gateway.isAvailable()).toBe(false);
     serverPluginsModule.setFallbackGatewayContext(createTestContext("plugin-gateway-available"));
     expect(await runtime.gateway.isAvailable()).toBe(true);
+  });
+
+  test("answers runtime gateway availability from the lifetime Gateway context outside request scopes", async () => {
+    loadOpenClawPlugins.mockReturnValue(createRegistry([]));
+    loadGatewayStartupPluginsForTest();
+    // No gateway bindings: this runtime carries the default runtime gateway,
+    // the surface plugin tick loops hit from timer contexts.
+    const runtime = runtimeModule.createPluginRuntime({});
+
+    expect(await runtime.gateway.isAvailable()).toBe(false);
+    gatewayRequestScopeModule.bindLifetimeGatewayContextResolver(() =>
+      createTestContext("plugin-gateway-lifetime"),
+    );
+    expect(await runtime.gateway.isAvailable()).toBe(true);
+    // Plugin-facing probes wrap calls in a plugin-id-only scope; the lifetime
+    // binding must still answer from that tick context.
+    await gatewayRequestScopeModule.withPluginRuntimePluginIdScope("google-meet", async () => {
+      expect(await runtime.gateway.isAvailable()).toBe(true);
+    });
+  });
+
+  test("keeps request-scoped Gateway resolution authoritative for runtime gateway availability", async () => {
+    loadOpenClawPlugins.mockReturnValue(createRegistry([]));
+    loadGatewayStartupPluginsForTest();
+    const runtime = runtimeModule.createPluginRuntime({});
+    const lifetimeContext = createTestContext("plugin-gateway-lifetime-scoped");
+    const requestContext = createTestContext("plugin-gateway-request-scoped");
+    gatewayRequestScopeModule.bindLifetimeGatewayContextResolver(() => lifetimeContext);
+
+    await gatewayRequestScopeModule.withPluginRuntimeGatewayRequestScope(
+      {
+        resolveGatewayContext: () => requestContext,
+        isWebchatConnect: () => false,
+      } satisfies PluginRuntimeGatewayRequestScope,
+      async () => {
+        // The request-scoped resolver wins while a dispatch is being served.
+        expect(await runtime.gateway.isAvailable()).toBe(true);
+        await gatewayRequestScopeModule.withPluginRuntimePluginScope(
+          { pluginId: "google-meet", pluginOrigin: "bundled" },
+          () => runtime.gateway.request("voicecall.start", { to: "+15550001234" }),
+        );
+        const dispatched = getLastMockFirstArg(handleGatewayRequest, "gateway request") as
+          | HandleGatewayRequestOptions
+          | undefined;
+        expect(dispatched?.context).toBe(requestContext);
+      },
+    );
+
+    // A retired request-scoped resolver decides even when a lifetime context exists.
+    await gatewayRequestScopeModule.withPluginRuntimeGatewayRequestScope(
+      {
+        resolveGatewayContext: () => undefined,
+        isWebchatConnect: () => false,
+      } satisfies PluginRuntimeGatewayRequestScope,
+      async () => {
+        expect(await runtime.gateway.isAvailable()).toBe(false);
+      },
+    );
+  });
+
+  test("reports runtime gateway availability false when no in-process Gateway context exists", async () => {
+    loadOpenClawPlugins.mockReturnValue(createRegistry([]));
+    loadGatewayStartupPluginsForTest();
+    const runtime = runtimeModule.createPluginRuntime({});
+
+    expect(await runtime.gateway.isAvailable()).toBe(false);
+    // A fenced lifetime resolver reporting its instance closed stays false.
+    gatewayRequestScopeModule.bindLifetimeGatewayContextResolver(() => undefined);
+    expect(await runtime.gateway.isAvailable()).toBe(false);
+    gatewayRequestScopeModule.bindLifetimeGatewayContextResolver(undefined);
+    expect(await runtime.gateway.isAvailable()).toBe(false);
   });
 
   test("does not inherit admin scope for trusted plugin gateway requests", async () => {
