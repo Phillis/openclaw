@@ -142,7 +142,7 @@ describe("createSlackBoltApp", () => {
     }
   }
 
-  it("uses SocketModeReceiver with native reconnects and shared client options", () => {
+  it("uses SocketModeReceiver with single-authority reconnect and shared client options", () => {
     const clientOptions = { teamId: "T1" };
     const { app, receiver } = createSlackBoltApp({
       interop: {
@@ -164,7 +164,7 @@ describe("createSlackBoltApp", () => {
     expect(receiverLogger.warn).toBeTypeOf("function");
     expect(receiverArgs).toEqual({
       appToken: "xapp-test",
-      autoReconnectEnabled: true,
+      autoReconnectEnabled: false,
       clientPingTimeout: 15_000,
       logger: receiverLogger,
       installerOptions: {
@@ -306,106 +306,7 @@ describe("createSlackBoltApp", () => {
     }
   });
 
-  it("routes native reconnect start failures through the socket disconnect event", async () => {
-    const startError = new Error("invalid_auth");
-    class FakeSocketModeClient {
-      emitted: unknown[][] = [];
-      clientPingTimeoutMS = 0;
-      numOfConsecutiveReconnectionFailures = 0;
-      logger = { debug: () => undefined };
-      shuttingDown = false;
-      start = async () => {
-        throw startError;
-      };
-
-      delayReconnectAttempt(callback: (this: FakeSocketModeClient) => Promise<unknown>) {
-        return Promise.resolve(callback.call(this));
-      }
-
-      emit(event: string, ...args: unknown[]) {
-        this.emitted.push([event, ...args]);
-      }
-    }
-    class FakeObservedSocketModeReceiver {
-      args: Record<string, unknown>;
-      client = new FakeSocketModeClient();
-
-      constructor(args: Record<string, unknown>) {
-        this.args = args;
-      }
-    }
-    const { receiver } = createSlackBoltApp({
-      interop: {
-        App: FakeApp as never,
-        HTTPReceiver: FakeHTTPReceiver as never,
-        SocketModeReceiver: FakeObservedSocketModeReceiver as never,
-      },
-      slackMode: "socket",
-      token: "xoxb-test",
-      appToken: "xapp-test",
-      slackWebhookPath: "/slack/events",
-      clientOptions: {},
-    });
-
-    const client = (receiver as unknown as FakeObservedSocketModeReceiver).client;
-
-    await expect(client.delayReconnectAttempt(client.start)).resolves.toBeUndefined();
-    await expect(
-      client.delayReconnectAttempt(async () => {
-        throw new Error("transient");
-      }),
-    ).rejects.toThrow("transient");
-    expect(client.emitted).toEqual([
-      ["reconnecting"],
-      ["unable_to_socket_mode_start", startError],
-      ["reconnecting"],
-    ]);
-  });
-
-  it("cancels a pending native reconnect when the app is stopped and started again", async () => {
-    vi.useFakeTimers();
-    try {
-      const slackBoltModule = await import("@slack/bolt");
-      const { app, receiver } = createSlackBoltApp({
-        interop: resolveSlackBoltInterop({
-          defaultImport: slackBoltModule.default,
-          namespaceImport: slackBoltModule,
-        }),
-        slackMode: "socket",
-        token: "xoxb-test",
-        appToken: "xapp-test",
-        slackWebhookPath: "/slack/events",
-        clientOptions: {},
-      });
-      if (!receiver || typeof receiver !== "object") {
-        throw new Error("expected a Socket Mode receiver");
-      }
-      const client = Reflect.get(receiver, "client");
-      if (!client || typeof client !== "object") {
-        throw new Error("expected a Socket Mode client");
-      }
-      const start = vi.fn(async () => {
-        Reflect.set(client, "shuttingDown", false);
-      });
-      Reflect.set(client, "start", start);
-      const delayReconnectAttempt = Reflect.get(client, "delayReconnectAttempt");
-      if (typeof delayReconnectAttempt !== "function") {
-        throw new Error("expected a native reconnect scheduler");
-      }
-
-      void delayReconnectAttempt.call(client, start);
-      await gracefulStopSlackApp(app);
-      await app.start();
-      await vi.advanceTimersByTimeAsync(15_000);
-
-      expect(start).toHaveBeenCalledTimes(1);
-      await gracefulStopSlackApp(app);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("recovers a transient error and close through one real SDK socket lifecycle", async () => {
+  it("hands a transport close to the monitor loop instead of self-reconnecting", async () => {
     const socketServer = new WebSocketServer({ port: 0 });
     await new Promise<void>((resolve) => {
       socketServer.once("listening", resolve);
@@ -446,12 +347,79 @@ describe("createSlackBoltApp", () => {
     if (!receiver || typeof receiver !== "object") {
       throw new Error("expected a Socket Mode receiver");
     }
+    const appStart = vi.spyOn(app, "start");
+    const abortController = new AbortController();
+    const lifecycle = startSlackSocketAndWaitForDisconnect({
+      app,
+      abortSignal: abortController.signal,
+    });
+
+    try {
+      await vi.waitFor(() => expect(socketServer.clients.size).toBe(1));
+      for (const socket of socketServer.clients) {
+        socket.terminate();
+      }
+      // Internal auto-reconnect is disabled: the close must resolve the
+      // disconnect waiter (the monitor loop's reconnect trigger) instead of
+      // the SDK silently opening a replacement websocket.
+      await expect(lifecycle).resolves.toEqual({ event: "disconnect" });
+
+      expect(appStart).toHaveBeenCalledTimes(1);
+      expect(connectionAttempts).toBe(1);
+      expect(peakActiveConnections).toBe(1);
+    } finally {
+      abortController.abort();
+      await gracefulStopSlackApp(app);
+      for (const socket of socketServer.clients) {
+        socket.terminate();
+      }
+      await new Promise<void>((resolve, reject) => {
+        socketServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("leaves no live websocket after stop on the real SDK client", async () => {
+    const socketServer = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => {
+      socketServer.once("listening", resolve);
+    });
+    const address = socketServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("expected a TCP Socket Mode test server");
+    }
+    socketServer.on("connection", (socket) => {
+      socket.send(JSON.stringify({ type: "hello", num_connections: socketServer.clients.size }));
+    });
+
+    const slackBoltModule = await import("@slack/bolt");
+    const { app, receiver } = createSlackBoltApp({
+      interop: resolveSlackBoltInterop({
+        defaultImport: slackBoltModule.default,
+        namespaceImport: slackBoltModule,
+      }),
+      slackMode: "socket",
+      token: "xoxb-test",
+      appToken: "xapp-test",
+      slackWebhookPath: "/slack/events",
+      clientOptions: {
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              url: `ws://127.0.0.1:${address.port}`,
+            }),
+            { headers: { "content-type": "application/json" } },
+          ),
+      },
+    });
+    if (!receiver || typeof receiver !== "object") {
+      throw new Error("expected a Socket Mode receiver");
+    }
     const client = Reflect.get(receiver, "client");
     if (!client || typeof client !== "object") {
       throw new Error("expected a Socket Mode client");
     }
-    Reflect.set(client, "clientPingTimeoutMS", 20);
-    const appStart = vi.spyOn(app, "start");
     const abortController = new AbortController();
     const lifecycle = startSlackSocketAndWaitForDisconnect({
       app,
@@ -465,19 +433,18 @@ describe("createSlackBoltApp", () => {
 
     try {
       await vi.waitFor(() => expect(socketServer.clients.size).toBe(1));
-      Reflect.get(client, "emit").call(client, "error", new Error("transient transport error"));
-      for (const socket of socketServer.clients) {
-        socket.terminate();
-      }
-      await vi.waitFor(() => expect(connectionAttempts).toBe(2));
-      await vi.waitFor(() => expect(socketServer.clients.size).toBe(1));
+      await gracefulStopSlackApp(app);
 
-      expect(appStart).toHaveBeenCalledTimes(1);
-      expect(peakActiveConnections).toBe(1);
-      expect(lifecycleSettled).toBe(false);
+      // The stop handshake initiates the websocket close synchronously; the
+      // SlackWebSocket is either mid-close (readyState 2/3) or already cleaned
+      // up (readyState undefined) — never still live (0/1).
+      const websocket = Reflect.get(client, "websocket") as { readyState?: number } | undefined;
+      const readyState = websocket?.readyState;
+      expect(typeof readyState === "number" && readyState <= 1).toBe(false);
+      await vi.waitFor(() => expect(lifecycleSettled).toBe(true));
+      await expect(lifecycleOutcome).resolves.toEqual({ event: "disconnect" });
     } finally {
       abortController.abort();
-      await lifecycleOutcome;
       await gracefulStopSlackApp(app);
       for (const socket of socketServer.clients) {
         socket.terminate();
@@ -509,7 +476,7 @@ describe("createSlackBoltApp", () => {
     expect(receiverLogger.warn).toBeTypeOf("function");
     expect(receiverArgs).toEqual({
       appToken: "xapp-test",
-      autoReconnectEnabled: true,
+      autoReconnectEnabled: false,
       clientPingTimeout: 15_000,
       logger: receiverLogger,
       installerOptions: {

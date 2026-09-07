@@ -23,8 +23,6 @@ type SlackSocketModeLogger = SlackSdkLogger & {
 type SlackSocketDisconnect = Awaited<ReturnType<typeof waitForSlackSocketDisconnect>>;
 
 const OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS = 15_000;
-const OPENCLAW_SLACK_SOCKET_START_FAILED_EVENT = "unable_to_socket_mode_start";
-const OPENCLAW_SLACK_NATIVE_RECONNECT_OBSERVER_KEY = "__openclawNativeReconnectFailureObserver";
 const SLACK_SOCKET_PONG_TIMEOUT_WARNING_PREFIX = "A pong wasn't received from the server";
 const SLACK_SOCKET_PING_TIMEOUT_WARNING_PREFIX = "A ping wasn't received from the server";
 const SLACK_SOCKET_LOG_LEVEL_IGNORED_WARNING_RE =
@@ -38,6 +36,8 @@ export type SlackBoltResolvedExports = {
 
 type SlackSocketShutdownClient = {
   shuttingDown?: boolean;
+  websocket?: unknown;
+  disconnect?: () => unknown;
 };
 type Constructor = abstract new (...args: never[]) => unknown;
 type SlackSelfFilterArgs = {
@@ -61,7 +61,46 @@ function isConstructorFunction<
   return typeof value === "function";
 }
 
-function installSlackNativeReconnectFailureObserver(receiver: unknown) {
+// undici WebSocket ready states that still hold a live socket: CONNECTING(0) and OPEN(1).
+const OPENCLAW_SLACK_WS_LIVE_READY_STATE_MAX = 1;
+
+function isLiveSlackWebSocket(websocket: unknown): boolean {
+  if (!websocket || typeof websocket !== "object") {
+    return false;
+  }
+  const readyState = (websocket as { readyState?: unknown }).readyState;
+  return (
+    typeof readyState === "number" &&
+    Number.isSafeInteger(readyState) &&
+    readyState >= 0 &&
+    readyState <= OPENCLAW_SLACK_WS_LIVE_READY_STATE_MAX
+  );
+}
+
+function closeSlackWebSocket(websocket: unknown) {
+  const disconnect = (websocket as { disconnect?: () => unknown }).disconnect;
+  if (typeof disconnect !== "function") {
+    return;
+  }
+  try {
+    disconnect.call(websocket);
+  } catch {
+    // A socket that refuses to close here is no worse than before the guard;
+    // the regular disconnect path still owns it.
+  }
+}
+
+/**
+ * SocketModeClient.start() replaces `client.websocket` without closing the
+ * previous SlackWebSocket, so any second concurrent start path permanently
+ * leaks an ESTABLISHED websocket (Slack then kill-cycles at its
+ * 10-connections-per-app cap; openclaw/openclaw#56508 class). Internal
+ * auto-reconnect is disabled (autoReconnectEnabled: false) so the monitor loop
+ * is the single reconnect authority; this guard enforces the invariant
+ * directly: at most one live websocket per client, and none once `shuttingDown`
+ * is set (an in-flight start() can still assign a websocket after disconnect()).
+ */
+function installSlackSocketLeakGuard(receiver: unknown) {
   if (!receiver || typeof receiver !== "object") {
     return;
   }
@@ -69,60 +108,25 @@ function installSlackNativeReconnectFailureObserver(receiver: unknown) {
   if (!client || typeof client !== "object") {
     return;
   }
-  if (Reflect.get(client, OPENCLAW_SLACK_NATIVE_RECONNECT_OBSERVER_KEY)) {
-    return;
+  let activeWebsocket: unknown;
+  try {
+    Object.defineProperty(client, "websocket", {
+      configurable: true,
+      get: () => activeWebsocket,
+      set: (next: unknown) => {
+        if (next !== activeWebsocket && isLiveSlackWebSocket(activeWebsocket)) {
+          closeSlackWebSocket(activeWebsocket);
+        }
+        activeWebsocket = next;
+        if ((client as SlackSocketShutdownClient).shuttingDown && isLiveSlackWebSocket(next)) {
+          closeSlackWebSocket(next);
+        }
+      },
+    });
+  } catch {
+    // A non-configurable websocket field means the guard cannot bind; stop
+    // hygiene is still owned by gracefulStopSlackApp's disconnect backstop.
   }
-  const delayReconnectAttempt = Reflect.get(client, "delayReconnectAttempt");
-  const emit = Reflect.get(client, "emit");
-  if (typeof delayReconnectAttempt !== "function" || typeof emit !== "function") {
-    return;
-  }
-
-  Reflect.set(client, OPENCLAW_SLACK_NATIVE_RECONNECT_OBSERVER_KEY, true);
-  Reflect.set(
-    client,
-    "delayReconnectAttempt",
-    function patchedDelayReconnectAttempt(this: object, callback: unknown) {
-      if (typeof callback !== "function") {
-        return delayReconnectAttempt.call(this, callback);
-      }
-      const failureCount = Number(Reflect.get(this, "numOfConsecutiveReconnectionFailures") ?? 0);
-      const nextFailureCount = failureCount + 1;
-      Reflect.set(this, "numOfConsecutiveReconnectionFailures", nextFailureCount);
-      const pingTimeoutMs = Number(Reflect.get(this, "clientPingTimeoutMS"));
-      const delayMs =
-        (Number.isFinite(pingTimeoutMs) && pingTimeoutMs >= 0
-          ? pingTimeoutMs
-          : OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS) * nextFailureCount;
-      const logger = Reflect.get(this, "logger") as { debug?: (message: string) => void };
-      logger?.debug?.(
-        `Before trying to reconnect, this client will wait for ${delayMs} milliseconds`,
-      );
-      return new Promise((resolve, reject) => {
-        const reconnectTimer = setTimeout(() => {
-          Reflect.set(this, "reconnectionTimer", undefined);
-          if (Reflect.get(this, "shuttingDown")) {
-            logger?.debug?.("Client shutting down, will not attempt reconnect.");
-            resolve(undefined);
-            return;
-          }
-          logger?.debug?.("Continuing with reconnect...");
-          emit.call(this, "reconnecting");
-          Promise.resolve(callback.call(this)).then(resolve, (error: unknown) => {
-            if (callback === Reflect.get(this, "start")) {
-              emit.call(this, OPENCLAW_SLACK_SOCKET_START_FAILED_EVENT, error);
-              resolve(undefined);
-              return;
-            }
-            reject(toErrorObject(error, "Non-Error rejection"));
-          });
-        }, delayMs);
-        // SocketModeClient.disconnect() clears this field. Keep the patched
-        // scheduler on the SDK's lifecycle so a stopped app cannot reconnect.
-        Reflect.set(this, "reconnectionTimer", reconnectTimer);
-      });
-    },
-  );
 }
 
 function createSlackRelayReceiver(): SlackReceiver {
@@ -345,7 +349,14 @@ export function createSlackBoltApp(params: {
   const socketModeLogger = createSlackSocketModeLogger();
   const socketModeReceiverOptions: SlackSocketModeReceiverOptions = {
     appToken: params.appToken ?? "",
-    autoReconnectEnabled: true,
+    // OpenClaw's monitor loop is the single reconnect authority. The SDK's
+    // internal reconnect races our stop/start cycle, and its start() replaces
+    // client.websocket without closing the old socket — every error cycle
+    // leaked an ESTABLISHED websocket until Slack kill-cycled connections at
+    // its 10-connections-per-app cap (openclaw/openclaw#56508 class). With
+    // autoReconnect off, every close emits "disconnected", which is exactly
+    // what waitForSlackSocketDisconnect observes.
+    autoReconnectEnabled: false,
     clientPingTimeout: OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS,
     logger: socketModeLogger,
     ...(params.dispatcher ? { dispatcher: params.dispatcher } : {}),
@@ -362,7 +373,7 @@ export function createSlackBoltApp(params: {
     | undefined;
   if (params.slackMode === "socket") {
     receiver = new params.interop.SocketModeReceiver(socketModeReceiverOptions);
-    installSlackNativeReconnectFailureObserver(receiver);
+    installSlackSocketLeakGuard(receiver);
   } else if (params.slackMode === "http") {
     receiver = new params.interop.HTTPReceiver({
       signingSecret: params.signingSecret ?? "",
@@ -475,9 +486,24 @@ function resolveSlackSocketShutdownClient(app: unknown): SlackSocketShutdownClie
 export async function gracefulStopSlackApp(app: { stop: () => unknown }) {
   const socketClient = resolveSlackSocketShutdownClient(app);
   if (socketClient) {
+    // Pre-set before app.stop(): fences any in-flight start() through the
+    // socket leak guard and beats a ping timeout racing the stop handshake
+    // (openclaw/openclaw#56508).
     socketClient.shuttingDown = true;
   }
   await Promise.resolve(app.stop()).catch(() => undefined);
+  // Bolt's SocketModeReceiver.stop() does not await the client's disconnect,
+  // and a failing app.stop() may never reach it; disconnect directly so stop
+  // always closes the active websocket. Initiating twice is idempotent for the
+  // SocketModeClient; the close handshake itself completes asynchronously.
+  const disconnect = socketClient?.disconnect;
+  if (typeof disconnect === "function") {
+    try {
+      Promise.resolve(disconnect.call(socketClient)).catch(() => undefined);
+    } catch {
+      // Stop must never reject; the websocket close is best-effort here.
+    }
+  }
 }
 
 function formatSlackResolvedLabel(params: {

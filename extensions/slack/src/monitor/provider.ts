@@ -470,10 +470,11 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     },
   });
 
-  // Pre-set shuttingDown on the SocketModeClient before app.stop() to prevent
-  // a race where the library's internal ping timeout fires disconnect() before
-  // shuttingDown is set, causing orphaned reconnects with leaked ping intervals.
-  // See: openclaw/openclaw#56508
+  // The Socket Mode client's internal auto-reconnect is disabled
+  // (autoReconnectEnabled: false): this monitor loop is the single reconnect
+  // authority. gracefulStop pre-sets shuttingDown to fence any in-flight
+  // start() through the socket leak guard and force-disconnects the client, so
+  // no websocket survives a stop. See: openclaw/openclaw#56508
   const gracefulStop = async () => {
     await gracefulStopSlackApp(app);
   };

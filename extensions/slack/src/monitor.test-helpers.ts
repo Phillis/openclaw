@@ -76,6 +76,7 @@ type SlackTestState = {
     (params: { entries: string[] }) => Promise<Array<{ input: string; resolved: boolean }>>
   >;
   socketModeLogger?: { error: (...args: unknown[]) => void };
+  socketModeClient?: Record<string, unknown>;
   createSlackStartupAuthClientMock: Mock<SlackStartupAuthClientFactory>;
 };
 
@@ -102,6 +103,7 @@ const slackTestState: SlackTestState = vi.hoisted(() => {
     upsertPairingRequestMock: vi.fn(),
     resolveSlackUserAllowlistMock: vi.fn(),
     socketModeLogger: undefined,
+    socketModeClient: undefined,
     createSlackStartupAuthClientMock: vi.fn(),
   } as SlackTestState;
   return globalState["__slackTestState"];
@@ -342,6 +344,7 @@ export function resetSlackTestState(config: Record<string, unknown> = defaultSla
   slackTestState.config = config;
   slackTestState.appConstructorArgs = undefined;
   slackTestState.socketModeLogger = undefined;
+  slackTestState.socketModeClient = undefined;
   slackTestState.appStartMock.mockReset().mockResolvedValue(undefined);
   slackTestState.appStopMock.mockReset().mockResolvedValue(undefined);
   slackTestState.interactionRegistrations.length = 0;
@@ -503,14 +506,44 @@ vi.mock("@slack/bolt", () => {
     requestListener = vi.fn();
   }
   class SocketModeReceiver {
-    client = {
-      ...slackClient,
-      on: vi.fn(),
-      off: vi.fn(),
-    };
+    client: Record<string, unknown>;
 
-    constructor(args: { logger?: { error: (...args: unknown[]) => void } }) {
-      slackTestState.socketModeLogger = args.logger;
+    constructor(receiverArgs: { logger?: { error: (...args: unknown[]) => void } }) {
+      slackTestState.socketModeLogger = receiverArgs.logger;
+      // Minimal SocketModeClient surface: a functional event emitter (on/off/
+      // emit) plus the websocket/shuttingDown/disconnect fields the leak guard
+      // and gracefulStopSlackApp own. Tests mimic SDK start() by assigning
+      // client.websocket — the real SDK replaces the field without closing the
+      // prior socket, which is exactly the leak shape under test.
+      const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+      const client: Record<string, unknown> = {
+        ...slackClient,
+        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+          const bucket = listeners.get(event) ?? new Set<(...args: unknown[]) => void>();
+          bucket.add(listener);
+          listeners.set(event, bucket);
+          return client;
+        }),
+        off: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+          listeners.get(event)?.delete(listener);
+          return client;
+        }),
+        emit: (event: string, ...args: unknown[]) => {
+          for (const listener of listeners.get(event) ?? []) {
+            listener(...args);
+          }
+        },
+        listenerCount: (event: string) => listeners.get(event)?.size ?? 0,
+        shuttingDown: false,
+        websocket: undefined,
+        disconnect: () => {
+          client.shuttingDown = true;
+          const websocket = client.websocket as { disconnect?: () => void } | undefined;
+          websocket?.disconnect?.();
+        },
+      };
+      this.client = client;
+      slackTestState.socketModeClient = client;
     }
   }
   return {
