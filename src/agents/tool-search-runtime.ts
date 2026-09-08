@@ -49,6 +49,7 @@ import type {
   UnknownToolErrorOptions,
   UnknownToolRecoverySurface,
 } from "./tool-search-types.js";
+import type { AnyAgentTool } from "./tools/common.js";
 import { asToolParamsRecord, jsonResult, ToolInputError } from "./tools/common.js";
 
 function describeEntry(entry: ToolSearchCatalogEntry) {
@@ -596,7 +597,15 @@ export class ToolSearchRuntime {
     },
   ) => {
     catalog.callCount += 1;
-    const normalizedInput = input ?? {};
+    // preValidate is the tool owner's transform and must see the raw model input
+    // before the wrapped execution boundary re-validates final input, so normalize
+    // here where validation and dispatch share one shape. A non-record result
+    // leaves the raw input untouched.
+    const rawInput = input ?? {};
+    const preValidate = (entry.tool as AnyAgentTool).preValidate;
+    const preValidatedInput =
+      typeof preValidate === "function" && isRecord(rawInput) ? preValidate(rawInput) : undefined;
+    const normalizedInput = isRecord(preValidatedInput) ? preValidatedInput : rawInput;
     const parentId = sanitizeToolCallIdPart(options?.parentToolCallId ?? "direct");
     const toolCallId = `tool_search_code:${parentId}:${entry.name}:${++this.callSequence}`;
     bindJoinedCollectorInvocation(entry.tool, toolCallId);
