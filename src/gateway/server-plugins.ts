@@ -19,6 +19,7 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { PluginRegistryParams } from "../plugins/registry-types.js";
 import {
   bindGatewayContextResolver,
+  getLifetimeGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayContextResolver,
 } from "../plugins/runtime/gateway-request-scope.js";
@@ -89,11 +90,21 @@ export async function dispatchTrustedPluginGatewayMethod<T>(
   if (!canTrustedOfficialPluginRequestScopes(scope ?? {})) {
     throw new Error("Gateway requests are only available to bundled or trusted official plugins.");
   }
+  // Timer, cron, and agent tool contexts run outside any request scope. When the
+  // request scope carries no Gateway context, resolve from the hosting Gateway's
+  // lifetime in-process binding. Trust attribution above and the synthetic
+  // trusted scope below (system actor, requested scopes) match the request-scoped
+  // path exactly; only where the context resolves from differs. An explicit
+  // retired binding still wins, so retired instances keep failing closed.
+  const resolveFallbackContext =
+    resolveGatewayContext || scope?.resolveGatewayContext || scope?.context
+      ? undefined
+      : getLifetimeGatewayContextResolver();
   const syntheticScopes = normalizeOperatorScopeList(options?.scopes);
   return await dispatchGatewayMethodInProcess<T>(method, params, {
     forceSyntheticClient: true,
     pluginRuntimeOwnerId: pluginId,
-    resolveGatewayContext,
+    resolveGatewayContext: resolveGatewayContext ?? resolveFallbackContext,
     ...(!scope?.client ? { operatorRoleActor: { kind: "system" as const } } : {}),
     ...(syntheticScopes ? { syntheticScopes } : {}),
     ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),

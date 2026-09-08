@@ -66,7 +66,21 @@ function createRuntimeGateway(): PluginRuntime["gateway"] {
     },
     request: async (method, params, options) => {
       const runtime = await loadGatewayPluginRuntime();
-      return runtime.dispatchTrustedPluginGatewayMethod(method, params, options);
+      const scope = getPluginRuntimeGatewayRequestScope();
+      if (scope?.resolveGatewayContext || scope?.context) {
+        // While a request scope is active, request-scoped resolution owns the dispatch.
+        return runtime.dispatchTrustedPluginGatewayMethod(method, params, options);
+      }
+      // Tick loops, timers, and agent tool contexts run outside any request scope;
+      // fall back to the hosting Gateway's lifetime in-process binding so trusted
+      // plugin dispatch keeps working between requests. Without a binding (no
+      // in-process Gateway) the dispatch still fails with the same context error.
+      return runtime.dispatchTrustedPluginGatewayMethod(
+        method,
+        params,
+        options,
+        getLifetimeGatewayContextResolver(),
+      );
     },
   };
 }

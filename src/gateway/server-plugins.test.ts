@@ -1619,6 +1619,103 @@ describe("loadGatewayPlugins", () => {
     );
   });
 
+  test("dispatches trusted plugin gateway requests from timer contexts via the lifetime Gateway context", async () => {
+    loadOpenClawPlugins.mockReturnValue(addLoadedPlugin(createRegistry([]), { id: "google-meet" }));
+    loadGatewayStartupPluginsForTest();
+    // No gateway bindings: the default runtime gateway is the surface plugin
+    // timer, cron, and agent tool contexts hit, with no request scope around
+    // the call and no request-scoped resolver to own context resolution.
+    const runtime = runtimeModule.createPluginRuntime({});
+    const lifetimeContext = createTestContext("plugin-gateway-lifetime-request");
+    gatewayRequestScopeModule.bindLifetimeGatewayContextResolver(() => lifetimeContext);
+
+    // Without any plugin identity scope the trust gate still refuses: the
+    // lifetime binding only supplies the context, never the caller identity.
+    await expect(runtime.gateway.request("sessions.list", {}, {})).rejects.toThrow(
+      "bundled or trusted official plugins",
+    );
+    expect(handleGatewayRequest).not.toHaveBeenCalled();
+
+    await gatewayRequestScopeModule.withPluginRuntimePluginScope(
+      { pluginId: "google-meet", pluginOrigin: "bundled" },
+      () => runtime.gateway.request("sessions.list", {}, {}),
+    );
+
+    const dispatched = getLastMockFirstArg(handleGatewayRequest, "gateway request") as
+      | HandleGatewayRequestOptions
+      | undefined;
+    expect(dispatched?.context).toBe(lifetimeContext);
+    expect(getLastDispatchedClientInternal().pluginRuntimeOwnerId).toBe("google-meet");
+  });
+
+  test("still rejects non-bundled plugin gateway requests from timer contexts with a lifetime Gateway context", async () => {
+    loadOpenClawPlugins.mockReturnValue(
+      addLoadedPlugin(createRegistry([]), { id: "third-party", origin: "global" }),
+    );
+    loadGatewayStartupPluginsForTest();
+    const runtime = runtimeModule.createPluginRuntime({});
+    gatewayRequestScopeModule.bindLifetimeGatewayContextResolver(() =>
+      createTestContext("plugin-gateway-lifetime-reject"),
+    );
+
+    await expect(
+      gatewayRequestScopeModule.withPluginRuntimePluginScope(
+        { pluginId: "third-party", pluginOrigin: "global" },
+        () =>
+          runtime.gateway.request(
+            "voicecall.start",
+            { to: "+15550001234" },
+            { scopes: ["operator.admin"] },
+          ),
+      ),
+    ).rejects.toThrow("bundled or trusted official plugins");
+    expect(handleGatewayRequest).not.toHaveBeenCalled();
+  });
+
+  test("builds the same trusted synthetic scope for lifetime and request-scoped plugin dispatches", async () => {
+    loadOpenClawPlugins.mockReturnValue(addLoadedPlugin(createRegistry([]), { id: "google-meet" }));
+    loadGatewayStartupPluginsForTest();
+    const runtime = runtimeModule.createPluginRuntime({});
+    const lifetimeContext = createTestContext("plugin-gateway-lifetime-parity");
+    const requestContext = createTestContext("plugin-gateway-request-parity");
+    gatewayRequestScopeModule.bindLifetimeGatewayContextResolver(() => lifetimeContext);
+
+    // Timer context: plugin identity only, no client, no request-scoped resolution.
+    await gatewayRequestScopeModule.withPluginRuntimePluginScope(
+      { pluginId: "google-meet", pluginOrigin: "bundled" },
+      () => runtime.gateway.request("sessions.list", {}),
+    );
+    const timerScopes = getLastDispatchedClientScopes();
+    const timerInternal = { ...getLastDispatchedClientInternal() };
+
+    // Request-scoped dispatch for the same bundled plugin, still without a client.
+    await gatewayRequestScopeModule.withPluginRuntimeGatewayRequestScope(
+      {
+        resolveGatewayContext: () => requestContext,
+        isWebchatConnect: () => false,
+      } satisfies PluginRuntimeGatewayRequestScope,
+      () =>
+        gatewayRequestScopeModule.withPluginRuntimePluginScope(
+          { pluginId: "google-meet", pluginOrigin: "bundled" },
+          () => runtime.gateway.request("sessions.list", {}),
+        ),
+    );
+
+    expect(getLastMockFirstArg(handleGatewayRequest, "gateway request")).toMatchObject({
+      context: requestContext,
+    });
+    expect(getLastDispatchedClientScopes()).toEqual(timerScopes);
+    expect(getLastDispatchedClientInternal().pluginRuntimeOwnerId).toBe(
+      timerInternal.pluginRuntimeOwnerId,
+    );
+    expect(getLastDispatchedClientInternal().operatorRoleActor).toEqual(
+      timerInternal.operatorRoleActor,
+    );
+    // Both paths mint the least-privilege system-actor trusted client.
+    expect(timerScopes).toEqual(["operator.write"]);
+    expect(timerInternal.pluginRuntimeOwnerId).toBe("google-meet");
+  });
+
   test("reports runtime gateway availability false when no in-process Gateway context exists", async () => {
     loadOpenClawPlugins.mockReturnValue(createRegistry([]));
     loadGatewayStartupPluginsForTest();
