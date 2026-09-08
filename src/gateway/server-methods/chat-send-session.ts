@@ -219,7 +219,19 @@ export function prepareChatSendSession(params: {
   const resolvedSessionAuthProvider = resolveProviderIdForAuth(resolvedSessionModel.provider, {
     config: cfg,
   });
-  const timeoutMs = resolveAgentTimeoutMs({ cfg, overrideMs: p.timeoutMs });
+  // OSCAR-COMMS hardening (client-timeout floor): p.timeoutMs is a CLIENT-
+  // supplied value, and the resolved number is the AGENT-RUN kill timer —
+  // not a reply wait. A small client value here let operator-console clients
+  // (e.g. the pi bridge's 120 s wait) destroy long productive agent turns
+  // server-side (live 2026-09-08 10:36:22Z: oscar's console run aborted
+  // 180 s in, mid-investigation, reply destroyed). Floor client overrides at
+  // 10 minutes; the bridge now omits the field entirely, and agent runs keep
+  // the 48 h default when no override is present.
+  const timeoutMs = resolveAgentTimeoutMs({
+    cfg,
+    overrideMs: p.timeoutMs,
+    minMs: 600_000,
+  });
   const now = Date.now();
   const restartSafeRequest = createRestartSafeChatRequest({
     goalRequestFingerprint: request.goalOperation?.requestFingerprint,

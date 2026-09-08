@@ -2,6 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import type { ConversationIdentity } from "../config/sessions/conversation-identity.js";
 import { runGatewayConversationList } from "./conversation-list.js";
 
+// Wrapped so individual tests can force a transient "unavailable" ownership
+// resolution while every other test keeps the real eligibility logic.
+vi.mock("./conversation-route-ownership.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./conversation-route-ownership.js")>();
+  return {
+    ...actual,
+    resolveConversationRouteEligibilityForAgent: vi.fn(
+      actual.resolveConversationRouteEligibilityForAgent,
+    ),
+  };
+});
+
 describe("runGatewayConversationList", () => {
   it("discovers only routes owned by the active agent", async () => {
     let discovered: ConversationIdentity[] = [];
@@ -122,6 +134,77 @@ describe("runGatewayConversationList", () => {
     expect(result.conversations).toEqual([
       expect.objectContaining({ accountId: "personal", target: "reef:personal-peer" }),
     ]);
+  });
+
+  it("skips conversations whose route ownership is temporarily unavailable instead of failing the whole listing", async () => {
+    // OSCAR-COMMS fix: "unavailable" is transient (channel binding adapter
+    // briefly unregistered around a gateway restart). The listing must skip
+    // those conversations — not throw and kill every result for the window.
+    const ownership = await import("./conversation-route-ownership.js");
+    const mocked = vi.mocked(ownership.resolveConversationRouteEligibilityForAgent);
+    const actual = mocked.getMockImplementation();
+    const rows = [
+      {
+        conversationRef: "conv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        channel: "reef",
+        accountId: "finance",
+        kind: "direct" as const,
+        peerId: "finance-peer",
+        target: "reef:finance-peer",
+        firstSeenAt: 200,
+        lastSeenAt: 200,
+      },
+      {
+        conversationRef: "conv_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        channel: "reef",
+        accountId: "personal",
+        kind: "direct" as const,
+        peerId: "personal-peer",
+        target: "reef:personal-peer",
+        firstSeenAt: 100,
+        lastSeenAt: 100,
+      },
+    ];
+    mocked.mockImplementation((params) =>
+      (params as { conversation: { accountId: string } }).conversation.accountId === "finance"
+        ? "unavailable"
+        : "eligible",
+    );
+    try {
+      const result = await runGatewayConversationList(
+        {
+          config: {
+            agents: { entries: { personal: {}, finance: {} } },
+            bindings: [
+              {
+                type: "route",
+                agentId: "personal",
+                match: { channel: "reef", accountId: "personal" },
+              },
+              {
+                type: "route",
+                agentId: "finance",
+                match: { channel: "reef", accountId: "finance" },
+              },
+            ],
+          },
+          agentId: "personal",
+          limit: 50,
+        },
+        {
+          listConversations: vi.fn(() => rows),
+          registerConversationAddresses: vi.fn(),
+          resolveOutboundChannelPlugin: vi.fn(),
+          resolveOutboundSessionRoute: vi.fn(),
+        } as never,
+      );
+      // The unavailable conversation is skipped; the eligible one still lists.
+      expect(result.conversations).toEqual([expect.objectContaining({ accountId: "personal" })]);
+    } finally {
+      if (typeof actual === "function") {
+        mocked.mockImplementation(actual);
+      }
+    }
   });
 
   it("discovers a trusted directory peer without creating a session", async () => {
