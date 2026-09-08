@@ -2422,6 +2422,33 @@ describe("resolvePluginTools optional tools", () => {
     },
   );
 
+  it("forwards preValidate from cached plugin tools to the owning runtime tool", async () => {
+    const context = createContext();
+    const factory = vi.fn(() => ({
+      ...makeTool("cached_prevalidate_tool"),
+      preValidate: (params: Record<string, unknown>) => {
+        const nested = params.data;
+        return typeof nested === "object" && nested !== null && "key" in nested
+          ? { key: (nested as { key: string }).key }
+          : params;
+      },
+    }));
+    setRegistry([
+      createNamedToolEntry("cache-prevalidate", "cached_prevalidate_tool", { factory }),
+    ]);
+
+    const first = resolvePluginTools(createResolveToolsParams({ context }));
+    const [cached] = resolvePluginTools(createResolveToolsParams({ context }));
+
+    expect(first[0]).toBeDefined();
+    expect(cached).toBeDefined();
+    // The second resolution is served from the descriptor cache, so preValidate
+    // must survive the cached wrapper instead of disappearing with the cold tool.
+    expect(cached).not.toBe(first[0]);
+    expect(cached?.preValidate?.({ data: { key: "v" } })).toEqual({ key: "v" });
+    expect(cached?.preValidate?.({ key: "raw" })).toEqual({ key: "raw" });
+  });
+
   it("reuses display descriptors with one current-context runtime instance", async () => {
     const outputSchema = { type: "object", properties: { ok: { type: "boolean" } } };
     let hideFromChannelProgress = true;

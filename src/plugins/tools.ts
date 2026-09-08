@@ -768,6 +768,12 @@ function createCachedDescriptorPluginTool(params: {
       const currentTool = requireRuntimeTool();
       return currentTool.prepareArguments ? currentTool.prepareArguments(args) : args;
     },
+    // The dispatcher validates the cached wrapper's params, so its preValidate must
+    // forward to the runtime tool that owns the transform.
+    preValidate(args) {
+      const currentTool = requireRuntimeTool();
+      return currentTool.preValidate ? currentTool.preValidate(args) : args;
+    },
     executionMode: runtimeTool.executionMode,
     async execute(toolCallId, executeParams, signal, onUpdate) {
       return requireRuntimeTool().execute(toolCallId, executeParams, signal, onUpdate);

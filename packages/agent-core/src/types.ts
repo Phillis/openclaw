@@ -557,6 +557,13 @@ export type AgentToolUpdateCallback<T = unknown> = (partialResult: AgentToolResu
 /** Origin class for tool output that can taint later model-authored content in the same turn. */
 export type ToolResultContentSource = "network";
 
+/**
+ * Plugin-provided transform for raw model-emitted tool arguments, applied by the
+ * dispatcher BEFORE schema validation. Pure normalization only: the returned
+ * object is what schema validation and execution see.
+ */
+export type ToolPreValidate = (params: Record<string, unknown>) => Record<string, unknown>;
+
 /** Tool definition used by the agent runtime. */
 export interface AgentTool<
   TParameters extends TSchema = TSchema,
@@ -575,6 +582,13 @@ export interface AgentTool<
    * Must return an object that matches `TParameters`.
    */
   prepareArguments?: (args: unknown) => Static<TParameters>;
+  /**
+   * Optional dispatcher-applied normalization for raw model-emitted arguments,
+   * running before schema validation (e.g. un-nesting parameters a model
+   * emitted inside the wrong object). Provided by the tool owner, not the
+   * model; validation and execution both consume the transformed shape.
+   */
+  preValidate?: ToolPreValidate;
   /** Execute the tool call. Throw on failure instead of encoding errors in `content`. */
   execute: (
     toolCallId: string,

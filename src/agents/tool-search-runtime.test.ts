@@ -570,6 +570,55 @@ describe("Tool Search input schemas", () => {
     expect(target.execute).not.toHaveBeenCalled();
   });
 
+  it("normalizes raw arguments with the tool's preValidate before schema validation", async () => {
+    const target = fakeTool(
+      "strict_instruction",
+      Type.Object({ instruction: Type.String() }, { additionalProperties: false }),
+    );
+    target.preValidate = (params) => {
+      const nested = params.instruction_data;
+      return typeof nested === "object" && nested !== null && "instruction" in nested
+        ? { instruction: (nested as { instruction: string }).instruction }
+        : params;
+    };
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("strict_instruction", { instruction_data: { instruction: "run" } }),
+    ).resolves.toMatchObject({
+      result: { details: { input: { instruction: "run" } } },
+    });
+    expect(target.execute).toHaveBeenCalledOnce();
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({ instruction: "run" });
+  });
+
+  it("validates raw arguments unchanged for tools without preValidate", async () => {
+    const target = fakeTool(
+      "strict_instruction",
+      Type.Object({ instruction: Type.String() }, { additionalProperties: false }),
+    );
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("strict_instruction", { instruction_data: { instruction: "run" } }),
+    ).rejects.toThrow("instruction");
+    expect(target.execute).not.toHaveBeenCalled();
+  });
+
+  it("treats a null preValidate result as no transform", async () => {
+    const target = fakeTool(
+      "strict_instruction",
+      Type.Object({ instruction: Type.String() }, { additionalProperties: false }),
+    );
+    target.preValidate = () => null as never;
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("strict_instruction", { instruction_data: { instruction: "run" } }),
+    ).rejects.toThrow("instruction");
+    expect(target.execute).not.toHaveBeenCalled();
+  });
+
   it("does not apply a parent tool's schema to nested wrapped tool calls", async () => {
     const nested = fakeTool(
       "nested_instruction",

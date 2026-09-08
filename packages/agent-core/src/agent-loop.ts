@@ -8,7 +8,7 @@ import type {
   EventStream as SourceEventStream,
 } from "@openclaw/llm-core";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { asOptionalRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   streamAgentResponse,
   type AgentEventSink,
@@ -997,6 +997,18 @@ function prepareToolCallArguments(tool: AgentTool, toolCall: AgentToolCall): Age
   };
 }
 
+/** Applies the tool's preValidate normalization before batch admission; a non-record result keeps the raw arguments. */
+function applyToolPreValidate(tool: AgentTool, toolCall: AgentToolCall): AgentToolCall {
+  if (!tool.preValidate || !isRecord(toolCall.arguments)) {
+    return toolCall;
+  }
+  const normalized = tool.preValidate(toolCall.arguments);
+  if (!isRecord(normalized) || normalized === toolCall.arguments) {
+    return toolCall;
+  }
+  return { ...toolCall, arguments: normalized };
+}
+
 async function resolveToolCallTool(
   batch: ToolBatchContext,
   toolCall: AgentToolCall,
@@ -1125,7 +1137,7 @@ async function validateToolCallForBatchAdmission(
 
   let preparedToolCall: AgentToolCall;
   try {
-    preparedToolCall = prepareToolCallArguments(tool, toolCall);
+    preparedToolCall = applyToolPreValidate(tool, prepareToolCallArguments(tool, toolCall));
   } catch (error) {
     return {
       kind: "immediate",
