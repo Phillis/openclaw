@@ -643,9 +643,12 @@ async function runWithModelFallbackInternal<T>(
 
     // LiveSessionModelSwitchError during fallback may point at a later
     // candidate that is already the active live-session selection.  Jump
-    // there directly.  Stale same/earlier targets remain a known failover
-    // so the outer runner cannot loop on the conflicting model, but they
-    // are not provider overloads.
+    // there directly.  A same-target switch is already-satisfied routing:
+    // restart the current candidate once (the pending switch flag was
+    // cleared by the thrower, so the retry cannot re-throw and loop).
+    // Only earlier (stale backward) targets remain a known failover so the
+    // runner advances past the conflicting model; they are not provider
+    // overloads.
     if (err instanceof LiveSessionModelSwitchError) {
       // Runtime selection is part of the live switch transaction. The outer
       // owner must apply it before any retry; redirecting here would pair the

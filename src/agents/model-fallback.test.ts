@@ -2983,12 +2983,19 @@ describe("runWithModelFallback", () => {
       provider: "anthropic",
       model: "claude-sonnet-4-6",
     });
-    const run = vi.fn().mockRejectedValue(switchError);
+    // The pinned switch target equals the single (last) candidate, so the
+    // redirect restarts the current candidate once; the retry's ordinary
+    // failure then exhausts the chain.
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(switchError)
+      .mockRejectedValueOnce(new Error("rate limited"));
 
-    // With no fallbacks, the single candidate is also the last one.
-    // Previously this would re-throw LiveSessionModelSwitchError, causing
-    // the outer retry loop to restart with the overloaded model indefinitely.
-    // Now it should surface as a FailoverError instead.
+    // No infinite restart loop (#58496 + BUG-043): the pending switch flag is
+    // consumed by the first throw (the attempt recovery clears it before
+    // throwing) and the caller caps live-switch retries. A same-target switch
+    // restarts the current candidate once; the second failure must surface as
+    // a FailoverError, never as LiveSessionModelSwitchError.
     const err = await runWithModelFallback({
       cfg,
       provider: "anthropic",
@@ -2996,12 +3003,39 @@ describe("runWithModelFallback", () => {
       run,
       fallbacksOverride: [],
     }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(Error);
-    // Should NOT be a LiveSessionModelSwitchError — the outer retry loop must
-    // not restart with the conflicting model.
+    expect(err).toBeInstanceOf(FailoverError);
+    // Should NOT be a LiveSessionModelSwitchError — the raw internal
+    // control-flow error must never reach the user.
     expect(err).not.toBeInstanceOf(LiveSessionModelSwitchError);
-    expect((err as { reason?: string }).reason).toBe("unknown");
-    expect(run).toHaveBeenCalledTimes(1);
+    expect((err as Error).message).not.toContain("Live session model switch requested");
+    expect((err as { reason?: string }).reason).toBe("rate_limit");
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("same-target switch on the last candidate that fails again exhausts the chain with a FailoverError, not the raw switch message", async () => {
+    const cfg = makeCfg();
+    const switchError = new LiveSessionModelSwitchError({
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+    });
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(switchError)
+      .mockRejectedValueOnce(new Error("rate limited"));
+
+    const err = await runWithModelFallback({
+      cfg,
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      run,
+      fallbacksOverride: [],
+    }).catch((e: unknown) => e);
+    // The chain exhausts with the second (ordinary) failure — the raw
+    // switch control-flow text must never surface to the user.
+    expect(err).toBeInstanceOf(FailoverError);
+    expect((err as Error).message).not.toContain("Live session model switch requested");
+    expect((err as { reason?: string }).reason).not.toBe("unknown");
+    expect(run).toHaveBeenCalledTimes(2);
   });
 
   it("returns an unconfigured live switch target to the retry owner (#101676)", async () => {
@@ -3163,8 +3197,11 @@ describe("runWithModelFallback", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("does not redirect stale live-session switch errors back to the current candidate (#58496 family)", async () => {
+  it("same-target live switch retries the current candidate and succeeds without surfacing the switch error", async () => {
     const cfg = makeCfg();
+    // The pinned live-switch target equals the primary candidate: the
+    // redirect restarts the current candidate instead of failing over, and
+    // the retry succeeds with no switch error reaching the caller.
     const switchError = new LiveSessionModelSwitchError({
       provider: "openai",
       model: "gpt-4.1-mini",
@@ -3179,12 +3216,14 @@ describe("runWithModelFallback", () => {
     });
 
     expect(result.result).toBe("ok");
-    expect(result.provider).toBe("anthropic");
-    expect(result.model).toBe("claude-haiku-3-5");
-    expect(result.attempts[0]?.reason).toBe("unknown");
+    expect(result.provider).toBe("openai");
+    expect(result.model).toBe("gpt-4.1-mini");
+    // The restart is not a failover: no failed-candidate attempt is recorded.
+    expect(result.attempts).toEqual([]);
+    expect(run).toHaveBeenCalledTimes(2);
     expect(run.mock.calls).toMatchObject([
       ["openai", "gpt-4.1-mini", { isFinalFallbackAttempt: false }],
-      ["anthropic", "claude-haiku-3-5", { isFinalFallbackAttempt: true }],
+      ["openai", "gpt-4.1-mini", { isFinalFallbackAttempt: false }],
     ]);
   });
 

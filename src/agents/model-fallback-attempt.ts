@@ -558,7 +558,12 @@ export function resolveLiveSessionModelSwitchRedirectIndex(params: {
   if (targetIndex === -1) {
     throw params.error;
   }
-  return targetIndex > params.currentIndex ? targetIndex : null;
+  // Same-target switch (targetIndex === currentIndex) is already-satisfied
+  // routing: the pinned live selection equals the current candidate, so
+  // restart it once. The pending switch flag was cleared by the thrower and
+  // the caller caps live-switch retries, so this cannot loop (#58496 +
+  // BUG-043). Earlier (stale backward) targets remain null.
+  return targetIndex >= params.currentIndex ? targetIndex : null;
 }
 
 export function hasDifferentLiveSessionRuntimeSelection(params: {
