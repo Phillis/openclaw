@@ -97,6 +97,33 @@ describe("restart log conventions", () => {
     );
   });
 
+  it("includes sanitized bounded parent identity in lifecycle audit lines when provided", () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-lifecycle-audit-ppid-"));
+    tempDirs.push(stateDir);
+
+    appendGatewayLifecycleAuditLog(
+      { OPENCLAW_STATE_DIR: stateDir },
+      {
+        action: "restart",
+        source: "cli",
+        mode: "deferred",
+        pid: 111,
+        ppid: 222,
+        ppidCmd: `sh -c\tnested\n${"x".repeat(300)}`,
+        interactive: false,
+      },
+    );
+
+    const line = fs.readFileSync(path.join(stateDir, "logs", "gateway-restart.log"), "utf8");
+    expect(line).toContain("pid=111");
+    expect(line).toContain("ppid=222");
+    const ppidCmd = line.match(/ppid_cmd=(.*) interactive=/)?.[1];
+    expect(ppidCmd).toBeDefined();
+    expect(ppidCmd?.length).toBeLessThanOrEqual(200);
+    expect(ppidCmd).toContain("sh -c nested");
+    expect(ppidCmd).not.toMatch(/[\n\t]/);
+  });
+
   it("appends a profile-aware lifecycle audit line with stable key-value fields", () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-lifecycle-audit-"));
     tempDirs.push(stateDir);
@@ -119,6 +146,7 @@ describe("restart log conventions", () => {
     expect(line).toContain("mode=deferred");
     expect(line).toContain("pid=4242");
     expect(line).toContain("interactive=0");
+    expect(line).not.toContain("ppid");
   });
 
   it("does not throw when lifecycle audit logging fails", () => {

@@ -1,6 +1,7 @@
 /** Resolves daemon log paths and shell snippets for restart handoff diagnostics. */
 import fs from "node:fs";
 import path from "node:path";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { quoteCmdScriptArg } from "./cmd-argv.js";
 import { resolveGatewayProfileSuffix } from "./constants.js";
 import { resolveDaemonHomeDir, resolveGatewayStateDir } from "./paths.js";
@@ -15,8 +16,12 @@ type GatewayLifecycleAuditEntry = {
   source: GatewayLifecycleAuditSource;
   mode: GatewayLifecycleMutationMode;
   pid?: number;
+  ppid?: number;
+  ppidCmd?: string;
   interactive: boolean;
 };
+
+const GATEWAY_LIFECYCLE_AUDIT_MAX_TEXT_LENGTH = 200;
 
 type GatewayLogPaths = {
   logDir: string;
@@ -72,6 +77,26 @@ export function resolveGatewayRestartLogPath(env: GatewayServiceEnv): string {
   return path.join(resolveGatewayLogPaths(env).logDir, GATEWAY_RESTART_LOG_FILENAME);
 }
 
+// Collapses control/whitespace runs like the restart-handoff diagnostic values so a
+// caller-supplied command string can never inject extra fields or newlines into the log line.
+function sanitizeLifecycleAuditText(value: string): string {
+  let normalized = "";
+  let previousWasSpace = true;
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (code <= 0x1f || code === 0x7f || /\s/u.test(char)) {
+      if (!previousWasSpace) {
+        normalized += " ";
+        previousWasSpace = true;
+      }
+      continue;
+    }
+    normalized += char;
+    previousWasSpace = false;
+  }
+  return truncateUtf16Safe(normalized.trimEnd(), GATEWAY_LIFECYCLE_AUDIT_MAX_TEXT_LENGTH);
+}
+
 /** Append one best-effort lifecycle record without letting diagnostics block the mutation. */
 export function appendGatewayLifecycleAuditLog(
   env: GatewayServiceEnv,
@@ -80,11 +105,14 @@ export function appendGatewayLifecycleAuditLog(
   try {
     const logPath = resolveGatewayRestartLogPath(env);
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const ppidCmd = entry.ppidCmd ? sanitizeLifecycleAuditText(entry.ppidCmd) : undefined;
     const fields = [
       `source=${entry.source}`,
       `action=${entry.action}`,
       `mode=${entry.mode}`,
       ...(entry.pid !== undefined ? [`pid=${entry.pid}`] : []),
+      ...(entry.ppid !== undefined ? [`ppid=${entry.ppid}`] : []),
+      ...(ppidCmd ? [`ppid_cmd=${ppidCmd}`] : []),
       `interactive=${entry.interactive ? 1 : 0}`,
     ];
     fs.appendFileSync(
