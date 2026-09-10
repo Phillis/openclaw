@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   appendGatewayLifecycleAuditLog,
   type GatewayLifecycleAuditSource,
@@ -12,6 +14,26 @@ import { isTerminalInteractive } from "../terminal-interactivity.js";
 
 type GatewayLifecycleAction = "start" | "stop" | "restart";
 
+const LIFECYCLE_AUDIT_PARENT_CMD_MAX_LENGTH = 200;
+
+/**
+ * Best-effort parent-command lookup for lifecycle attribution; runs in the CLI
+ * restart path, so any failure (missing ps, timeout, orphaned pid) yields
+ * undefined instead of blocking the mutation.
+ */
+function resolveParentCommand(ppid: number): string | undefined {
+  try {
+    const command = execFileSync("ps", ["-p", String(ppid), "-o", "command="], {
+      timeout: 2000,
+      encoding: "utf8",
+    });
+    const trimmed = command.trim();
+    return trimmed ? truncateUtf16Safe(trimmed, LIFECYCLE_AUDIT_PARENT_CMD_MAX_LENGTH) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function appendGatewayLifecycleAudit(params: {
   action: GatewayLifecycleAction;
   source: GatewayLifecycleAuditSource;
@@ -19,11 +41,16 @@ export function appendGatewayLifecycleAudit(params: {
   pid?: number;
   env?: NodeJS.ProcessEnv;
 }): void {
+  // The invoking process tree is diagnostic identity for source=cli lifecycle
+  // lines; capture it here so every caller (direct + mutation reporter) records it.
+  const ppid = process.ppid;
   appendGatewayLifecycleAuditLog(params.env ?? process.env, {
     action: params.action,
     source: params.source,
     mode: params.mode,
     ...(params.pid === undefined ? {} : { pid: params.pid }),
+    ppid,
+    ppidCmd: resolveParentCommand(ppid),
     interactive: isTerminalInteractive(),
   });
 }
