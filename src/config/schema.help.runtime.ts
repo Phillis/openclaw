@@ -405,6 +405,10 @@ export const RUNTIME_FIELD_HELP: Record<string, string> = {
     'Optional allowlist of model ids (e.g. "gpt-5.4" or "openai/gpt-5.4").',
   "tools.loopDetection.enabled":
     "Enable repetitive tool-call loop detection and backoff safety checks (default: false).",
+  "tools.loopDetection.identicalCallLimit":
+    "Overrides the trip threshold for repeated identical tool calls (same arguments and same outcome): both the critical block and the global circuit breaker for that pattern use this value (default: built-in 20 block / 30 breaker).",
+  "tools.loopDetection.resetOnError":
+    "When true, a tool result that was an error resets the identical-call streak so retry-after-failure is not parked (default: false).",
   "tools.exec.notifyOnExit":
     "When true (default), backgrounded exec sessions on exit and node exec lifecycle events enqueue a system event and request a heartbeat.",
   "tools.exec.notifyOnExitEmptySuccess":
