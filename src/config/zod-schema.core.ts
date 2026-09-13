@@ -614,11 +614,35 @@ const ModelCatalogRefreshConfigSchema = z
   .strict()
   .optional();
 
+const InteractiveLatencyRouteEntrySchema = z
+  .object({
+    provider: z.string().min(1),
+    model: z.string().min(1),
+  })
+  .strict();
+
+const InteractiveLatencyRoutingSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    sessionMatch: z
+      .object({
+        kinds: z.array(z.string().min(1)).optional(),
+      })
+      .strict()
+      .optional(),
+    prefer: z.array(InteractiveLatencyRouteEntrySchema).optional(),
+    fallbackToConfigured: z.boolean().optional(),
+    maxFallbackLatencyMs: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 export const ModelsConfigSchema = z
   .object({
     mode: z.union([z.literal("merge"), z.literal("replace")]).optional(),
     providers: ModelProvidersSchema.optional(),
     catalogRefresh: ModelCatalogRefreshConfigSchema,
+    interactiveLatencyRouting: InteractiveLatencyRoutingSchema,
   })
   .strict()
   .optional();

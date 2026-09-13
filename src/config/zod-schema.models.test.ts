@@ -193,4 +193,70 @@ describe("ModelsConfigSchema", () => {
 
     expect(result.success).toBe(true);
   });
+
+  describe("interactiveLatencyRouting", () => {
+    const validBlock = {
+      enabled: true,
+      sessionMatch: { kinds: ["slack"] },
+      prefer: [
+        { provider: "ollama-cloud", model: "glm-5.3-flash" },
+        { provider: "opencode-go", model: "glm-5.3-flash" },
+      ],
+      fallbackToConfigured: true,
+      maxFallbackLatencyMs: 15_000,
+    };
+
+    it("accepts the full routing block", () => {
+      const result = ModelsConfigSchema.safeParse({
+        interactiveLatencyRouting: validBlock,
+      });
+      expect(result.success).toBe(true);
+      expect(result.success ? result.data.interactiveLatencyRouting : undefined).toEqual(
+        validBlock,
+      );
+    });
+
+    it("accepts an empty block and partial fields (defaults live in code)", () => {
+      expect(ModelsConfigSchema.safeParse({ interactiveLatencyRouting: {} }).success).toBe(true);
+      expect(
+        ModelsConfigSchema.safeParse({ interactiveLatencyRouting: { enabled: false } }).success,
+      ).toBe(true);
+      expect(
+        ModelsConfigSchema.safeParse({
+          interactiveLatencyRouting: { enabled: true, prefer: [{ provider: "p", model: "m" }] },
+        }).success,
+      ).toBe(true);
+    });
+
+    it("rejects unknown keys, malformed entries, and bad values", () => {
+      expect(
+        ModelsConfigSchema.safeParse({
+          interactiveLatencyRouting: { ...validBlock, unknown: true },
+        }).success,
+      ).toBe(false);
+      expect(
+        ModelsConfigSchema.safeParse({
+          interactiveLatencyRouting: {
+            ...validBlock,
+            prefer: [{ provider: "ollama-cloud" }],
+          },
+        }).success,
+      ).toBe(false);
+      expect(
+        ModelsConfigSchema.safeParse({
+          interactiveLatencyRouting: { ...validBlock, maxFallbackLatencyMs: -1 },
+        }).success,
+      ).toBe(false);
+      expect(
+        ModelsConfigSchema.safeParse({
+          interactiveLatencyRouting: { ...validBlock, maxFallbackLatencyMs: 1.5 },
+        }).success,
+      ).toBe(false);
+      expect(
+        ModelsConfigSchema.safeParse({
+          interactiveLatencyRouting: { ...validBlock, sessionMatch: { kinds: [""] } },
+        }).success,
+      ).toBe(false);
+    });
+  });
 });
