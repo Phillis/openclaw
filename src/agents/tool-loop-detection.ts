@@ -21,7 +21,12 @@ import {
 import { isKnownPollToolCall } from "./tool-loop-call-kind.js";
 import { getNoProgressStreak } from "./tool-loop-no-progress.js";
 import { TOOL_LOOP_WARNING_THRESHOLD } from "./tool-loop-thresholds.js";
+import {
+  detectTypedErrorRepeatIntervention,
+  readTypedErrorIdentity,
+} from "./tool-loop-typed-error.js";
 import { isWriteNoProgressOutcome } from "./tool-loop-write-outcome.js";
+import { isToolResultError } from "./tool-result-error.js";
 
 const log = createSubsystemLogger("agents/loop-detection");
 
@@ -31,6 +36,7 @@ type LoopDetectorKind =
   | "unknown_tool_repeat"
   | "known_poll_no_progress"
   | "global_circuit_breaker"
+  | "typed_error_repeat"
   | "ping_pong";
 
 type LoopDetectionResult =
@@ -288,7 +294,13 @@ function isLoopVetoResult(details: Record<string, unknown>): boolean {
 
 type ToolCallOutcome = Pick<
   ToolCallRecord,
-  "failureIdentityHash" | "outcomeKind" | "resultHash" | "noProgress" | "unknownToolName"
+  | "failureIdentityHash"
+  | "failureIdentityFamily"
+  | "typedErrorCode"
+  | "outcomeKind"
+  | "resultHash"
+  | "noProgress"
+  | "unknownToolName"
 >;
 
 function hashToolOutcome(
@@ -298,11 +310,18 @@ function hashToolOutcome(
   error: unknown,
 ): ToolCallOutcome {
   if (error !== undefined) {
+    const errorText = formatErrorForHash(error);
     const unknownToolName = extractUnknownToolName(error);
+    // Unknown-tool errors belong to the unknown_tool_repeat detector; a typed
+    // identity would double-count the same missing-tool retries.
+    const typedIdentity = unknownToolName
+      ? undefined
+      : readTypedErrorIdentity(toolName, params, errorText);
     return {
-      resultHash: `error:${digestToolOutcome(formatErrorForHash(error))}`,
+      resultHash: `error:${digestToolOutcome(errorText)}`,
       noProgress: true,
       unknownToolName,
+      ...typedIdentity,
     };
   }
   if (!isPlainObject(result)) {
@@ -376,11 +395,16 @@ function hashToolOutcome(
     return { resultHash: digestToolOutcome(stripVolatileSendIds(details)) };
   }
 
+  // Typed tool contracts stamp repeating failures (e.g. version conflicts) so the
+  // typed_error_repeat detector can catch rotated-argument retry storms. Error
+  // results only: a success echoing a code must never join a failure family.
+  const typedIdentity = isToolResultError(result)
+    ? readTypedErrorIdentity(toolName, params, text)
+    : undefined;
+
   return {
-    resultHash: digestToolOutcome({
-      details,
-      text,
-    }),
+    resultHash: digestToolOutcome({ details, text }),
+    ...typedIdentity,
   };
 }
 
@@ -591,6 +615,17 @@ export function detectToolCallLoop(
     };
   }
 
+  // Typed errors must outrank ping-pong: the identity is more specific than the
+  // alternation pattern it usually rides on.
+  const typedErrorIntervention = detectTypedErrorRepeatIntervention(history, toolName, params);
+  if (typedErrorIntervention) {
+    const logFn = typedErrorIntervention.level === "critical" ? log.error : log.warn;
+    logFn(
+      `Typed-error retry ${typedErrorIntervention.level}: ${toolName} failed ${typedErrorIntervention.count} times (${typedErrorIntervention.warningKey})`,
+    );
+    return { stuck: true, detector: "typed_error_repeat" as const, ...typedErrorIntervention };
+  }
+
   const pingPongWarningKey = pingPong.pairedSignature
     ? `pingpong:${canonicalPairKey(currentHash, pingPong.pairedSignature)}`
     : `pingpong:${toolName}:${currentHash}`;
@@ -741,6 +776,8 @@ export function recordToolCallOutcome(
     call.outcomeKind = outcome.outcomeKind;
     call.resultHash = outcome.resultHash;
     call.failureIdentityHash = outcome.failureIdentityHash;
+    call.failureIdentityFamily = outcome.failureIdentityFamily;
+    call.typedErrorCode = outcome.typedErrorCode;
     if (outcome.noProgress) {
       call.noProgress = true;
     } else {
@@ -761,6 +798,8 @@ export function recordToolCallOutcome(
       outcomeKind: outcome.outcomeKind,
       resultHash: outcome.resultHash,
       failureIdentityHash: outcome.failureIdentityHash,
+      failureIdentityFamily: outcome.failureIdentityFamily,
+      typedErrorCode: outcome.typedErrorCode,
       ...(outcome.noProgress ? { noProgress: true as const } : {}),
       unknownToolName: outcome.unknownToolName,
       timestamp: Date.now(),

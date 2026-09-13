@@ -58,6 +58,7 @@ import { formatErrorMessage } from "./errors.js";
 import { isWithinActiveHours } from "./heartbeat-active-hours.js";
 import { emitHeartbeatEvent } from "./heartbeat-events.js";
 import {
+  DEFAULT_HEARTBEAT_TOOL_LOOP_BUDGET,
   heartbeatLog,
   resolveHeartbeatForWake,
   resolveHeartbeatTimeoutOverrideSeconds,
@@ -264,14 +265,19 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     return skippedHeartbeatStage(HEARTBEAT_SKIP_CRON_IN_PROGRESS, startedAt);
   }
 
-  const shouldHonorActiveReplyRuns = opts.intent !== "immediate" && opts.intent !== "manual";
+  // Automatic immediates (session-state, notifications-event, restart-sentinel)
+  // are background work: like scheduled/event wakes they defer when any session
+  // on the same agent is already replying, and the wake layer retries the
+  // deferred wake. Only user-facing manual wakes preempt same-agent runs;
+  // undefined-source immediates keep their historical preemption semantics.
+  const isAutomaticImmediate =
+    opts.intent === "immediate" && opts.source !== "manual" && opts.source !== undefined;
+  const shouldHonorActiveReplyRuns =
+    opts.intent !== "manual" && (opts.intent !== "immediate" || isAutomaticImmediate);
   const listActiveReplyRuns =
     opts.deps?.listActiveReplyRunSessionKeys ?? listActiveReplyRunSessionKeys;
   const listActiveEmbeddedRuns =
     opts.deps?.listActiveEmbeddedRunSessionKeys ?? listActiveEmbeddedRunSessionKeys;
-  // Scheduled heartbeats are background work, so defer them when any session on
-  // the same agent is already replying; immediate/manual wakes keep their
-  // existing semantics for explicit user/system actions.
   if (
     shouldHonorActiveReplyRuns &&
     (hasActiveRunForAgent(agentId, listActiveReplyRuns) ||
@@ -620,6 +626,9 @@ export async function invokeHeartbeatAgentRun(
       ...(heartbeatWakeAbortSignal ? { abortSignal: heartbeatWakeAbortSignal } : {}),
       // Heartbeat timeout is a per-run override so user turns keep the global default.
       timeoutOverrideSeconds: resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat),
+      // Same ownership: background wakes get a hard non-refundable turn budget;
+      // user/manual turns never enter this path and keep unbounded deep work.
+      maxToolLoopAttempts: DEFAULT_HEARTBEAT_TOOL_LOOP_BUDGET,
       bootstrapContextMode: heartbeat?.lightContext === true ? ("lightweight" as const) : undefined,
       onModelSelected: replyPrefix.onModelSelected,
     },
