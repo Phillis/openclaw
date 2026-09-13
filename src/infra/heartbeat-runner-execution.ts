@@ -24,6 +24,7 @@ import {
   listActiveReplyRunSessionKeys,
   replyRunRegistry,
 } from "../auto-reply/reply/reply-run-registry.js";
+import { setChannelSourceTurnId } from "../auto-reply/reply/source-turn-id.js";
 import { withReplySystemEventContext } from "../auto-reply/reply/system-event-session-key.js";
 import type { ChannelHeartbeatDeps } from "../channels/plugins/types.public.js";
 import { createReplyPrefixContext } from "../channels/reply-prefix.js";
@@ -603,6 +604,14 @@ export async function invokeHeartbeatAgentRun(
     SessionKey: runSessionKey,
     AgentId: agentId,
   } satisfies Parameters<typeof getReplyFromConfig>[0];
+  // One idempotent source-turn id per beat. Without it the reply dispatch cannot
+  // mint a channel turn id (internal beats carry no provider message id), the
+  // persisted poll prompt carries no idempotency key, and the run's
+  // pre-persisted-turn reconciliation fails — orphan repair then detaches the
+  // canonical leaf and re-persists the same prompt (duplicate user prompt per
+  // beat). The beat id is stable across dispatch retries of the same wake and
+  // unique across beats (agentId + beat start ms).
+  setChannelSourceTurnId(heartbeatContext, `heartbeat-beat:v1:${agentId}:${startedAt}`);
   const replyOpts = withReplySystemEventContext(
     {
       isHeartbeat: true,
