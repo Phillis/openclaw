@@ -11,6 +11,7 @@ import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js
 import {
   checkLoopGovernorAdmission,
   loopGovernorHourBucket,
+  loopGovernorKindFromSessionKey,
   LoopGovernorBudgetExceededError,
 } from "./loop-governor.js";
 import {
@@ -243,5 +244,100 @@ describe("loop governor", () => {
         nowMs: now0 + hourMs,
       }),
     ).toBe(true);
+  });
+});
+
+describe("loop governor per-kind budgets (byKind)", () => {
+  function makeByKindCfg(
+    maxTurnsPerHour: number,
+    byKind: Record<string, number>,
+    agents = ["oscar"],
+  ): OpenClawConfig {
+    return {
+      agents: { loopGovernor: { agents, maxTurnsPerHour, byKind } },
+    } as OpenClawConfig;
+  }
+
+  it("enforces each configured kind against its own budget counter", () => {
+    const options = stateOptions();
+    const cfg = makeByKindCfg(10, { "cron:": 2, "subagent:": 3 });
+    // Two cron admissions consume the cron budget.
+    expect(
+      checkLoopGovernorAdmission({ sessionKey: CRON_KEYS[0], cfg, stateOptions: options }),
+    ).toBe(true);
+    expect(
+      checkLoopGovernorAdmission({ sessionKey: CRON_KEYS[1], cfg, stateOptions: options }),
+    ).toBe(true);
+    expect(() =>
+      checkLoopGovernorAdmission({
+        sessionKey: "agent:oscar:cron:third:run:r3",
+        cfg,
+        stateOptions: options,
+      }),
+    ).toThrow(LoopGovernorBudgetExceededError);
+    // The subagent budget is independent: three subagent admissions still pass.
+    for (let i = 0; i < 3; i += 1) {
+      expect(
+        checkLoopGovernorAdmission({
+          sessionKey: SUBAGENT_REQUEST_KEY,
+          cfg,
+          stateOptions: options,
+        }),
+      ).toBe(true);
+    }
+    expect(() =>
+      checkLoopGovernorAdmission({ sessionKey: SUBAGENT_REQUEST_KEY, cfg, stateOptions: options }),
+    ).toThrow(LoopGovernorBudgetExceededError);
+  });
+
+  it("inherits maxTurnsPerHour for kinds without a byKind entry", () => {
+    const options = stateOptions();
+    const cfg = makeByKindCfg(2, { "cron:": 5 });
+    // Subagent has no byKind entry: it parks at the shared maxTurnsPerHour.
+    expect(
+      checkLoopGovernorAdmission({ sessionKey: SUBAGENT_REQUEST_KEY, cfg, stateOptions: options }),
+    ).toBe(true);
+    expect(
+      checkLoopGovernorAdmission({ sessionKey: SUBAGENT_REQUEST_KEY, cfg, stateOptions: options }),
+    ).toBe(true);
+    expect(() =>
+      checkLoopGovernorAdmission({ sessionKey: SUBAGENT_REQUEST_KEY, cfg, stateOptions: options }),
+    ).toThrow(LoopGovernorBudgetExceededError);
+  });
+
+  it("accepts colon-less byKind keys and keeps per-kind counters durable across restart", () => {
+    const options = stateOptions();
+    const cfg = makeByKindCfg(10, { cron: 2 });
+    expect(
+      checkLoopGovernorAdmission({ sessionKey: CRON_KEYS[0], cfg, stateOptions: options }),
+    ).toBe(true);
+    expect(
+      checkLoopGovernorAdmission({ sessionKey: CRON_KEYS[1], cfg, stateOptions: options }),
+    ).toBe(true);
+    closeOpenClawStateDatabaseForTest();
+    // Restart: the per-kind count survives the state re-open.
+    expect(() =>
+      checkLoopGovernorAdmission({ sessionKey: CRON_KEYS[0], cfg, stateOptions: options }),
+    ).toThrow(LoopGovernorBudgetExceededError);
+  });
+
+  it("never governs interactive DM turns even when byKind budgets are configured", () => {
+    const options = stateOptions();
+    const cfg = makeByKindCfg(1, { "cron:": 1 });
+    expect(() =>
+      checkLoopGovernorAdmission({ sessionKey: CRON_KEYS[0], cfg, stateOptions: options }),
+    ).not.toThrow();
+    for (let i = 0; i < 5; i += 1) {
+      expect(
+        checkLoopGovernorAdmission({ sessionKey: INTERACTIVE_KEY, cfg, stateOptions: options }),
+      ).toBe(true);
+    }
+  });
+
+  it("classifies governed session keys into budget kinds", () => {
+    expect(loopGovernorKindFromSessionKey(CRON_KEYS[0])).toBe("cron");
+    expect(loopGovernorKindFromSessionKey(SUBAGENT_REQUEST_KEY)).toBe("subagent");
+    expect(loopGovernorKindFromSessionKey(INC0GNITO_KEY)).toBe("incognito");
+    expect(loopGovernorKindFromSessionKey(INTERACTIVE_KEY)).toBeUndefined();
   });
 });
