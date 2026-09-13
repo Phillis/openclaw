@@ -223,6 +223,7 @@ export async function runEmbeddedFallbackCandidate(
         toolAuthorityFingerprint: turn.replyOperation?.toolAuthorityFingerprint,
         enableHeartbeatTool: turn.opts?.enableHeartbeatTool,
         forceHeartbeatTool: turn.opts?.forceHeartbeatTool,
+        maxToolLoopAttempts: turn.opts?.maxToolLoopAttempts,
         bootstrapContextMode: turn.opts?.bootstrapContextMode,
         bootstrapContextRunKind: params.bootstrapContextRunKind,
         images: params.currentTurnImages.images,

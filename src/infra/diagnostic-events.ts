@@ -498,6 +498,16 @@ export type DiagnosticPhaseCompletedEvent = DiagnosticBaseEvent &
     type: "diagnostic.phase.completed";
   };
 
+/** Loop detectors that can warn or block a tool call; one spelling for every emitter. */
+export type ToolLoopDetectorKind =
+  | "generic_repeat"
+  | "argument_churn"
+  | "unknown_tool_repeat"
+  | "known_poll_no_progress"
+  | "global_circuit_breaker"
+  | "typed_error_repeat"
+  | "ping_pong";
+
 export type DiagnosticToolLoopEvent = DiagnosticBaseEvent & {
   type: "tool.loop";
   sessionKey?: string;
@@ -505,13 +515,7 @@ export type DiagnosticToolLoopEvent = DiagnosticBaseEvent & {
   toolName: string;
   level: "warning" | "critical";
   action: "warn" | "block";
-  detector:
-    | "generic_repeat"
-    | "argument_churn"
-    | "unknown_tool_repeat"
-    | "known_poll_no_progress"
-    | "global_circuit_breaker"
-    | "ping_pong";
+  detector: ToolLoopDetectorKind;
   count: number;
   message: string;
   pairedToolName?: string;
@@ -708,7 +712,13 @@ export type DiagnosticModelCallErrorEvent = DiagnosticModelCallBaseEvent & {
   type: "model.call.error";
   durationMs: number;
   errorCategory: string;
-  failureKind?: "aborted" | "connection_closed" | "connection_reset" | "terminated" | "timeout";
+  failureKind?:
+    | "aborted"
+    | "connection_closed"
+    | "connection_reset"
+    | "terminated"
+    | "timeout"
+    | "run_budget_timeout";
   memory?: DiagnosticMemoryUsage;
   requestPayloadBytes?: number;
   responseStreamBytes?: number;

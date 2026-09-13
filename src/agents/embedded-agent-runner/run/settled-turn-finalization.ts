@@ -1,6 +1,7 @@
 import {
   markReplyPayloadForSourceSuppressionDelivery,
   setReplyPayloadMetadata,
+  getReplyPayloadMetadata,
   type ReplyPayloadMetadata,
 } from "../../../auto-reply/reply-payload.js";
 import {
@@ -8,6 +9,7 @@ import {
   type SessionTranscriptWriterFence,
 } from "../../../config/sessions/transcript-write-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
+import { isTerminalAssistantError } from "../../../llm/utils/retry.js";
 import { appendAssistantMirrorMessageByIdentity } from "../../../plugin-sdk/session-transcript-runtime.js";
 import { resolveSettledTurnFinalizationText } from "../../harness/settled-turn-finalization-result.js";
 import type {
@@ -16,25 +18,37 @@ import type {
 } from "../../harness/types.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import { log } from "../logger.js";
+import type { EmbeddedAgentRunResult } from "../types.js";
 import {
   mergeAttemptRunStatsIntoAccumulator,
   mergeUsageIntoAccumulator,
 } from "../usage-accumulator.js";
 import { copyAttemptDeliveryState } from "./attempt-delivery-state.js";
 import type { EmbeddedRunAttemptWithReceiptEvidence } from "./attempt-result.js";
+import { resolveCurrentAttemptAssistant } from "./attempt-terminal-evidence.js";
 import {
   resolveRuntimeModelAttempt,
   runEmbeddedSettledTurnFinalizationWithBackend,
 } from "./backend.js";
-import { resolveSettledToolBatchEvidence } from "./incomplete-turn-recovery.js";
-import type { createEmbeddedRunLaneController } from "./lane-controller.js";
 import {
+  resolveReasoningOnlyRetryInstruction,
+  resolveSettledToolBatchEvidence,
+  resolveSettledToolTerminalContinuationInstruction,
+  shouldTreatEmptyAssistantReplyAsSilent,
+} from "./incomplete-turn-recovery.js";
+import { resolveSilentToolResultReplyPayload } from "./incomplete-turn-resolution.js";
+import type { RunEmbeddedAgentInternalParams } from "./internal-params.js";
+import type { createEmbeddedRunLaneController } from "./lane-controller.js";
+import { RUN_SETTLED_FINALIZER_EXTENSION_MS } from "./retry-budget.js";
+import {
+  isEmbeddedRunTerminalAbort,
+  isEmbeddedRunTerminalTimeout,
   resolveEmbeddedRunAttemptTerminalOutcome,
   type EmbeddedRunTerminalState,
 } from "./terminal-outcome.js";
 import { prepareEmbeddedRunTerminal } from "./terminal-preparation.js";
-import { resolveSettledTurnFinalizationRequest } from "./terminal-resolution.js";
-import type { EmbeddedRunAttemptParams } from "./types.js";
+import { requiresVisibleTerminalReply } from "./terminal-resolution.js";
+import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
 type TerminalPreparationInput = Parameters<typeof prepareEmbeddedRunTerminal>[0];
 type CreateAttemptControls = ReturnType<
@@ -52,6 +66,85 @@ type TerminalPreparationBase = Omit<
   | "lastRunPromptUsage"
   | "terminalState"
 >;
+
+export function resolveSettledTurnFinalizationRequest(input: {
+  runParams: RunEmbeddedAgentInternalParams;
+  attempt: EmbeddedRunAttemptResult;
+  activeErrorContext: { provider: string; model: string };
+  modelApi: Parameters<typeof resolveReasoningOnlyRetryInstruction>[0]["modelApi"];
+  executionContract: Parameters<
+    typeof resolveReasoningOnlyRetryInstruction
+  >[0]["executionContract"];
+  payloadsWithToolMedia: EmbeddedAgentRunResult["payloads"];
+  recoveredFinalAssistantPayloadsAfterPromptTimeout?: EmbeddedAgentRunResult["payloads"];
+  hasTerminalToolPresentation: boolean;
+  toolLoopBudgetStopped?: boolean;
+  terminalState: EmbeddedRunTerminalState;
+  settledTurnFinalizationAvailable: boolean;
+}): string | null {
+  const terminalAssistant = resolveCurrentAttemptAssistant(input.attempt);
+  if (!input.settledTurnFinalizationAvailable || isTerminalAssistantError(terminalAssistant)) {
+    return null;
+  }
+  const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
+  const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
+  // Generated errors are fallback surfaces, not authored answers. Trust their
+  // producer provenance; the recovery owner still requires exact settlement,
+  // transient-failure context, and no delivery or asynchronous work.
+  const hasOnlySyntheticErrorPayload = Boolean(
+    input.attempt.assistantTexts.every((text) => text.trim().length === 0) &&
+    (input.payloadsWithToolMedia?.length ?? 0) > 0 &&
+    input.payloadsWithToolMedia?.every((payload) => {
+      const metadata = getReplyPayloadMetadata(payload);
+      return (
+        payload.isError === true &&
+        Object.keys(payload).every((key) => key === "text" || key === "isError") &&
+        (metadata?.toolErrorWarning ||
+          (input.attempt.terminal.kind === "failed" &&
+            input.attempt.settledTurnFinalizationContext &&
+            metadata?.terminalProviderError))
+      );
+    }),
+  );
+  const preparedPayloadCount = hasOnlySyntheticErrorPayload
+    ? 0
+    : (input.payloadsWithToolMedia?.length ?? 0);
+  const silentToolResultReplyPayload = resolveSilentToolResultReplyPayload({
+    isCronTrigger: input.runParams.trigger === "cron",
+    payloadCount: preparedPayloadCount,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
+  const payloadCount = input.recoveredFinalAssistantPayloadsAfterPromptTimeout
+    ? input.recoveredFinalAssistantPayloadsAfterPromptTimeout.length
+    : preparedPayloadCount || (silentToolResultReplyPayload ? 1 : 0);
+  const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
+    allowEmptyAssistantReplyAsSilent: input.runParams.allowEmptyAssistantReplyAsSilent,
+    terminalReplyExpectation: input.runParams.terminalReplyExpectation,
+    onlyExplicitSilentReply: false,
+    payloadCount,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
+  if (emptyAssistantReplyIsSilent) {
+    return null;
+  }
+  return resolveSettledToolTerminalContinuationInstruction({
+    provider: input.activeErrorContext.provider,
+    modelId: input.activeErrorContext.model,
+    modelApi: input.modelApi,
+    executionContract: input.executionContract,
+    allowEmptyStopContinuation: requiresVisibleTerminalReply(input.runParams),
+    payloadCount,
+    hasTerminalToolPresentation: input.hasTerminalToolPresentation,
+    toolLoopBudgetStopped: input.toolLoopBudgetStopped === true,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
+}
 
 export async function prepareTerminalWithSettledTurnFinalization(input: {
   initial: {
@@ -75,6 +168,20 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       typeof resolveSettledTurnFinalizationRequest
     >[0]["executionContract"];
     hasTerminalToolPresentation: boolean;
+    /**
+     * A bounded-run budget cap (tool-loop turn budget or run wall-clock soft
+     * stop) withheld the post-tool continuation round, so narration payloads
+     * are not a final answer and the run still owes a graceful terminal turn.
+     */
+    toolLoopBudgetStopped?: boolean;
+    /**
+     * Run wall-clock deadline for bounded background runs; when set, the
+     * tool-free summary turn's timer is clamped to the remaining wall clock
+     * with a protected extension floor past the deadline, so a turn that
+     * straddled the deadline still settles a summary. The hard deadline
+     * stays armed as the backstop.
+     */
+    runDeadlineAtMs?: number;
     createAttemptControls: CreateAttemptControls;
     abortSignal: AbortSignal;
   };
@@ -101,6 +208,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     recoveredFinalAssistantPayloadsAfterPromptTimeout:
       prepared.recoveredFinalAssistantPayloadsAfterPromptTimeout,
     hasTerminalToolPresentation: input.finalization.hasTerminalToolPresentation,
+    toolLoopBudgetStopped: input.finalization.toolLoopBudgetStopped === true,
     terminalState: initial.terminalState,
     settledTurnFinalizationAvailable:
       typeof input.finalization.harness.finalizeSettledTurn === "function",
@@ -146,6 +254,9 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
         settledAttempt: initial.attempt,
         harness: input.finalization.harness,
         prompt,
+        ...(input.finalization.runDeadlineAtMs !== undefined
+          ? { runDeadlineAtMs: input.finalization.runDeadlineAtMs }
+          : {}),
         createAttemptControls: input.finalization.createAttemptControls,
         abortSignal: input.finalization.abortSignal,
       });
@@ -325,23 +436,26 @@ async function runPreparedSettledTurnFinalization(input: {
   settledAttempt: EmbeddedRunAttemptWithReceiptEvidence;
   harness: AgentHarness;
   prompt: string;
+  /** Remaining run wall-clock bound; undefined keeps the attempt's own deadline. */
+  runDeadlineAtMs?: number;
   createAttemptControls: CreateAttemptControls;
   abortSignal: AbortSignal;
 }): Promise<{ outcome: "answered" | "empty"; attempt: EmbeddedRunAttemptWithReceiptEvidence }> {
   // The original attempt is closed. Each tool-free retry owns its own deadline
   // and Stop callbacks, while queue cancellation remains authoritative throughout.
+  const attempt = clampSettledFinalizationTimeoutMs(input.attempt, input.runDeadlineAtMs);
   const controls = input.createAttemptControls({
-    admittedRunContext: input.attempt.admittedRunContext,
+    admittedRunContext: attempt.admittedRunContext,
     abortSignal: input.abortSignal,
     initialTimeoutMs: resolveAgentTimeoutMs({
-      cfg: input.attempt.config,
-      overrideMs: input.attempt.timeoutMs,
+      cfg: attempt.config,
+      overrideMs: attempt.timeoutMs,
     }),
   });
   try {
     const finalization = await runEmbeddedSettledTurnFinalizationWithBackend(
       {
-        ...input.attempt,
+        ...attempt,
         abortSignal: controls.abortSignal,
         onAttemptDeadlineChanged: controls.onAttemptDeadlineChanged,
         onAttemptTimeout: controls.onAttemptTimeout,
@@ -364,13 +478,36 @@ async function runPreparedSettledTurnFinalization(input: {
         result: finalization.result,
         settledAttempt: input.settledAttempt,
         prompt: input.prompt,
-        agentHarnessId: input.attempt.agentHarnessId,
-        runtimePlan: input.attempt.runtimePlan,
+        agentHarnessId: attempt.agentHarnessId,
+        runtimePlan: attempt.runtimePlan,
       }),
     };
   } finally {
     controls.close();
   }
+}
+
+/**
+ * Binds the tool-free summary turn to the remaining run wall clock (never
+ * below 1ms), floored at the protected extension: once the soft stop has
+ * fired — or the in-flight turn finished after the deadline inside the drain
+ * grace — the raw remainder is ~zero and clamping to it forfeits the run's
+ * summary. The extension fits inside the hard backstop (RUN_DRAIN_GRACE_MS),
+ * which stays armed and kills an overrunning finalizer.
+ */
+function clampSettledFinalizationTimeoutMs(
+  attempt: EmbeddedRunAttemptParams,
+  runDeadlineAtMs: number | undefined,
+): EmbeddedRunAttemptParams {
+  if (runDeadlineAtMs === undefined) {
+    return attempt;
+  }
+  const remainingMs = runDeadlineAtMs - Date.now();
+  const boundedMs = Math.max(RUN_SETTLED_FINALIZER_EXTENSION_MS, remainingMs);
+  return {
+    ...attempt,
+    timeoutMs: Math.max(1, Math.min(attempt.timeoutMs, boundedMs)),
+  };
 }
 
 function buildSettledTurnFinalizationAttemptResult(input: {

@@ -310,21 +310,49 @@ export async function finalizeHeartbeatOutcome(params: {
       occurredAt: startedAt,
     });
   const recordUnconfirmedAlert = (reason: string) => {
-    if (outcome.kind !== "delivery" || !outcome.response) {
+    if (outcome.kind !== "delivery") {
       return;
     }
     const response = outcome.response;
     // This is the delivery owner's non-outcome, not a model decision to stay
     // quiet. The existing bounded context store is not an alert replay queue.
+    if (response) {
+      recordOutcome({
+        ...response,
+        outcome: "blocked",
+        notify: false,
+        summary: `Alert delivery was not confirmed for this attempt.\n${response.notificationText ?? response.summary}${response.notificationText ? `\nModel summary: ${response.summary}` : ""}`,
+        reason: `notify:true; delivery=${reason}; model outcome=${response.outcome}; ${response.reason ?? response.summary}`,
+      });
+      return;
+    }
+    // Tool-less alerts record the same blocked row so a dark delivery path
+    // stays visible in the audit store for agents that never enable the tool.
+    const undeliveredText = outcome.normalized.text.trim();
+    if (!undeliveredText) {
+      return;
+    }
     recordOutcome({
-      ...response,
       outcome: "blocked",
       notify: false,
-      summary: `Alert delivery was not confirmed for this attempt.\n${response.notificationText ?? response.summary}${response.notificationText ? `\nModel summary: ${response.summary}` : ""}`,
-      reason: `notify:true; delivery=${reason}; model outcome=${response.outcome}; ${response.reason ?? response.summary}`,
+      summary: `Reply delivery was not confirmed for this attempt.\n${undeliveredText}`,
+      reason: `delivery=${reason}`,
     });
   };
   if (outcome.kind === "failure") {
+    // Terminal failures (runner timeout/abort, terminal tool failure) never
+    // reach the tool-response row; record the blocked state before the
+    // best-effort failure notice so a failed run stays auditable even when
+    // the notice cannot send.
+    recordOutcome({
+      outcome: "blocked",
+      notify: false,
+      summary:
+        outcome.normalized.text ||
+        ("previewText" in outcome ? outcome.previewText : undefined) ||
+        outcome.reason,
+      reason: outcome.reason,
+    });
     const failureReplyPayload = outcome.replyPayload;
     const failureChannel = delivery.channel;
     const failureTarget = delivery.to;
@@ -393,6 +421,16 @@ export async function finalizeHeartbeatOutcome(params: {
   if (outcome.kind === "ack") {
     if ("response" in outcome && outcome.response) {
       recordOutcome(outcome.response);
+    } else {
+      // Tool-less quiet completion (silent token, heartbeat ack, or empty
+      // reply): without this synthesized row every silent poll leaves
+      // heartbeat_outcomes dark for agents that never enable the tool.
+      recordOutcome({
+        outcome: "no_change",
+        notify: false,
+        summary: "Heartbeat completed with no user-visible reply.",
+        reason: "no_change",
+      });
     }
     await restoreHeartbeatUpdatedAt({ storePath, sessionKey, updatedAt: previousUpdatedAt });
     await suppressPendingFinalDelivery(replyPayloadSource, { preserveActivity: true });

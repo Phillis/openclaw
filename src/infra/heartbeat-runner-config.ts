@@ -33,6 +33,18 @@ export const heartbeatLog = createSubsystemLogger("gateway/heartbeat");
 
 const DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 10 * 60;
 
+/**
+ * Hard, non-refundable model-turn budget for every heartbeat-runner wake
+ * (scheduled poll, cron task, exec/event immediate). Bounds background tool
+ * marathons that would otherwise run to the wall-clock timeout; the run
+ * settles gracefully through the normal terminal machinery at the cap.
+ * User/manual conversation turns never pass through the heartbeat runner and
+ * stay unbounded. Constant, not config — the out-of-box blast radius is the
+ * product decision (2026-09 heartbeat token storm: one poll burned 10.16M
+ * input tokens across 173 uncached turns before its 1800s timeout).
+ */
+export const DEFAULT_HEARTBEAT_TOOL_LOOP_BUDGET = 40;
+
 export function resolveHeartbeatChannelPlugin(channel: string): ChannelPlugin | undefined {
   const activePlugin = getActivePluginChannelRegistry()?.channels.find(
     (entry) => entry.plugin.id === channel,

@@ -30,7 +30,11 @@ import {
   type SessionStateActorType,
   type SessionStateEventKind,
 } from "./session-state-event-kinds.js";
-import { enqueueSessionStateNotice, isNotifiableWatcherKey } from "./session-state-notices.js";
+import {
+  enqueueSessionStateNotice,
+  isNotifiableWatcherKey,
+  shouldWakeWatcherLane,
+} from "./session-state-notices.js";
 import { deleteSessionUpstreamLink } from "./session-upstream-links.js";
 
 export type { SessionStateActorType } from "./session-state-event-kinds.js";
@@ -646,7 +650,12 @@ export function sweepSessionStateWatchNotices(
         watcherSessionKey: row.watcher_session_key,
         targetSessionKey: row.target_session_key,
         lastSeenSequence: normalizeSqliteNumber(row.last_seen_sequence) ?? 0,
-        queueOnly: isAmbientGroupWatchCursor(row),
+        // Non-main watcher lanes never wake from the sweep: their cursors stay
+        // stale while idle, so a restart would re-fire an immediate heartbeat run
+        // per stale lane. queueOnly keeps the event durable (replace-deduped) for
+        // the lane's next real turn; main-lane watchers keep today's wake.
+        queueOnly:
+          isAmbientGroupWatchCursor(row) || !shouldWakeWatcherLane(row.watcher_session_key),
       });
     }
     pruneSessionStateEvents({ ...options, now });

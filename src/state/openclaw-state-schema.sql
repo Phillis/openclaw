@@ -2502,3 +2502,13 @@ CREATE TABLE IF NOT EXISTS loop_governor_turn_counts (
   updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY (agent_id, hour_bucket)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS loop_governor_kind_turn_counts (
+  agent_id TEXT NOT NULL,
+  hour_bucket INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  alerted INTEGER NOT NULL DEFAULT 0,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, hour_bucket, kind)
+) STRICT;

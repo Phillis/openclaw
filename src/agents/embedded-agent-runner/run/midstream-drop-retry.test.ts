@@ -1,3 +1,4 @@
+import { StreamEndedWithoutFinishReasonError } from "@openclaw/ai/transports";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "../../../llm/types.js";
 import { PROVIDER_FAILURE_WITH_OUTPUT_ERROR_CODE } from "../../../llm/types.js";
@@ -7,6 +8,7 @@ import {
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { handleEmbeddedAssistantFailure } from "./assistant-failure.js";
 import {
+  isMidStreamDropError,
   isMidStreamDropWithoutFinishReason,
   MAX_MIDSTREAM_DROP_RETRIES,
 } from "./midstream-drop-retry.js";
@@ -88,6 +90,17 @@ function makeMidStreamDropInput(options?: {
   } as unknown as AssistantFailureInput;
   return { assistant, input };
 }
+
+describe("isMidStreamDropError", () => {
+  it("matches the live typed transport error instance", () => {
+    expect(isMidStreamDropError(new StreamEndedWithoutFinishReasonError())).toBe(true);
+  });
+
+  it("falls back to the canonical message for serialized plain Errors", () => {
+    expect(isMidStreamDropError(new Error("Stream ended without finish_reason"))).toBe(true);
+    expect(isMidStreamDropError(new Error("rate limit exceeded, retry after 30s"))).toBe(false);
+  });
+});
 
 describe("isMidStreamDropWithoutFinishReason", () => {
   it("matches the live evidence signature", () => {

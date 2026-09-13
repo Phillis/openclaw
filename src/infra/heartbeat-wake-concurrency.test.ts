@@ -1,13 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/config.js";
+import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
 } from "../process/gateway-work-admission.js";
+import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
+import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
+import { seedSessionStore, withTempHeartbeatSandbox } from "./heartbeat-runner.test-utils.js";
 import {
   getHeartbeatWakeAbortSignal,
+  HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
   requestHeartbeat,
+  resetHeartbeatWakesForTest,
   setHeartbeatWakeHandler as setRuntimeHeartbeatWakeHandler,
+  type HeartbeatRunResult,
 } from "./heartbeat-wake.js";
+
+const noopOutbound = {
+  deliveryMode: "direct" as const,
+  sendText: async () => ({ channel: "telegram" as const, messageId: "1", chatId: "1" }),
+  sendMedia: async () => ({ channel: "telegram" as const, messageId: "1", chatId: "1" }),
+};
 
 describe("heartbeat wake target concurrency", () => {
   type WakeRequest = Parameters<typeof requestHeartbeat>[0];
@@ -34,6 +48,7 @@ describe("heartbeat wake target concurrency", () => {
     }
     currentHandlerDisposer?.();
     currentHandlerDisposer = undefined;
+    resetHeartbeatWakesForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -641,5 +656,239 @@ describe("heartbeat wake target concurrency", () => {
       "exec-event",
     ]);
     expect(getActiveGatewayRootWorkCount()).toBe(0);
+  });
+
+  it("admits concurrent same-agent immediate wakes serially via requests-in-flight", async () => {
+    // Storm regression (2026-09-09): targeted immediate wakes for one agent
+    // arrive as independent wake-target groups, so the same-agent run guard
+    // inside the heartbeat runner is what serializes their model runs; the
+    // deferred wake is retained and retried by the wake layer.
+    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      const previousRegistry = getActivePluginRegistry();
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "telegram",
+            plugin: createOutboundTestPlugin({ id: "telegram", outbound: noopOutbound }),
+            source: "test",
+          },
+        ]),
+      );
+      const cfg = {
+        session: { store: storePath },
+        agents: { defaults: { heartbeat: { every: "30m" } }, list: [{ id: "main" }] },
+        channels: { telegram: { enabled: true, token: "fake", allowFrom: ["123"] } },
+      } as OpenClawConfig;
+      const threadA = "agent:main:telegram:direct:111:thread:111.1";
+      const threadB = "agent:main:telegram:direct:111:thread:222.2";
+      await Promise.all(
+        [
+          [threadA, "thread-a-session"],
+          [threadB, "thread-b-session"],
+        ].map(([sessionKey, sessionId]) =>
+          seedSessionStore(storePath, sessionKey, {
+            sessionId,
+            lastChannel: "telegram",
+            lastProvider: "telegram",
+            lastTo: "123",
+          }),
+        ),
+      );
+      const activeRunSessionKeys = new Set<string>();
+      const wakeResults: HeartbeatRunResult[] = [];
+      let releaseFirstRun: (() => void) | undefined;
+      const firstRunBlocked = new Promise<void>((resolve) => {
+        releaseFirstRun = resolve;
+      });
+      replySpy.mockImplementation(async (ctx: { SessionKey?: string }) => {
+        const sessionKey = ctx.SessionKey ?? "";
+        // Model the reply-run registry fact: the turn owns its session while running.
+        activeRunSessionKeys.add(sessionKey);
+        try {
+          if (sessionKey === threadA) {
+            await firstRunBlocked;
+          }
+          return { text: "HEARTBEAT_OK" };
+        } finally {
+          activeRunSessionKeys.delete(sessionKey);
+        }
+      });
+      const handler = vi.fn(async (request: WakeRequest) => {
+        const { coalesceMs: _coalesceMs, ...wake } = request;
+        const result = await runHeartbeatOnce({
+          cfg,
+          ...wake,
+          deps: {
+            getQueueSize: () => 0,
+            nowMs: () => Date.now(),
+            getReplyFromConfig: replySpy,
+            listActiveReplyRunSessionKeys: () => [...activeRunSessionKeys],
+          } as HeartbeatDeps,
+        });
+        wakeResults.push(result);
+        return result;
+      });
+      setHeartbeatWakeHandler(handler);
+      try {
+        requestHeartbeat({
+          source: "session-state",
+          intent: "immediate",
+          reason: "session-state:a",
+          sessionKey: threadA,
+          coalesceMs: 0,
+        });
+        await vi.waitFor(() => expect(activeRunSessionKeys.has(threadA)).toBe(true), {
+          timeout: 5_000,
+          interval: 10,
+        });
+
+        // Second same-agent targeted immediate: dispatched as its own wake
+        // target (the storm fan-out) but deferred behind the active run.
+        requestHeartbeat({
+          source: "session-state",
+          intent: "immediate",
+          reason: "session-state:b",
+          sessionKey: threadB,
+          coalesceMs: 0,
+        });
+        await vi.waitFor(
+          () =>
+            expect(wakeResults).toContainEqual({
+              status: "skipped",
+              reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
+            }),
+          { timeout: 5_000, interval: 10 },
+        );
+        expect(replySpy.mock.calls).toHaveLength(1);
+
+        releaseFirstRun?.();
+        // The wake layer retries the deferred wake after DEFAULT_RETRY_MS; wait
+        // until it is actually admitted, not merely re-queued.
+        await vi.waitFor(
+          () => {
+            expect(replySpy.mock.calls).toHaveLength(2);
+            expect(wakeResults.filter((result) => result.status === "ran")).toHaveLength(2);
+          },
+          { timeout: 15_000, interval: 50 },
+        );
+        const ranSessions = replySpy.mock.calls.map(
+          (call) => (call[0] as { SessionKey?: string }).SessionKey,
+        );
+        expect(ranSessions.toSorted()).toEqual([threadA, threadB].toSorted());
+        expect(wakeResults.filter((result) => result.status === "ran")).toHaveLength(2);
+      } finally {
+        currentHandlerDisposer?.();
+        currentHandlerDisposer = undefined;
+        setActivePluginRegistry(previousRegistry);
+      }
+    });
+  });
+
+  it("still admits immediate wakes for different agents in parallel", async () => {
+    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      const previousRegistry = getActivePluginRegistry();
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "telegram",
+            plugin: createOutboundTestPlugin({ id: "telegram", outbound: noopOutbound }),
+            source: "test",
+          },
+        ]),
+      );
+      const cfg = {
+        session: { store: storePath },
+        agents: {
+          defaults: { heartbeat: { every: "30m" } },
+          list: [{ id: "main" }, { id: "side" }],
+        },
+        channels: { telegram: { enabled: true, token: "fake", allowFrom: ["123"] } },
+      } as OpenClawConfig;
+      const mainThread = "agent:main:telegram:direct:111:thread:333.3";
+      const sideThread = "agent:side:telegram:direct:222:thread:444.4";
+      await Promise.all(
+        [
+          [mainThread, "main-thread-session"],
+          [sideThread, "side-thread-session"],
+        ].map(([sessionKey, sessionId]) =>
+          seedSessionStore(storePath, sessionKey, {
+            sessionId,
+            lastChannel: "telegram",
+            lastProvider: "telegram",
+            lastTo: "123",
+          }),
+        ),
+      );
+      const activeRunSessionKeys = new Set<string>();
+      const wakeResults: HeartbeatRunResult[] = [];
+      let releaseMainRun: (() => void) | undefined;
+      const mainRunBlocked = new Promise<void>((resolve) => {
+        releaseMainRun = resolve;
+      });
+      replySpy.mockImplementation(async (ctx: { SessionKey?: string }) => {
+        const sessionKey = ctx.SessionKey ?? "";
+        activeRunSessionKeys.add(sessionKey);
+        try {
+          if (sessionKey === mainThread) {
+            await mainRunBlocked;
+          }
+          return { text: "HEARTBEAT_OK" };
+        } finally {
+          activeRunSessionKeys.delete(sessionKey);
+        }
+      });
+      const handler = vi.fn(async (request: WakeRequest) => {
+        const { coalesceMs: _coalesceMs, ...wake } = request;
+        const result = await runHeartbeatOnce({
+          cfg,
+          ...wake,
+          deps: {
+            getQueueSize: () => 0,
+            nowMs: () => Date.now(),
+            getReplyFromConfig: replySpy,
+            listActiveReplyRunSessionKeys: () => [...activeRunSessionKeys],
+          } as HeartbeatDeps,
+        });
+        wakeResults.push(result);
+        return result;
+      });
+      setHeartbeatWakeHandler(handler);
+      try {
+        requestHeartbeat({
+          source: "session-state",
+          intent: "immediate",
+          reason: "session-state:main",
+          sessionKey: mainThread,
+          coalesceMs: 0,
+        });
+        requestHeartbeat({
+          source: "session-state",
+          intent: "immediate",
+          reason: "session-state:side",
+          sessionKey: sideThread,
+          coalesceMs: 0,
+        });
+        // The side agent's wake completed while main's run was still active.
+        await vi.waitFor(
+          () => {
+            expect(activeRunSessionKeys.has(mainThread)).toBe(true);
+            expect(wakeResults).toEqual([{ status: "ran", durationMs: expect.any(Number) }]);
+          },
+          { timeout: 10_000, interval: 10 },
+        );
+        expect(replySpy.mock.calls).toHaveLength(2);
+
+        releaseMainRun?.();
+        await vi.waitFor(
+          () => expect(wakeResults.filter((result) => result.status === "ran")).toHaveLength(2),
+          { timeout: 15_000, interval: 50 },
+        );
+        expect(replySpy.mock.calls).toHaveLength(2);
+      } finally {
+        currentHandlerDisposer?.();
+        currentHandlerDisposer = undefined;
+        setActivePluginRegistry(previousRegistry);
+      }
+    });
   });
 });

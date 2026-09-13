@@ -394,4 +394,9 @@ export type GetReplyOptions = {
   hasRepliedRef?: { value: boolean };
   /** Override agent timeout in seconds (0 = no timeout). Threads through to resolveAgentTimeoutMs. */
   timeoutOverrideSeconds?: number;
+  /**
+   * Hard, non-refundable model-turn cap for bounded background runs (heartbeat
+   * wakes, including cron task intents). Never set for user/manual turns.
+   */
+  maxToolLoopAttempts?: number;
 };

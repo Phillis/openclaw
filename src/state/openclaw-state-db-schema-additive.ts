@@ -140,6 +140,25 @@ export function ensureLoopGovernorTurnCountsSchema(database: DatabaseSync): void
 }
 
 /**
+ * Loop governor per-session-kind turn counts (byKind budgets). Additive
+ * companion to loop_governor_turn_counts: only written when byKind budgets are
+ * configured, so legacy single-budget deployments keep their exact row shape.
+ */
+export function ensureLoopGovernorKindTurnCountsSchema(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS loop_governor_kind_turn_counts (
+      agent_id TEXT NOT NULL,
+      hour_bucket INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      turn_count INTEGER NOT NULL DEFAULT 0,
+      alerted INTEGER NOT NULL DEFAULT 0,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (agent_id, hour_bucket, kind)
+    ) STRICT
+  `);
+}
+
+/**
  * Same-version additive table, registered in LAZY_ADDITIVE_STATE_TABLES so
  * existing v6 databases stay valid without it. Mirrors the canonical schema;
  * a downgraded reader simply loses setup-completion reconciliation.

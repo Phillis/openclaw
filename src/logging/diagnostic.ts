@@ -10,6 +10,7 @@ import {
   isDiagnosticsEnabled,
   type DiagnosticPhaseSnapshot,
   type DiagnosticLivenessWarningReason,
+  type ToolLoopDetectorKind,
 } from "../infra/diagnostic-events.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { emitDiagnosticMemorySample, resetDiagnosticMemoryForTest } from "./diagnostic-memory.js";
@@ -1069,13 +1070,7 @@ export function logToolLoopAction(
     toolName: string;
     level: "warning" | "critical";
     action: "warn" | "block";
-    detector:
-      | "generic_repeat"
-      | "argument_churn"
-      | "unknown_tool_repeat"
-      | "known_poll_no_progress"
-      | "global_circuit_breaker"
-      | "ping_pong";
+    detector: ToolLoopDetectorKind;
     count: number;
     message: string;
     pairedToolName?: string;

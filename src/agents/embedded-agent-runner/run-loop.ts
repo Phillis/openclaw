@@ -51,6 +51,7 @@ import {
 } from "./run/retry-budget.js";
 import { handleRetryLimitExhaustion } from "./run/retry-limit.js";
 import { settleEmbeddedRun } from "./run/run-settlement.js";
+import { resolveEmbeddedRunWallClockBudget } from "./run/run-wall-clock-budget.js";
 import { prepareEmbeddedRunRuntime } from "./run/runtime-preparation.js";
 import { createEmbeddedRunSessionPromptState } from "./run/session-prompt-state.js";
 import { prepareTerminalWithSettledTurnFinalization } from "./run/settled-turn-finalization.js";
@@ -106,6 +107,16 @@ export async function runPreparedEmbeddedLoop(
     { config: params.config },
   );
   params = { ...params, admittedRunContext: preparedRuntime.admittedRunContext };
+  // Bounded background runs (heartbeat) cap harness model turns with a hard,
+  // non-refundable counter that survives across retry attempts. runRetryBudget
+  // refunds progress continuations by design; this budget never refunds — a
+  // healthy tool marathon stops here and settles through the normal terminal
+  // machinery instead of burning wall-clock and tokens to the timeout.
+  const wallClockBudget = resolveEmbeddedRunWallClockBudget({ ...params, startedAtMs: started });
+  const { runDeadlineAtMs } = wallClockBudget;
+  if (wallClockBudget.shouldStopAfterTurn) {
+    params = { ...params, shouldStopAfterTurn: wallClockBudget.shouldStopAfterTurn };
+  }
   const abortSignal = params.abortSignal;
   const accountingAuthority = getAdmittedRunDelegatedAuthority(preparedRuntime.admittedRunContext);
   const assertAdmittedActive = resolveAdmittedRunActiveAssertion(
@@ -366,6 +377,7 @@ export async function runPreparedEmbeddedLoop(
         maxRunLoopIterations: runRetryBudget.maxAttempts,
       });
       let recordedCompactionCount = 0;
+      const attemptTimeoutMs = wallClockBudget.resolveAttemptTimeoutMs(params.timeoutMs);
       const attemptRunInput: PreparedEmbeddedRunInput = {
         ...admittedRunInput,
         runParams: {
@@ -376,6 +388,7 @@ export async function runPreparedEmbeddedLoop(
             }
             contextRecoveryState.observeContextAccounting(event);
           },
+          ...(attemptTimeoutMs !== undefined ? { timeoutMs: attemptTimeoutMs } : {}),
         },
       };
       let dispatch: Awaited<ReturnType<typeof prepareAndDispatchEmbeddedRunAttempt>>;
@@ -585,6 +598,8 @@ export async function runPreparedEmbeddedLoop(
           modelApi: effectiveModel.api,
           executionContract,
           hasTerminalToolPresentation: Boolean(terminalToolPresentationText),
+          toolLoopBudgetStopped: wallClockBudget.budgetStopped(),
+          ...(runDeadlineAtMs !== undefined ? { runDeadlineAtMs } : {}),
           createAttemptControls: input.laneController.createAttemptControls,
           abortSignal: input.laneController.abortSignal,
         },

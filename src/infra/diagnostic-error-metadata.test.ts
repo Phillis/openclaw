@@ -115,6 +115,30 @@ describe("diagnostic error metadata", () => {
     expect(diagnosticErrorFailureKind(new Error("provider rejected the request"))).toBeUndefined();
   });
 
+  it("maps the producer-tagged run-budget kill to run_budget_timeout through cause chains", () => {
+    // The run-budget owner tags its own wall-clock kill; classification must
+    // distinguish it from a provider-side timeout even when the abort reason
+    // is re-wrapped with the original error as cause (abortable() wrapper).
+    const tagged = Object.assign(new Error("request timed out"), {
+      name: "TimeoutError",
+      code: "OPENCLAW_RUN_BUDGET_TIMEOUT",
+    });
+    expect(tagged.name).toBe("TimeoutError");
+    expect(diagnosticErrorFailureKind(tagged)).toBe("run_budget_timeout");
+    const wrapped = new Error("request timed out", { cause: tagged });
+    wrapped.name = "AbortError";
+    expect(diagnosticErrorFailureKind(wrapped)).toBe("run_budget_timeout");
+    // A stall-based provider timeout (no marker) still classifies as plain
+    // timeout — identical name and message, no code.
+    expect(
+      diagnosticErrorFailureKind(
+        Object.assign(new Error("request timed out"), {
+          name: "TimeoutError",
+        }),
+      ),
+    ).toBe("timeout");
+  });
+
   it("does not invoke throwing getters while classifying failure kinds", () => {
     const errorLike = {};
     Object.defineProperty(errorLike, "code", {

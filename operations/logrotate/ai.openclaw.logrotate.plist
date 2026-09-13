@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily calendar job: rotate OpenClaw plugin/monitor logs (see logrotate.conf).
+     WC ships at ceremony:
+       cp operations/logrotate/rotate-openclaw-logs.sh ~/.openclaw/operations/logrotate/
+       cp operations/logrotate/logrotate.conf          ~/.openclaw/operations/logrotate/
+       cp operations/logrotate/ai.openclaw.logrotate.plist ~/Library/LaunchAgents/
+       chmod +x ~/.openclaw/operations/logrotate/rotate-openclaw-logs.sh
+       launchctl unload ~/Library/LaunchAgents/ai.openclaw.logrotate.plist 2>/dev/null || true
+       launchctl load ~/Library/LaunchAgents/ai.openclaw.logrotate.plist
+     Do not restart the gateway; rotation is copy+truncate and restart-free. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.openclaw.logrotate</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/phil/.openclaw/operations/logrotate/rotate-openclaw-logs.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/phil/Library/Logs/openclaw/logrotate.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/phil/Library/Logs/openclaw/logrotate.err</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

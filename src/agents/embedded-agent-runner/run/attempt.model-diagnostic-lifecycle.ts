@@ -35,6 +35,7 @@ import type {
   PluginHookModelCallStartedEvent,
 } from "../../../plugins/hook-types.js";
 import type { StreamFn } from "../../runtime/index.js";
+import { recordInteractiveLatencyRouteObservation } from "./interactive-latency-routing.js";
 
 export type ModelCallDiagnosticContext = {
   runId: string;
@@ -318,6 +319,18 @@ function emitModelCallEnded(
     ownerGeneration,
     modelContentPrivateData(observer.completedContent()),
   );
+  // Mirror-health observation for interactive-latency routing (in-memory
+  // counters only; no-op cost when the pair is not a configured mirror).
+  try {
+    recordInteractiveLatencyRouteObservation({
+      provider: eventBase.provider,
+      model: eventBase.model,
+      durationMs,
+      errored: failure !== undefined,
+    });
+  } catch {
+    // Health tracking must never affect the call lifecycle.
+  }
   if (!observer.state.suppressPluginHooks) {
     dispatchModelCallEndedHook(eventBase, {
       durationMs,

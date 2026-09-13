@@ -1,7 +1,11 @@
 /** Stale-state notice text, coalescing keys, and watcher eligibility. */
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
-import { isSubagentSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
+import {
+  buildAgentMainSessionKey,
+  isSubagentSessionKey,
+  parseAgentSessionKey,
+} from "../routing/session-key.js";
 
 const SESSION_STATE_CONTEXT_PREFIX = "session-state:";
 const SESSION_STATE_WAKE_COALESCE_MS = 20_000;
@@ -37,8 +41,26 @@ function sessionStateNoticeText(targetSessionKey: string, lastSeenSequence: numb
   return `Session "${targetSessionKey}" changed (other actor). Reconcile before acting: session_status sessionKey "${targetSessionKey}" changesSince ${lastSeenSequence}.`;
 }
 
-function shouldWakeWatcher(watcherSessionKey: string): boolean {
-  return !isSubagentSessionKey(watcherSessionKey);
+// Only the agent's own main lane may be woken by a session-state change. Every
+// other watcher lane (DM threads, supervision rN, dashboard, …) keeps the notice
+// queued for its next real turn: a targeted wake on such a lane starts a full model
+// run for a cursor the lane can never ack while idle, so every restart sweep that
+// re-fires permanently-stale cursors would otherwise run one marathon per lane.
+export function shouldWakeWatcherLane(
+  watcherSessionKey: string,
+  cfg?: { session?: { mainKey?: string } },
+): boolean {
+  if (isSubagentSessionKey(watcherSessionKey)) {
+    return false;
+  }
+  const parsed = parseAgentSessionKey(watcherSessionKey);
+  if (!parsed) {
+    return false;
+  }
+  return (
+    watcherSessionKey ===
+    buildAgentMainSessionKey({ agentId: parsed.agentId, mainKey: cfg?.session?.mainKey })
+  );
 }
 
 // Bare keys (session.scope="global") are store-local per agent, but cursors, the
@@ -56,6 +78,7 @@ export function enqueueSessionStateNotice(params: {
   targetSessionKey: string;
   lastSeenSequence: number;
   queueOnly?: boolean;
+  cfg?: { session?: { mainKey?: string } };
 }): void {
   enqueueSystemEvent(sessionStateNoticeText(params.targetSessionKey, params.lastSeenSequence), {
     sessionKey: params.watcherSessionKey,
@@ -67,7 +90,7 @@ export function enqueueSessionStateNotice(params: {
   if (params.queueOnly) {
     return;
   }
-  if (!shouldWakeWatcher(params.watcherSessionKey)) {
+  if (!shouldWakeWatcherLane(params.watcherSessionKey, params.cfg)) {
     return;
   }
   // Collapse bursts of watched-session changes into one main-session wake. Notices

@@ -3,8 +3,12 @@ import { getEventListeners } from "node:events";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emitAgentEvent } from "../../../infra/agent-events.js";
+import {
+  clearLlmStreamActivityRun,
+  notifyLlmStreamActivity,
+} from "../../../shared/llm-stream-activity.js";
 import { createEmbeddedAttemptRunAbort } from "./attempt-finalize.js";
-import { prepareEmbeddedAttemptTimeout } from "./attempt-timeout-prepare.js";
+import { prepareEmbeddedAttemptTimeout, RUN_DRAIN_GRACE_MS } from "./attempt-timeout-prepare.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type DeadlineChanged = NonNullable<EmbeddedRunAttemptParams["onAttemptDeadlineChanged"]>;
@@ -81,6 +85,7 @@ describe("prepareEmbeddedAttemptTimeout", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
+    clearLlmStreamActivityRun("run-1");
   });
 
   afterEach(() => {
@@ -101,7 +106,14 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     await vi.advanceTimersByTimeAsync(100);
 
     expect(harness.markTimedOutByRunBudget).toHaveBeenCalledOnce();
-    expect(harness.abortRun).toHaveBeenCalledWith(true);
+    expect(harness.abortRun).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        name: "TimeoutError",
+        message: "request timed out",
+        code: "OPENCLAW_RUN_BUDGET_TIMEOUT",
+      }),
+    );
     // The run-budget marker must be recorded before the abort so settlement
     // can re-confirm terminal ownership before committing partial output; the
     // timeout callback itself never commits buffered text.
@@ -156,7 +168,11 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     await vi.advanceTimersByTimeAsync(100);
 
     expect(runAbortController.signal.reason).toEqual(
-      expect.objectContaining({ name: "TimeoutError", message: "request timed out" }),
+      expect.objectContaining({
+        name: "TimeoutError",
+        message: "request timed out",
+        code: "OPENCLAW_RUN_BUDGET_TIMEOUT",
+      }),
     );
     timeout.clearTimers();
   });
@@ -194,7 +210,7 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(harness.markTimedOutByRunBudget).toHaveBeenCalledOnce();
-    expect(harness.abortRun).toHaveBeenCalledWith(true);
+    expect(harness.abortRun).toHaveBeenCalledWith(true, expect.any(Error));
     harness.timeout.clearTimers();
   });
 
@@ -219,7 +235,7 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     expect(harness.abortRun).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
 
-    expect(harness.abortRun).toHaveBeenCalledWith(true);
+    expect(harness.abortRun).toHaveBeenCalledWith(true, expect.any(Error));
     harness.timeout.clearTimers();
   });
 
@@ -239,7 +255,7 @@ describe("prepareEmbeddedAttemptTimeout", () => {
 
     await vi.advanceTimersByTimeAsync(50);
     expect(harness.markTimedOutDuringCompaction).toHaveBeenCalledOnce();
-    expect(harness.abortRun).toHaveBeenCalledWith(true);
+    expect(harness.abortRun).toHaveBeenCalledWith(true, expect.any(Error));
     expect(harness.onAttemptDeadlineChanged).toHaveBeenCalledTimes(2);
   });
 
@@ -359,5 +375,206 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     expect(harness.abortRun).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
     expect(getEventListeners(harness.runAbortController.signal, "abort")).toHaveLength(0);
+  });
+
+  describe("stream drain grace", () => {
+    // Second-scale clock: the 30s active-stream window must be able to
+    // discriminate chunks from silence, so every deadline here lives at t=60s.
+    const DEADLINE_MS = 60_000;
+
+    it("grants the drain grace once for an actively producing stream and hard-aborts at deadline+grace", async () => {
+      const harness = createTimeoutHarness({ timeoutMs: DEADLINE_MS });
+      harness.state.streaming = true;
+
+      // Chunk 1s before the deadline: the fire sees an actively producing
+      // stream and grants the once-per-attempt grace instead of killing
+      // mid-token. Chunks keep arriving, so the grace is spent in 30s slices
+      // until the full RUN_DRAIN_GRACE_MS budget is consumed, then the hard
+      // abort (backstop) fires exactly once.
+      await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1_000);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(harness.abortRun).not.toHaveBeenCalled();
+      for (const sliceFire of [90_000, 120_000, 150_000, 180_000]) {
+        await vi.advanceTimersByTimeAsync(29_000);
+        notifyLlmStreamActivity("run-1");
+        await vi.advanceTimersByTimeAsync(1_000);
+        if (sliceFire < 180_000) {
+          expect(harness.abortRun).not.toHaveBeenCalled();
+        }
+      }
+
+      expect(harness.abortRun).toHaveBeenCalledOnce();
+      expect(harness.abortRun).toHaveBeenCalledWith(true, expect.objectContaining({
+        code: "OPENCLAW_RUN_BUDGET_TIMEOUT",
+      }));
+      expect(harness.onAttemptDeadlineChanged.mock.calls).toEqual([
+        [{ kind: "bounded", deadlineAtMs: 60_000 }],
+        [{ kind: "bounded", deadlineAtMs: 90_000 }],
+        [{ kind: "bounded", deadlineAtMs: 120_000 }],
+        [{ kind: "bounded", deadlineAtMs: 150_000 }],
+        [{ kind: "bounded", deadlineAtMs: 180_000 }],
+      ]);
+      expect(180_000 - 60_000).toBe(RUN_DRAIN_GRACE_MS);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(harness.abortRun).toHaveBeenCalledOnce();
+      harness.timeout.clearTimers();
+    });
+
+    it("lets the turn complete inside the drain grace without aborting", async () => {
+      const harness = createTimeoutHarness({ timeoutMs: DEADLINE_MS });
+      harness.state.streaming = true;
+
+      await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1_000);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(harness.abortRun).not.toHaveBeenCalled();
+
+      // The turn finishes mid-grace: normal run teardown aborts the run signal,
+      // which must clear the grace timer — no late abort, no double fire.
+      harness.runAbortController.abort(new Error("turn completed"));
+      await vi.advanceTimersByTimeAsync(RUN_DRAIN_GRACE_MS);
+
+      expect(harness.abortRun).not.toHaveBeenCalled();
+      expect(harness.markTimedOutByRunBudget).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("does not grant the drain grace to an idle (stalled) stream", async () => {
+      const harness = createTimeoutHarness({ timeoutMs: DEADLINE_MS });
+      // Streaming is open but no chunk has ever arrived (last-activity epoch
+      // is 0 and the clock sits 60s past it): the stream is stalled, so the
+      // deadline owns the kill immediately instead of lending it grace.
+      harness.state.streaming = true;
+
+      await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+      expect(harness.abortRun).toHaveBeenCalledOnce();
+      expect(harness.abortRun).toHaveBeenCalledWith(true, expect.any(Error));
+      expect(harness.onAttemptDeadlineChanged.mock.calls).toEqual([
+        [{ kind: "bounded", deadlineAtMs: DEADLINE_MS }],
+      ]);
+      harness.timeout.clearTimers();
+    });
+
+    it("aborts a stream that stalls during the drain grace at the next slice", async () => {
+      const harness = createTimeoutHarness({ timeoutMs: DEADLINE_MS });
+      harness.state.streaming = true;
+
+      await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1_000);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(harness.abortRun).not.toHaveBeenCalled();
+
+      // Chunks stop after the grant: the first 30s slice fire sees a stalled
+      // stream (30s+ of silence) and aborts instead of riding out the
+      // remaining 90s of grace.
+      await vi.advanceTimersByTimeAsync(100_000);
+
+      expect(harness.abortRun).toHaveBeenCalledOnce();
+      expect(harness.onAttemptDeadlineChanged.mock.calls).toEqual([
+        [{ kind: "bounded", deadlineAtMs: DEADLINE_MS }],
+        [{ kind: "bounded", deadlineAtMs: 90_000 }],
+      ]);
+      await vi.advanceTimersByTimeAsync(RUN_DRAIN_GRACE_MS);
+      expect(harness.abortRun).toHaveBeenCalledOnce();
+      harness.timeout.clearTimers();
+    });
+
+    it("composes compaction grace and drain grace without double extension", async () => {
+      const harness = createTimeoutHarness({ pendingCompaction: true, timeoutMs: DEADLINE_MS });
+      harness.state.streaming = true;
+
+      // t=60s fires into a pending compaction: the compaction grace extends
+      // first (existing ownership unchanged).
+      await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1_000);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(harness.abortRun).not.toHaveBeenCalled();
+      expect(harness.onAttemptDeadlineChanged.mock.calls).toEqual([
+        [{ kind: "bounded", deadlineAtMs: 60_000 }],
+        [{ kind: "bounded", deadlineAtMs: 60_050 }],
+      ]);
+
+      // Compaction settles; the still-producing stream now earns its (single)
+      // drain grace from the compaction-grace fire.
+      harness.state.pendingCompaction = false;
+      harness.state.compactionInFlight = false;
+      await vi.advanceTimersByTimeAsync(49);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1);
+      for (const sliceFire of [90_050, 120_050, 150_050, 180_050]) {
+        await vi.advanceTimersByTimeAsync(29_000);
+        notifyLlmStreamActivity("run-1");
+        await vi.advanceTimersByTimeAsync(1_000);
+        if (sliceFire < 180_050) {
+          expect(harness.abortRun).not.toHaveBeenCalled();
+        }
+      }
+
+      expect(harness.abortRun).toHaveBeenCalledOnce();
+      expect(harness.abortRun).toHaveBeenCalledWith(true, expect.any(Error));
+      expect(harness.onAttemptDeadlineChanged.mock.calls).toEqual([
+        [{ kind: "bounded", deadlineAtMs: 60_000 }],
+        [{ kind: "bounded", deadlineAtMs: 60_050 }],
+        [{ kind: "bounded", deadlineAtMs: 90_050 }],
+        [{ kind: "bounded", deadlineAtMs: 120_050 }],
+        [{ kind: "bounded", deadlineAtMs: 150_050 }],
+        [{ kind: "bounded", deadlineAtMs: 180_050 }],
+      ]);
+      expect(harness.markTimedOutDuringCompaction).not.toHaveBeenCalled();
+      harness.timeout.clearTimers();
+    });
+
+    it("carries the remaining drain budget through an approval pause/resume", async () => {
+      const harness = createTimeoutHarness({ timeoutMs: DEADLINE_MS });
+      harness.state.streaming = true;
+
+      await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1_000);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(29_000);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      // t=90s slice consumed; next deadline t=120s with 60s grace left.
+      expect(harness.onAttemptDeadlineChanged.mock.calls).toEqual([
+        [{ kind: "bounded", deadlineAtMs: 60_000 }],
+        [{ kind: "bounded", deadlineAtMs: 90_000 }],
+        [{ kind: "bounded", deadlineAtMs: 120_000 }],
+      ]);
+
+      // Human review pauses mid-grace at t=100s (20s until the slice fire).
+      await vi.advanceTimersByTimeAsync(10_000);
+      emitApproval("waiting-approval", "g1");
+      await vi.advanceTimersByTimeAsync(500_000);
+      expect(harness.abortRun).not.toHaveBeenCalled();
+
+      // Resume at t=600s with a fresh chunk: the paused 20s slice remainder
+      // plus the 60s unused drain budget must survive — a lost state would
+      // grant a fresh 120s grace and abort at t=740s instead of t=680s.
+      notifyLlmStreamActivity("run-1");
+      emitApproval("approval-resolved", "g1");
+      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(29_000);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(harness.abortRun).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(29_000);
+      notifyLlmStreamActivity("run-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(harness.abortRun).toHaveBeenCalledOnce();
+      expect(harness.abortRun).toHaveBeenCalledWith(true, expect.any(Error));
+      expect(harness.onAttemptDeadlineChanged.mock.calls).toEqual([
+        [{ kind: "bounded", deadlineAtMs: 60_000 }],
+        [{ kind: "bounded", deadlineAtMs: 90_000 }],
+        [{ kind: "bounded", deadlineAtMs: 120_000 }],
+        [{ kind: "unlimited" }],
+        [{ kind: "bounded", deadlineAtMs: 620_000 }],
+        [{ kind: "bounded", deadlineAtMs: 650_000 }],
+        [{ kind: "bounded", deadlineAtMs: 680_000 }],
+      ]);
+      harness.timeout.clearTimers();
+    });
   });
 });

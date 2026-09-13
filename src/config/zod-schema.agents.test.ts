@@ -158,3 +158,40 @@ describe("explicit ambient agent targets", () => {
     ).toBe(true);
   });
 });
+
+describe("loop governor byKind budgets", () => {
+  const entries = { oscar: {} };
+  const base = { agents: ["oscar"], maxTurnsPerHour: 40 };
+
+  it("accepts colon and colon-less kind keys with positive integer budgets", () => {
+    for (const byKind of [
+      { "cron:": 20, "subagent:": 40 },
+      { cron: 20, subagent: 40, incognito: 10 },
+    ]) {
+      expect(AgentsSchema.safeParse({ entries, loopGovernor: { ...base, byKind } }).success).toBe(
+        true,
+      );
+    }
+  });
+
+  it("accepts config without byKind (existing single-budget shape)", () => {
+    expect(AgentsSchema.safeParse({ entries, loopGovernor: base }).success).toBe(true);
+  });
+
+  it("rejects unknown kinds and invalid budgets", () => {
+    expect(
+      AgentsSchema.safeParse({
+        entries,
+        loopGovernor: { ...base, byKind: { heartbeat: 20 } },
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentsSchema.safeParse({ entries, loopGovernor: { ...base, byKind: { "cron:": 0 } } })
+        .success,
+    ).toBe(false);
+    expect(
+      AgentsSchema.safeParse({ entries, loopGovernor: { ...base, byKind: { "cron:": 1.5 } } })
+        .success,
+    ).toBe(false);
+  });
+});

@@ -1,10 +1,24 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import {
+  listActiveEmbeddedRunSessionIds,
+  listActiveEmbeddedRunSessionKeys,
+} from "../agents/embedded-agent-runner/active-run-projections.js";
+import {
+  hasCurrentProcessOwner,
+  normalizeStringSet,
+  resolveRestartRecoveryStorePaths,
+} from "../agents/main-session-recovery/main-session-restart-recovery-shared.js";
+import {
   canonicalizeMainSessionAlias,
   resolveAgentMainSessionKey,
 } from "../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
-import { loadSessionEntry, patchSessionEntryCore } from "../config/sessions/session-accessor.js";
+import {
+  applySessionEntryReplacements,
+  loadSessionEntry,
+  patchSessionEntryCore,
+  type SessionEntryReplacement,
+} from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   isSubagentSessionKey,
@@ -14,6 +28,74 @@ import {
 } from "../routing/session-key.js";
 import { resolveMainScopedEventSessionKey } from "./event-session-routing.js";
 import type { HeartbeatConfig } from "./heartbeat-runner-config.js";
+import { heartbeatLog } from "./heartbeat-runner-config.js";
+
+/** Reason recorded on isolated heartbeat rows a previous gateway lifecycle killed. */
+const HEARTBEAT_RESTART_INTERRUPTED_REASON =
+  "heartbeat run interrupted because the gateway restarted";
+
+/**
+ * Boot-time reconcile for isolated heartbeat runs the previous gateway
+ * lifecycle killed. Isolated heartbeat sessions are deliberately excluded from
+ * main-session restart recovery, and their window rows are otherwise finalized
+ * only by in-process terminal settlement — so a restart leaves them `running`
+ * forever. Mark the owner-exact set (entries carrying the
+ * heartbeatIsolatedBaseSessionKey marker) failed at boot, when no in-process
+ * run can own them, mirroring the cron receipt's interrupted fact. Bookkeeping
+ * only: no resume, no synthetic wake. Never reconcile outside boot — an active
+ * embedded run fences its own row out below.
+ */
+export async function markStartupOrphanedHeartbeatIsolatedSessions(params: {
+  cfg?: OpenClawConfig;
+  stateDir?: string;
+}): Promise<{ marked: number; skipped: number }> {
+  const result = { marked: 0, skipped: 0 };
+  const activeSessionIds = normalizeStringSet(listActiveEmbeddedRunSessionIds());
+  const activeSessionKeys = normalizeStringSet(listActiveEmbeddedRunSessionKeys());
+  for (const storePath of await resolveRestartRecoveryStorePaths({
+    cfg: params.cfg,
+    stateDir: params.stateDir,
+  })) {
+    const storeResult = await applySessionEntryReplacements<{ marked: number; skipped: number }>({
+      storePath,
+      statuses: ["running"],
+      requireWriteSuccess: true,
+      update: (entries) => {
+        const replacements: SessionEntryReplacement[] = [];
+        const counts = { marked: 0, skipped: 0 };
+        for (const { sessionKey, entry } of entries) {
+          // Owner-exact: only rows stamped by heartbeat isolation. Main-session
+          // recovery owns every other running row by design.
+          if (!entry.heartbeatIsolatedBaseSessionKey?.trim()) {
+            counts.skipped++;
+            continue;
+          }
+          if (hasCurrentProcessOwner({ activeSessionIds, activeSessionKeys, entry, sessionKey })) {
+            counts.skipped++;
+            continue;
+          }
+          const now = Date.now();
+          entry.status = "failed";
+          entry.abortedLastRun = true;
+          entry.lastRunError = HEARTBEAT_RESTART_INTERRUPTED_REASON;
+          entry.endedAt = now;
+          entry.runtimeMs = Math.max(0, now - (entry.startedAt ?? now));
+          entry.lifecycleRunId = undefined;
+          entry.updatedAt = now;
+          replacements.push({ sessionKey, entry });
+          counts.marked++;
+        }
+        return { result: counts, replacements };
+      },
+    });
+    result.marked += storeResult.marked;
+    result.skipped += storeResult.skipped;
+  }
+  if (result.marked > 0) {
+    heartbeatLog.warn(`marked ${result.marked} restart-killed isolated heartbeat window(s) failed`);
+  }
+  return result;
+}
 
 export function resolveHeartbeatSessionKey(
   cfg: OpenClawConfig,
@@ -135,10 +217,56 @@ export function resolveHeartbeatSession(
   };
 }
 
+// A stored base that itself ends with `:heartbeat` is normally a previously-derived
+// isolated base: wake re-entry against a rotated/missing isolated entry falls through
+// to the forced-key fallback and re-isolates the already-isolated key, pinning the
+// `:heartbeat` key as a permanent base (observed as `X:heartbeat:heartbeat` rows).
+// Collapse those back to the real base — but only when the stored base is provably
+// derived: its own entry is gone or carries an isolation marker. A live, unmarked
+// session that merely ends with `:heartbeat` (e.g. a forced real `alerts:heartbeat`
+// lane, or heartbeat.session configured with the suffix, guarded below) stays a
+// legitimate base and must not be stripped.
+function resolveNonNestedHeartbeatBaseSessionKey(params: {
+  storedBaseSessionKey: string;
+  configuredSessionKey: string;
+  storePath: string;
+  env: NodeJS.ProcessEnv;
+}): string {
+  if (
+    !params.storedBaseSessionKey.endsWith(":heartbeat") ||
+    params.configuredSessionKey.endsWith(":heartbeat")
+  ) {
+    return params.storedBaseSessionKey;
+  }
+  const strippedBaseSessionKey = params.storedBaseSessionKey.replace(/(?::heartbeat)+$/, "");
+  if (!strippedBaseSessionKey) {
+    return params.storedBaseSessionKey;
+  }
+  let storedBaseEntry: { heartbeatIsolatedBaseSessionKey?: string } | undefined;
+  try {
+    storedBaseEntry = loadSessionEntry({
+      storePath: params.storePath,
+      sessionKey: params.storedBaseSessionKey,
+      env: params.env,
+    });
+  } catch {
+    // Unreadable store: keep today's base rather than guessing a collapse.
+    return params.storedBaseSessionKey;
+  }
+  // Only a stored base whose own entry carries an isolation marker is provably a
+  // derived run key (execution stamps every isolated entry). A missing or unmarked
+  // entry stays a legitimate base: forced real `:heartbeat`-suffixed lanes pin that
+  // contract, and collapse-on-missing would steal their identity.
+  const baseIsDerived = Boolean(storedBaseEntry?.heartbeatIsolatedBaseSessionKey?.trim());
+  return baseIsDerived ? strippedBaseSessionKey : params.storedBaseSessionKey;
+}
+
 function resolveIsolatedHeartbeatSessionKey(params: {
   agentId: string;
   sessionKey: string;
   configuredSessionKey: string;
+  storePath: string;
+  env: NodeJS.ProcessEnv;
   sessionEntry?: { heartbeatIsolatedBaseSessionKey?: string };
 }) {
   const storedBaseSessionKey = params.sessionEntry?.heartbeatIsolatedBaseSessionKey?.trim();
@@ -160,15 +288,21 @@ function resolveIsolatedHeartbeatSessionKey(params: {
     }
   }
   if (storedBaseSessionKey) {
-    const suffix = params.sessionKey.slice(storedBaseSessionKey.length);
+    const baseSessionKey = resolveNonNestedHeartbeatBaseSessionKey({
+      storedBaseSessionKey,
+      configuredSessionKey: params.configuredSessionKey,
+      storePath: params.storePath,
+      env: params.env,
+    });
+    const suffix = params.sessionKey.slice(baseSessionKey.length);
     if (
-      params.sessionKey.startsWith(storedBaseSessionKey) &&
+      params.sessionKey.startsWith(baseSessionKey) &&
       suffix.length > 0 &&
       /^(:heartbeat)+$/.test(suffix)
     ) {
       return {
-        isolatedSessionKey: `${storedBaseSessionKey}:heartbeat`,
-        isolatedBaseSessionKey: storedBaseSessionKey,
+        isolatedSessionKey: `${baseSessionKey}:heartbeat`,
+        isolatedBaseSessionKey: baseSessionKey,
       };
     }
   }
@@ -218,6 +352,8 @@ export function resolveHeartbeatSessionSelection(
     agentId,
     sessionKey: session.sessionKey,
     configuredSessionKey: configured.sessionKey,
+    storePath: session.storePath,
+    env,
     sessionEntry: session.entry,
   });
   return {

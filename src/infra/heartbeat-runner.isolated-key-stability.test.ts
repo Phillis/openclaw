@@ -234,6 +234,93 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
     });
   });
 
+  it("collapses a derived stored base that itself ends with :heartbeat back to the real base", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath }) => {
+      const cfg = makeIsolatedHeartbeatConfig(tmpDir, storePath);
+      // A thread/DM-style lane X whose isolated key was re-isolated by a wake:
+      // the entry for X:heartbeat was pinned with base X:heartbeat (a derived
+      // base), so the old resolution perpetuated X:heartbeat:heartbeat runs.
+      const baseSessionKey = "agent:main:alerts2";
+      const isolatedSessionKey = `${baseSessionKey}:heartbeat`;
+      await seedSessionStore(storePath, isolatedSessionKey, {
+        sessionId: "sid",
+        updatedAt: Date.now(),
+        lastChannel: "whatsapp",
+        lastProvider: "whatsapp",
+        lastTo: "+1555",
+        heartbeatIsolatedBaseSessionKey: isolatedSessionKey,
+      });
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
+
+      await runHeartbeatOnce({
+        cfg,
+        sessionKey: isolatedSessionKey,
+        deps: {
+          getQueueSize: () => 0,
+          nowMs: () => Date.now(),
+        },
+      });
+
+      // The run resolves against base X (no X:heartbeat:heartbeat is created),
+      // and the stored marker is restamped to the real base.
+      expect(replySpy).toHaveBeenCalledTimes(1);
+      expect(replyCall(replySpy).SessionKey).toBe(isolatedSessionKey);
+      const store = readSessionStoreForTest<{ heartbeatIsolatedBaseSessionKey?: string }>(
+        storePath,
+      );
+      expect(store[`${isolatedSessionKey}:heartbeat`]).toBeUndefined();
+      expect(store[isolatedSessionKey]?.heartbeatIsolatedBaseSessionKey).toBe(baseSessionKey);
+    });
+  });
+
+  it("converges a nested :heartbeat:heartbeat forced key to the real isolated key", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath }) => {
+      const cfg = makeIsolatedHeartbeatConfig(tmpDir, storePath);
+      const baseSessionKey = "agent:main:alerts2";
+      const isolatedSessionKey = `${baseSessionKey}:heartbeat`;
+      const nestedSessionKey = `${baseSessionKey}:heartbeat:heartbeat`;
+      // Nested run entry pinned with the derived X:heartbeat base; that base's
+      // own entry still carries its isolation marker (= X), proving it is itself
+      // a derived run key rather than a real lane.
+      await seedSessionStore(storePath, nestedSessionKey, {
+        sessionId: "sid",
+        updatedAt: Date.now(),
+        lastChannel: "whatsapp",
+        lastProvider: "whatsapp",
+        lastTo: "+1555",
+        heartbeatIsolatedBaseSessionKey: isolatedSessionKey,
+      });
+      await seedSessionStore(storePath, isolatedSessionKey, {
+        sessionId: "sid-parent",
+        updatedAt: Date.now() - 1_000,
+        lastChannel: "whatsapp",
+        lastProvider: "whatsapp",
+        lastTo: "+1555",
+        heartbeatIsolatedBaseSessionKey: baseSessionKey,
+      });
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
+
+      await runHeartbeatOnce({
+        cfg,
+        sessionKey: nestedSessionKey,
+        deps: {
+          getQueueSize: () => 0,
+          nowMs: () => Date.now(),
+        },
+      });
+
+      expect(replySpy).toHaveBeenCalledTimes(1);
+      expect(replyCall(replySpy).SessionKey).toBe(isolatedSessionKey);
+      const store = readSessionStoreForTest<{ heartbeatIsolatedBaseSessionKey?: string }>(
+        storePath,
+      );
+      expect(store[nestedSessionKey]).toBeUndefined();
+      expect(store[isolatedSessionKey]?.heartbeatIsolatedBaseSessionKey).toBe(baseSessionKey);
+    });
+  });
+
   it("keeps isolated keys distinct when the configured base key already ends with :heartbeat", async () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath }) => {
       const cfg = makeNamedIsolatedHeartbeatConfig(tmpDir, storePath, "alerts:heartbeat");

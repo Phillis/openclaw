@@ -25,6 +25,7 @@ import {
   shouldApplyNonVisibleTurnRetryGuard,
   type IncompleteTurnAttempt,
 } from "./incomplete-turn-classification.js";
+import { buildTraceToolSummary } from "./run-attempt-result.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 // Allow one immediate continuation plus one follow-up continuation before
@@ -37,6 +38,32 @@ const EMPTY_RESPONSE_RETRY_INSTRUCTION =
   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
+
+/** Hard cap on transcript context embedded into a budget-stopped finalization prompt. */
+const BUDGET_STOPPED_NARRATION_CHAR_LIMIT = 1200;
+
+/**
+ * A budget-stopped run's finalizer executes instruction-only (no transcript
+ * replay), so it must carry the run's own last narration and tool activity —
+ * otherwise the terminal message is confused filler about missing access.
+ */
+function buildBudgetStoppedFinalizationContext(attempt: IncompleteTurnAttempt): string {
+  const lastNarration = joinAssistantTexts(attempt.assistantTexts);
+  const toolSummary = buildTraceToolSummary({
+    toolMetas: attempt.toolMetas,
+    fallbackHadFailure: Boolean(attempt.lastToolError),
+  });
+  const contextLines = [
+    "Context: the run stopped at its tool-call budget before it could produce a final answer. Summarize and report the outcome below instead of claiming missing access.",
+    lastNarration
+      ? `Last assistant narration (may be partial): "${lastNarration.slice(0, BUDGET_STOPPED_NARRATION_CHAR_LIMIT)}${lastNarration.length > BUDGET_STOPPED_NARRATION_CHAR_LIMIT ? "…" : ""}"`
+      : undefined,
+    toolSummary
+      ? `Tool activity this run: ${toolSummary.calls} call(s) via ${toolSummary.tools.join(", ")}, ${toolSummary.failures} failure(s).`
+      : undefined,
+  ];
+  return contextLines.filter((line) => line !== undefined).join(" ");
+}
 
 export function shouldRetrySilentErrorAssistantTurn(params: {
   attempt: Pick<
@@ -309,6 +336,13 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
   allowEmptyStopContinuation?: boolean;
   payloadCount: number;
   hasTerminalToolPresentation?: boolean;
+  /**
+   * A bounded-run budget cap (tool-loop turn budget or run wall-clock soft
+   * stop) withheld this turn's post-tool continuation round, so the turn's
+   * narration text payloads are not a final answer and must not disqualify
+   * the graceful terminal turn.
+   */
+  toolLoopBudgetStopped?: boolean;
   aborted: boolean;
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
@@ -339,7 +373,7 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
     classifyAssistantTurn(params).emptyResponse,
   );
   if (
-    params.payloadCount !== 0 ||
+    (params.payloadCount !== 0 && !params.toolLoopBudgetStopped) ||
     (!params.allowEmptyStopContinuation && hasOnlySilentAssistantReply(attempt.assistantTexts)) ||
     params.hasTerminalToolPresentation ||
     params.aborted ||
@@ -369,9 +403,16 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
   ) {
     return null;
   }
-  return allToolsProvenSettled && failedToolNames.size > 0
-    ? `${SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION} ${TOOL_FAILURE_INSTRUCTION}`
-    : SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION;
+  const baseInstruction =
+    allToolsProvenSettled && failedToolNames.size > 0
+      ? `${SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION} ${TOOL_FAILURE_INSTRUCTION}`
+      : SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION;
+  // The budget-stopped finalizer sees only this instruction, so embed the run's
+  // own last narration and tool activity; without it the terminal message is
+  // confused filler ("I don't have access to the earlier portion...").
+  return params.toolLoopBudgetStopped === true
+    ? `${baseInstruction} ${buildBudgetStoppedFinalizationContext(attempt)}`
+    : baseInstruction;
 }
 
 /**

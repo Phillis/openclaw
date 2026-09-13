@@ -81,7 +81,7 @@ describe("heartbeat outcome store", () => {
     );
   });
 
-  it("replaces older state and ignores visible or no-change responses", async () => {
+  it("replaces older state, skips visible alerts, and records no-change as done", async () => {
     const env = await createEnv();
     const base = {
       agentId: "main",
@@ -110,6 +110,9 @@ describe("heartbeat outcome store", () => {
       response: { outcome: "no_change", notify: false, summary: "Nothing changed" },
     });
 
+    // Quiet no_change responses persist as done + reason "no_change": the
+    // outcome CHECK forbids the literal value, and the reason is the stable
+    // marker that a poll completed silently.
     expect(
       claimHeartbeatOutcomeForRun({
         agentId: "main",
@@ -117,7 +120,12 @@ describe("heartbeat outcome store", () => {
         runId: "user-run-1",
         env,
       }),
-    ).toMatchObject({ outcome: "blocked", summary: "Waiting for build", occurredAt: 200 });
+    ).toMatchObject({
+      outcome: "done",
+      responseReason: "no_change",
+      summary: "Nothing changed",
+      occurredAt: 400,
+    });
     expect(
       openOpenClawAgentDatabase({ agentId: "main", env })
         .db.prepare("SELECT COUNT(*) AS count FROM heartbeat_outcomes")

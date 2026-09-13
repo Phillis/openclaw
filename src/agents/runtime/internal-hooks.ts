@@ -9,7 +9,10 @@ export {
   copyInternalToolResultState,
   getInternalToolResultProvenance,
   getInternalToolExecutionPreparer,
+  getInternalShouldStopAfterTurn,
   setInternalBeforeToolBatch,
+  setInternalShouldStopAfterTurn,
   type InternalBeforeToolBatchHook,
+  type InternalShouldStopAfterTurnHook,
   type InternalToolExecutionPreparer,
 } from "../../../packages/agent-core/src/internal-hooks.js";

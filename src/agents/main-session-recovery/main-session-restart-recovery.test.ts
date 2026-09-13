@@ -3081,6 +3081,50 @@ describe("main-session-restart-recovery", () => {
     expect(store["agent:main:already-marked"]?.abortedLastRun).toBe(false);
   });
 
+  it("does not adopt an isolated heartbeat session as a restart recovery candidate", async () => {
+    // Incident regression (2026-09-09): a mid-run isolated heartbeat session was
+    // adopted as the interrupted main lane and recovered as a full marathon.
+    const sessionsDir = await makeSessionsDir();
+    const cutoff = Date.now();
+    const isolatedHeartbeatKey = "agent:main:slack:direct:u1:thread:1785085550.855049:heartbeat";
+    await writeStore(sessionsDir, {
+      "agent:main:main": {
+        sessionId: "main-session",
+        updatedAt: cutoff - 10_000,
+        status: "running",
+      },
+      [isolatedHeartbeatKey]: {
+        sessionId: "isolated-heartbeat-session",
+        updatedAt: cutoff - 10_000,
+        status: "running",
+        heartbeatIsolatedBaseSessionKey: "agent:main:slack:direct:u1:thread:1785085550.855049",
+      },
+    });
+    await writeTranscript(sessionsDir, "main-session", [
+      { role: "user", content: "run the tool" },
+      { role: "toolResult", content: "done" },
+    ]);
+
+    expect(
+      await markStartupOrphanedMainSessionsForRecovery({
+        stateDir: tmpDir,
+        updatedBeforeMs: cutoff,
+      }),
+    ).toEqual({ marked: 1, skipped: 1 });
+
+    let store = readStore(path.join(sessionsDir, "sessions.json"));
+    expect(store["agent:main:main"]?.abortedLastRun).toBe(true);
+    expect(store[isolatedHeartbeatKey]?.abortedLastRun).toBeUndefined();
+
+    const recovered = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+
+    expect(recovered).toEqual({ started: 1, settled: 0, failed: 0, skipped: 0 });
+    expect(callGateway).toHaveBeenCalledTimes(1);
+    store = readStore(path.join(sessionsDir, "sessions.json"));
+    expect(store["agent:main:main"]?.abortedLastRun).toBe(false);
+    expect(store[isolatedHeartbeatKey]?.abortedLastRun).toBeUndefined();
+  });
+
   it("does not create empty agent databases while scanning startup recovery", async () => {
     const agentIds = Array.from({ length: 12 }, (_, index) => `agent-${index + 1}`);
     const databasePaths = await Promise.all(

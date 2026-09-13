@@ -605,4 +605,85 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
 
     expect(instruction).toBeNull();
   });
+
+  describe("tool-loop budget-stopped finalization context", () => {
+    function makeSettledToolUseAttempt(
+      overrides: Partial<EmbeddedRunAttemptResult> = {},
+    ): EmbeddedRunAttemptResult {
+      const toolUseAssistant = makeLastAssistant({
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "tool_1", name: "tool_call", arguments: {} }],
+      });
+      return makeAttemptResult({
+        assistantTexts: ["Approving the exception for the beta lane."],
+        toolMetas: [{ toolName: "tool_call", toolCallId: "tool_1" }],
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        messagesSnapshot: [
+          toolUseAssistant,
+          { role: "toolResult", toolCallId: "tool_1", toolName: "tool_call", isError: false },
+        ] as unknown as EmbeddedRunAttemptResult["messagesSnapshot"],
+        lastAssistant: toolUseAssistant,
+        currentAttemptAssistant: toolUseAssistant,
+        ...overrides,
+      });
+    }
+
+    it("carries the run's last narration and tool activity into the continuation", () => {
+      const instruction = resolveSettledToolTerminalContinuationInstruction(
+        makeSettledContinuationParams(makeSettledToolUseAttempt(), {
+          payloadCount: 1,
+          toolLoopBudgetStopped: true,
+        }),
+      );
+
+      expect(instruction).toContain(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+      // The isolated finalizer must learn what the run was doing and what its
+      // tools did, or it produces confused filler about missing access.
+      expect(instruction).toContain("Approving the exception for the beta lane.");
+      expect(instruction).toContain("tool_call");
+      expect(instruction).toContain("1 call(s)");
+      expect(instruction).toContain("0 failure(s)");
+    });
+
+    it("reports failed tool activity to the budget-stopped finalizer", () => {
+      const instruction = resolveSettledToolTerminalContinuationInstruction(
+        makeSettledContinuationParams(
+          makeSettledToolUseAttempt({
+            toolMetas: [
+              { toolName: "tool_call", toolCallId: "tool_1" },
+              { toolName: "tool_call", toolCallId: "tool_2", isError: true },
+            ],
+            itemLifecycle: { startedCount: 2, completedCount: 2, activeCount: 0 },
+          }),
+          { payloadCount: 1, toolLoopBudgetStopped: true },
+        ),
+      );
+
+      expect(instruction).toContain("2 call(s)");
+      expect(instruction).toContain("1 failure(s)");
+    });
+
+    it("still refuses a narration payload when the budget was not stopped", () => {
+      const instruction = resolveSettledToolTerminalContinuationInstruction(
+        makeSettledContinuationParams(makeSettledToolUseAttempt(), { payloadCount: 1 }),
+      );
+
+      expect(instruction).toBeNull();
+    });
+
+    it("bounds the embedded narration", () => {
+      const longNarration = "x".repeat(5000);
+      const instruction = resolveSettledToolTerminalContinuationInstruction(
+        makeSettledContinuationParams(
+          makeSettledToolUseAttempt({ assistantTexts: [longNarration] }),
+          { payloadCount: 1, toolLoopBudgetStopped: true },
+        ),
+      );
+
+      expect(instruction).toContain(`${"x".repeat(1200)}…`);
+      expect(instruction?.length).toBeLessThan(
+        SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION.length + 1600,
+      );
+    });
+  });
 });

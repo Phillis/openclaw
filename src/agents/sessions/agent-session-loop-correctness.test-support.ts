@@ -116,6 +116,7 @@ export async function createTestSession(
     resourceLoader?: ResourceLoader;
     customTools?: ToolDefinition[];
     contextOverflowRecoveryOwner?: "session" | "caller";
+    shouldStopAfterTurn?: () => boolean;
   } = {},
 ) {
   const model = options.model ?? testModel;
@@ -142,11 +143,17 @@ export async function createTestSession(
     settingsManager,
     modelRegistry,
   };
-  const result = options.contextOverflowRecoveryOwner
-    ? await createAgentSessionForEmbeddedRunner(sessionOptions, {
-        contextOverflowRecoveryOwner: options.contextOverflowRecoveryOwner,
-      })
-    : await createAgentSession(sessionOptions);
+  const result =
+    options.contextOverflowRecoveryOwner !== undefined || options.shouldStopAfterTurn !== undefined
+      ? await createAgentSessionForEmbeddedRunner(sessionOptions, {
+          ...(options.contextOverflowRecoveryOwner !== undefined
+            ? { contextOverflowRecoveryOwner: options.contextOverflowRecoveryOwner }
+            : {}),
+          ...(options.shouldStopAfterTurn
+            ? { shouldStopAfterTurn: options.shouldStopAfterTurn }
+            : {}),
+        })
+      : await createAgentSession(sessionOptions);
   sessions.push(result.session);
   return { ...result, modelRegistry, settingsManager, sessionManager };
 }

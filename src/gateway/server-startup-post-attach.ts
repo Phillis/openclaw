@@ -70,6 +70,10 @@ const loadMainSessionRestartRecoveryMarkingModule = createLazyRuntimeModule(
   () => import("../agents/main-session-recovery/main-session-restart-recovery-marking.js"),
 );
 
+const loadHeartbeatRunnerSessionModule = createLazyRuntimeModule(
+  () => import("../infra/heartbeat-runner-session.js"),
+);
+
 const loadAgentDefaultsModule = createLazyRuntimeModule(() => import("../agents/defaults.js"));
 
 const loadAgentModelSelectionModule = createLazyRuntimeModule(
@@ -671,6 +675,19 @@ export async function startGatewaySidecars(params: {
         `main-session startup orphan marking failed before channel startup: ${String(err)}`,
       );
     }
+    // Isolated heartbeat windows are excluded from the recovery scan above by
+    // design; their restart-killed rows get the same boot-time reconcile.
+    await measureStartup(params.startupTrace, "sidecars.heartbeat-window-reconcile", async () => {
+      try {
+        const { markStartupOrphanedHeartbeatIsolatedSessions } =
+          await loadHeartbeatRunnerSessionModule();
+        await markStartupOrphanedHeartbeatIsolatedSessions({ cfg: params.cfg });
+      } catch (err) {
+        params.log.warn(
+          `heartbeat isolated window reconcile failed before channel startup: ${String(err)}`,
+        );
+      }
+    });
   });
   const getModelRuntimeConfig = params.getModelRuntimeConfig ?? (() => params.cfg);
   // Agent RPC remains available when transports are disabled. Publish configured/static facts before

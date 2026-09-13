@@ -65,6 +65,7 @@ export const LAZY_ADDITIVE_STATE_TABLES = [
   "projects",
   "user_preferences",
   "loop_governor_turn_counts",
+  "loop_governor_kind_turn_counts",
   "device_pair_setup_completions",
   "github_publication_requests",
   "device_pairing_join_codes",

@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { areDiagnosticsEnabledForProcess } from "../../../infra/diagnostic-events.js";
 import { toErrorObject } from "../../../infra/errors.js";
 import { markDiagnosticRunProgress } from "../../../logging/diagnostic-run-activity.js";
+import { notifyLlmStreamActivity } from "../../../shared/llm-stream-activity.js";
 import type { StreamFn } from "../../runtime/index.js";
 import type { MutableAssistantMessageEventStream } from "../../stream-compat.js";
 import { createStreamIteratorWrapper } from "../../stream-iterator-wrapper.js";
@@ -506,6 +507,9 @@ export function streamWithIdleTimeout(
           };
           const unsubscribeLlmActivity = onLlmRequestActivity(streamAbortController.signal, () => {
             armTimer();
+            if (runId) {
+              notifyLlmStreamActivity(runId);
+            }
             if (runId && areDiagnosticsEnabledForProcess()) {
               markDiagnosticRunProgress({ runId, reason: "model_call:stream_progress" });
             }

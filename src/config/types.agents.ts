@@ -183,8 +183,21 @@ export type LoopGovernorAlertChannel = {
 export type LoopGovernorConfig = {
   /** Agent ids governed by the loop budget; only non-interactive turns count. */
   agents: string[];
-  /** Max non-interactive admissions per agent per UTC hour before parking. */
+  /**
+   * Max non-interactive admissions per agent per UTC hour before parking.
+   * Recommended live value for bursty automation agents (e.g. oscar): 40 —
+   * heartbeat beats, supervision nudges, and cron runs no longer share one
+   * 20/hour budget once byKind splits the counters.
+   */
   maxTurnsPerHour: number;
+  /**
+   * Optional per-session-kind hourly budgets overriding maxTurnsPerHour.
+   * Keys are session-kind prefixes ("cron", "cron:", "subagent", "subagent:",
+   * "incognito", "incognito:"); kinds without an entry inherit
+   * maxTurnsPerHour. When absent, one shared budget applies to all
+   * non-interactive kinds (today's behavior).
+   */
+  byKind?: Record<string, number>;
   /** Optional alert delivery target for the once-per-breach-hour notification. */
   alertChannel?: LoopGovernorAlertChannel;
 };

@@ -35,10 +35,18 @@ const LoopGovernorAlertChannelSchema = z
   })
   .optional();
 
+const LoopGovernorByKindKeySchema = z
+  .string()
+  .regex(
+    /^(cron|subagent|incognito):?$/,
+    "agents.loopGovernor.byKind keys must be one of: cron, cron:, subagent, subagent:, incognito, incognito:",
+  );
+
 const LoopGovernorSchema = z
   .strictObject({
     agents: z.array(z.string().min(1)),
     maxTurnsPerHour: z.number().int().min(1),
+    byKind: z.record(LoopGovernorByKindKeySchema, z.number().int().min(1)).optional(),
     alertChannel: LoopGovernorAlertChannelSchema,
   })
   .superRefine((value, ctx) => {

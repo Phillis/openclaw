@@ -3,7 +3,7 @@ import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-events.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { setHeartbeatWakeHandler } from "../infra/heartbeat-wake.js";
+import { resetHeartbeatWakesForTest, setHeartbeatWakeHandler } from "../infra/heartbeat-wake.js";
 import {
   enqueueSystemEvent,
   peekSystemEventEntries,
@@ -100,6 +100,22 @@ function seedChild(
   );
 }
 
+/** Seeds one stale watch cursor directly, bypassing the live enqueue/wake path. */
+function insertStaleCursor(
+  database: ReturnType<typeof createDatabaseOptions>,
+  watcherSessionKey: string,
+  targetSessionKey = child,
+) {
+  openOpenClawStateDatabase(database)
+    .db.prepare(
+      `INSERT INTO session_watch_cursors (
+         watcher_session_key, target_session_key, last_seen_sequence,
+         notified_sequence, material_sequence, provenance, updated_at
+       ) VALUES (?, ?, 5, 5, 193, 'explicit', ?)`,
+    )
+    .run(watcherSessionKey, targetSessionKey, Date.now());
+}
+
 async function createWatcherSession(
   database: ReturnType<typeof createDatabaseOptions>,
   watcherSessionKey = watcher,
@@ -113,6 +129,7 @@ async function createWatcherSession(
 afterEach(() => {
   disposeHeartbeatWakeHandler?.();
   disposeHeartbeatWakeHandler = undefined;
+  resetHeartbeatWakesForTest();
   closeOpenClawStateDatabaseForTest();
   resetSystemEventsForTest();
   vi.unstubAllEnvs();
@@ -290,6 +307,49 @@ describe("session state events", () => {
 
     expect(peekSystemEventEntries(watcher)).toHaveLength(1);
     expect(readCursor(database)?.notified_sequence).toBe(material.sequence);
+  });
+
+  it("restart sweep queues stale non-main-lane cursors and wakes only the main lane", async () => {
+    vi.useFakeTimers();
+    const wakes = vi.fn(async () => ({ status: "ran" as const, durationMs: 1 }));
+    disposeHeartbeatWakeHandler = setHeartbeatWakeHandler(wakes);
+    await vi.advanceTimersByTimeAsync(21_000);
+    wakes.mockClear();
+    const database = createDatabaseOptions();
+    const threadWatcher = "agent:main:slack:direct:u0b4khg0mkr:thread:1784430202.983759";
+    await createWatcherSession(database);
+    await createWatcherSession(database, threadWatcher);
+    insertStaleCursor(database, threadWatcher);
+    insertStaleCursor(database, watcher);
+    resetSystemEventsForTest();
+
+    sweepSessionStateWatchNotices(database);
+    await vi.advanceTimersByTimeAsync(21_000);
+
+    // Both lanes get the durable notice...
+    expect(peekSystemEventEntries(threadWatcher)).toHaveLength(1);
+    expect(peekSystemEventEntries(watcher)).toHaveLength(1);
+    // ...but only the main lane is woken: idle non-main lanes can never ack their
+    // cursors, so waking them re-ran a full heartbeat marathon per lane per restart.
+    expect(wakes).toHaveBeenCalledTimes(1);
+    expect(wakes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "session-state",
+        sessionKey: watcher,
+        intent: "immediate",
+      }),
+    );
+
+    // Acking advances last_seen; the next sweep is a full no-op.
+    acknowledgeSessionStateNotices(threadWatcher, [child], database);
+    acknowledgeSessionStateNotices(watcher, [child], database);
+    resetSystemEventsForTest();
+    wakes.mockClear();
+    sweepSessionStateWatchNotices(database);
+    await vi.advanceTimersByTimeAsync(21_000);
+    expect(peekSystemEventEntries(threadWatcher)).toEqual([]);
+    expect(peekSystemEventEntries(watcher)).toEqual([]);
+    expect(wakes).not.toHaveBeenCalled();
   });
 
   it("self-heals a lost queued notice on the next material event", () => {
@@ -657,7 +717,7 @@ describe("session state events", () => {
     expect(cursors.count).toBe(1);
   });
 
-  it("keeps explicit A2A group watches on the immediate wake path", async () => {
+  it("queues explicit A2A group watches for non-main lanes without an immediate wake", async () => {
     vi.useFakeTimers();
     const wakes = vi.fn(async () => ({ status: "ran" as const, durationMs: 1 }));
     disposeHeartbeatWakeHandler = setHeartbeatWakeHandler(wakes);
@@ -682,8 +742,10 @@ describe("session state events", () => {
     );
     await vi.advanceTimersByTimeAsync(21_000);
 
+    // Only the agent main lane wakes; the coordinator lane keeps the durable
+    // notice for its next real turn.
     expect(peekSystemEventEntries(coordinator)).toHaveLength(1);
-    expect(wakes).toHaveBeenCalledTimes(1);
+    expect(wakes).not.toHaveBeenCalled();
   });
 
   it("promotes an ambient main-to-group watch to explicit immediate delivery", async () => {

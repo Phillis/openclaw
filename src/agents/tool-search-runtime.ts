@@ -29,6 +29,7 @@ import {
   visibleCatalogEntries,
 } from "./tool-search-catalog.js";
 import { renderToolSearchControlText } from "./tool-search-control-result.js";
+import { readToolSearchId, readToolSearchSelector } from "./tool-search-id.js";
 import {
   buildLexicalIndex,
   readParameterText,
@@ -182,19 +183,7 @@ function findEntryByExactId(
 
 const TOOL_SEARCH_SELECTOR_KEYS = ["id", "toolId", "name"] as const;
 
-function readToolSearchSelector(params: Record<string, unknown>): string | undefined {
-  const value = params.id ?? params.toolId ?? params.name;
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-export function readToolSearchId(args: unknown): string {
-  const params = asToolParamsRecord(args);
-  const value = readToolSearchSelector(params);
-  if (value === undefined) {
-    throw new ToolInputError("id must be a non-empty string.");
-  }
-  return value.trim();
-}
+export { readToolSearchId };
 
 export function readToolSearchCallArgs(
   args: unknown,
@@ -602,6 +591,7 @@ export class ToolSearchRuntime {
     // here where validation and dispatch share one shape. A non-record result
     // leaves the raw input untouched.
     const rawInput = input ?? {};
+    // SAFETY: registry entries are AnyAgentTool instances; the cast only reads the optional preValidate hook.
     const preValidate = (entry.tool as AnyAgentTool).preValidate;
     const preValidatedInput =
       typeof preValidate === "function" && isRecord(rawInput) ? preValidate(rawInput) : undefined;

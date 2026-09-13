@@ -2320,3 +2320,141 @@ describe("tool-loop-detection", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+describe("tool-loop-detection identicalCallLimit + resetOnError (WP-4)", () => {
+  const genericTool = "workspace_search";
+  const genericParams = { query: "same-query" };
+  const genericResult = { content: [{ type: "text", text: "same-result" }] };
+
+  it("identicalCallLimit overrides the critical block threshold downward", () => {
+    const state = createState();
+    const config: ToolLoopDetectionConfig = {
+      enabled: true,
+      identicalCallLimit: 3,
+    };
+    recordRepeatedSuccessfulCalls({
+      state,
+      toolName: genericTool,
+      toolParams: genericParams,
+      result: genericResult,
+      count: 2,
+    });
+    // Two identical successful calls below the limit: admitted.
+    const before = detectToolCallLoop(state, genericTool, genericParams, config);
+    expect(before.stuck).toBe(false);
+    // Third identical outcome recorded: trips the configured limit as critical.
+    // The global breaker shares the limit and is checked first, so either the
+    // breaker or the generic detector labels the block — same trip point.
+    recordSuccessfulCall(state, genericTool, genericParams, genericResult, 2);
+    const at = detectToolCallLoop(state, genericTool, genericParams, config);
+    expect(at).toMatchObject({ stuck: true, level: "critical" });
+    expect(at.stuck === true && at.count >= 3).toBe(true);
+  });
+
+  it("identicalCallLimit raises the block threshold above the built-in 20 and follows the breaker", () => {
+    const state = createState();
+    const config: ToolLoopDetectionConfig = {
+      enabled: true,
+      identicalCallLimit: 25,
+    };
+    recordRepeatedSuccessfulCalls({
+      state,
+      toolName: genericTool,
+      toolParams: genericParams,
+      result: genericResult,
+      count: 22,
+    });
+    // 23rd identical call: above the built-in 20, below the configured 25 —
+    // at most a warning (advisory), never a critical block.
+    const below = detectToolCallLoop(state, genericTool, genericParams, config);
+    if (below.stuck) {
+      expect(below.level).toBe("warning");
+    }
+    recordRepeatedSuccessfulCalls({
+      state,
+      toolName: genericTool,
+      toolParams: genericParams,
+      result: genericResult,
+      count: 3,
+      startIndex: 22,
+    });
+    // 25th identical outcome: trips at the configured limit (breaker follows it).
+    const at = detectToolCallLoop(state, genericTool, genericParams, config);
+    expect(at).toMatchObject({ stuck: true, level: "critical" });
+  });
+
+  it("resetOnError keeps repeated identical errors from tripping the identical-call detector", () => {
+    const withReset: ToolLoopDetectionConfig = {
+      enabled: true,
+      identicalCallLimit: 2,
+      resetOnError: true,
+    };
+    const withoutReset: ToolLoopDetectionConfig = {
+      enabled: true,
+      identicalCallLimit: 2,
+    };
+    const errorState = createState();
+    for (let i = 0; i < 3; i += 1) {
+      recordFailedCall(errorState, genericTool, genericParams, new Error("env hiccup"), i);
+    }
+    // Default behavior (today): identical failures accumulate and trip.
+    expect(detectToolCallLoop(errorState, genericTool, genericParams, withoutReset)).toMatchObject({
+      stuck: true,
+      level: "critical",
+    });
+    // resetOnError: the error-anchored tail carries no no-progress evidence.
+    expect(detectToolCallLoop(errorState, genericTool, genericParams, withReset).stuck).toBe(false);
+  });
+
+  it("resetOnError clears the streak after an error but successful loops still trip", () => {
+    const config: ToolLoopDetectionConfig = {
+      enabled: true,
+      identicalCallLimit: 2,
+      resetOnError: true,
+    };
+    const mixed = createState();
+    recordSuccessfulCall(mixed, genericTool, genericParams, genericResult, 0);
+    recordSuccessfulCall(mixed, genericTool, genericParams, genericResult, 1);
+    recordFailedCall(mixed, genericTool, genericParams, new Error("transient"), 2);
+    // The newest outcome is an error: the identical-success streak is reset.
+    expect(detectToolCallLoop(mixed, genericTool, genericParams, config).stuck).toBe(false);
+
+    const successLoop = createState();
+    recordRepeatedSuccessfulCalls({
+      state: successLoop,
+      toolName: genericTool,
+      toolParams: genericParams,
+      result: genericResult,
+      count: 3,
+    });
+    expect(detectToolCallLoop(successLoop, genericTool, genericParams, config)).toMatchObject({
+      stuck: true,
+      level: "critical",
+    });
+  });
+
+  it("default config (enabled only) keeps today's thresholds", () => {
+    const state = createState();
+    recordRepeatedSuccessfulCalls({
+      state,
+      toolName: genericTool,
+      toolParams: genericParams,
+      result: genericResult,
+      count: 19,
+    });
+    // 19 identical successful calls: above the warning ladder, below the built-in 20.
+    const result = detectToolCallLoop(
+      state,
+      genericTool,
+      genericParams,
+      enabledLoopDetectionConfig,
+    );
+    if (result.stuck) {
+      expect(result.level).toBe("warning");
+    }
+    recordSuccessfulCall(state, genericTool, genericParams, genericResult, 19);
+    expect(
+      detectToolCallLoop(state, genericTool, genericParams, enabledLoopDetectionConfig),
+    ).toMatchObject({ stuck: true, level: "critical", detector: "generic_repeat" });
+  });
+});

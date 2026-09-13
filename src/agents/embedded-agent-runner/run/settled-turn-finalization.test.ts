@@ -7,6 +7,7 @@ import {
   prepareSystemAgentRunAdmission,
   type AdmittedRunContext,
 } from "../../admitted-run-context.js";
+import { classifyAgentRunTerminalOutcome } from "../../agent-run-terminal-outcome.js";
 import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
@@ -14,10 +15,13 @@ import {
 import type { EmbeddedRunAttemptWithReceiptEvidence } from "./attempt-result.js";
 import { EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS } from "./lane-runtime.js";
 import { buildEmbeddedRunPayloads } from "./payloads.js";
-import { prepareTerminalWithSettledTurnFinalization } from "./settled-turn-finalization.js";
+import { RUN_SETTLED_FINALIZER_EXTENSION_MS } from "./retry-budget.js";
+import {
+  prepareTerminalWithSettledTurnFinalization,
+  resolveSettledTurnFinalizationRequest,
+} from "./settled-turn-finalization.js";
 import { createSettledFinalizationTestInput } from "./settled-turn-finalization.test-support.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
-import { resolveSettledTurnFinalizationRequest } from "./terminal-resolution.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 const backendMocks = vi.hoisted(() => ({
@@ -212,6 +216,60 @@ describe("resolveSettledTurnFinalizationRequest", () => {
     expect(request({ trigger: "user", terminalReplyExpectation: "required" })).toBeNull();
   });
 
+  it("requests finalization for a budget-stopped settled tool turn despite narration text", () => {
+    // Heartbeat marathon shape: the tool-loop budget stops the run right after
+    // a toolUse turn, so its mid-loop narration is the attempt's only text.
+    // That narration is not a final answer — the cap still owes the run one
+    // graceful tool-free terminal turn.
+    const assistant = buildEmbeddedRunnerAssistant({
+      stopReason: "toolUse",
+      content: [
+        { type: "text", text: "Checking the queue before reporting." },
+        { type: "toolCall", id: "tool-1", name: "story_list", arguments: {} },
+      ],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: ["Checking the queue before reporting."],
+      toolMetas: [{ toolCallId: "tool-1", toolName: "story_list", isError: false }],
+      itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+      messagesSnapshot: [
+        { role: "user", content: [{ type: "text", text: "[OpenClaw heartbeat poll]" }] },
+        assistant,
+        { role: "toolResult", toolCallId: "tool-1", toolName: "story_list", isError: false },
+      ] as never,
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const request = (toolLoopBudgetStopped: boolean) =>
+      resolveSettledTurnFinalizationRequest({
+        runParams: {
+          sessionId: "session:settled-budget",
+          runId: "run:settled-budget",
+          trigger: "heartbeat",
+        } as never,
+        attempt,
+        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        modelApi: "openai-responses",
+        executionContract: undefined,
+        payloadsWithToolMedia: [{ text: "Checking the queue before reporting." }],
+        hasTerminalToolPresentation: false,
+        toolLoopBudgetStopped,
+        terminalState: resolveEmbeddedRunAttemptTerminalState({ attempt, assistant }),
+        settledTurnFinalizationAvailable: true,
+      });
+
+    expect(request(true)).toContain(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+    // The budget-stopped finalizer is instruction-only, so the request must
+    // carry the run's own narration and tool activity as context.
+    expect(request(true)).toContain('"Checking the queue before reporting."');
+    expect(request(true)).toContain("story_list");
+    // Precision guard: without the budget stop, narration payloads keep the
+    // established gate and are classified downstream, not finalized here.
+    expect(request(false)).toBeNull();
+  });
+
   it("requires an available finalizer and no visible structured error", () => {
     const assistant = buildEmbeddedRunnerAssistant({
       stopReason: "toolUse",
@@ -331,6 +389,67 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       }
     },
   );
+
+  it("finalizes a budget-stopped settled tool turn that carries narration text", async () => {
+    const assistant = buildEmbeddedRunnerAssistant({
+      stopReason: "toolUse",
+      content: [
+        { type: "text", text: "Checking the queue before reporting." },
+        { type: "toolCall", id: "tool-1", name: "story_list", arguments: {} },
+      ],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: ["Checking the queue before reporting."],
+      toolMetas: [{ toolCallId: "tool-1", toolName: "story_list", isError: false }],
+      itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+      messagesSnapshot: [
+        { role: "user", content: [{ type: "text", text: "[OpenClaw heartbeat poll]" }] },
+        assistant,
+        { role: "toolResult", toolCallId: "tool-1", toolName: "story_list", isError: false },
+      ] as never,
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const input = createSettledFinalizationTestInput(attempt, admittedRunContext);
+    input.terminalBase.runParams.trigger = "heartbeat";
+    input.finalization.toolLoopBudgetStopped = true;
+    backendMocks.runSettledFinalization.mockResolvedValueOnce({
+      outcome: "answered",
+      result: {
+        assistant: buildEmbeddedRunnerAssistant({
+          content: [{ type: "text", text: "Queue checked; nothing needs attention." }],
+        }),
+      },
+    });
+
+    const result = await prepareTerminalWithSettledTurnFinalization(input);
+
+    expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
+    const [preparedAttempt] = backendMocks.runSettledFinalization.mock.calls[0] ?? [];
+    expect(preparedAttempt).toMatchObject({
+      operation: "settled-tool-finalization",
+      disableTools: true,
+      skipPreparedUserTurnMessage: true,
+      suppressNextUserMessagePersistence: true,
+    });
+    expect(result.finalizationOutcome).toBe("answered");
+    // The run finalizes with a terminal assistant message instead of the
+    // pre-fix incomplete-turn failure (heartbeat window status "failed").
+    expect(result.attempt.currentAttemptAssistant).toMatchObject({
+      role: "assistant",
+      stopReason: "stop",
+    });
+    expect(result.prepared.payloadsWithToolMedia).toEqual([
+      expect.objectContaining({ text: "Queue checked; nothing needs attention." }),
+    ]);
+    const terminalState = resolveEmbeddedRunAttemptTerminalState({
+      attempt: result.attempt,
+      assistant: result.attempt.currentAttemptAssistant,
+    });
+    expect(classifyAgentRunTerminalOutcome(terminalState.outcome)).toBe("success");
+  });
 
   it("replaces a settled failed-tool warning with failure-honest final output", async () => {
     const attempt = settledFailedAttempt();
@@ -530,6 +649,92 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       expect(result.finalizationOutcome).toBe("answered");
     },
   );
+
+  it.each([
+    {
+      name: "deadline already passed",
+      // The drain-grace (H2) shape: the in-flight turn straddled the deadline
+      // and finished after it, so finalization starts past the deadline.
+      deadlineOffsetMs: -5_000,
+    },
+    {
+      name: "soft stop fired with the remainder inside the extension",
+      deadlineOffsetMs: 30_000,
+    },
+  ])(
+    "floors the finalizer timer at the protected extension when the $name",
+    async ({ deadlineOffsetMs }) => {
+      const input = finalizationInput(settledFailedAttempt());
+      input.finalization.preparedAttempt.timeoutMs = 3_600_000;
+      input.finalization.runDeadlineAtMs = Date.now() + deadlineOffsetMs;
+      let finalizerTimeoutMs: number | undefined;
+      backendMocks.runSettledFinalization.mockImplementationOnce(async (params: EmbeddedRunAttemptParams) => {
+        finalizerTimeoutMs = params.timeoutMs;
+        return {
+          outcome: "answered",
+          result: {
+            assistant: buildEmbeddedRunnerAssistant({
+              content: [{ type: "text", text: "Done." }],
+            }),
+          },
+        };
+      });
+
+      const result = await prepareTerminalWithSettledTurnFinalization(input);
+
+      // The raw remainder is ~zero or below the extension; the finalizer gets
+      // the protected room instead of a timer that can never complete. Bounded:
+      // never more than the extension past the deadline, inside the hard
+      // backstop (RUN_DRAIN_GRACE_MS).
+      expect(finalizerTimeoutMs).toBeGreaterThan(RUN_SETTLED_FINALIZER_EXTENSION_MS - 1_000);
+      expect(finalizerTimeoutMs).toBeLessThanOrEqual(RUN_SETTLED_FINALIZER_EXTENSION_MS);
+      expect(result.finalizationOutcome).toBe("answered");
+    },
+  );
+
+  it("keeps the attempt budget when the run deadline leaves more room than the attempt cap", async () => {
+    const input = finalizationInput(settledFailedAttempt());
+    input.finalization.preparedAttempt.timeoutMs = 60_000;
+    input.finalization.runDeadlineAtMs = Date.now() + 300_000;
+    let finalizerTimeoutMs: number | undefined;
+    backendMocks.runSettledFinalization.mockImplementationOnce(async (params: EmbeddedRunAttemptParams) => {
+      finalizerTimeoutMs = params.timeoutMs;
+      return {
+        outcome: "answered",
+        result: {
+          assistant: buildEmbeddedRunnerAssistant({
+            content: [{ type: "text", text: "Done." }],
+          }),
+        },
+      };
+    });
+
+    await prepareTerminalWithSettledTurnFinalization(input);
+
+    expect(finalizerTimeoutMs).toBe(60_000);
+  });
+
+  it("keeps the attempt untouched when the run carries no deadline", async () => {
+    const input = finalizationInput(settledFailedAttempt());
+    input.finalization.preparedAttempt.timeoutMs = 60_000;
+    expect(input.finalization.runDeadlineAtMs).toBeUndefined();
+    let finalizerTimeoutMs: number | undefined;
+    backendMocks.runSettledFinalization.mockImplementationOnce(async (params: EmbeddedRunAttemptParams) => {
+      finalizerTimeoutMs = params.timeoutMs;
+      return {
+        outcome: "answered",
+        result: {
+          assistant: buildEmbeddedRunnerAssistant({
+            content: [{ type: "text", text: "Done." }],
+          }),
+        },
+      };
+    });
+
+    await prepareTerminalWithSettledTurnFinalization(input);
+
+    expect(finalizerTimeoutMs).toBe(60_000);
+  });
 
   it("persists fallback with the queue signal after the original attempt aborts", async () => {
     const attempt = settledFailedAttempt();

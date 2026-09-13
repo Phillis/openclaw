@@ -1,16 +1,25 @@
 import type { ToolCallRecord } from "../logging/diagnostic-session-state.js";
 
+/** Error outcomes hash under this prefix; shared by the outcome writer and the streak reader. */
+export const ERROR_RESULT_HASH_PREFIX = "error:";
+
+function isErrorResultRecord(record: ToolCallRecord): boolean {
+  return record.resultHash !== undefined && record.resultHash.startsWith(ERROR_RESULT_HASH_PREFIX);
+}
+
 export function getNoProgressStreak(
   history: readonly ToolCallRecord[],
   toolName: string,
   argsHash: string,
+  options?: { resetOnError?: boolean },
 ): { count: number; latestResultHash?: string } {
-  const repeatedArguments = countNoProgressStreak(history, toolName, argsHash, false);
+  const resetOnError = options?.resetOnError === true;
+  const repeatedArguments = countNoProgressStreak(history, toolName, argsHash, false, resetOnError);
   if (toolName !== "exec") {
     return repeatedArguments;
   }
   // Real terminal failures may repeat across fresh args; only a contiguous typed tail qualifies.
-  const terminalFailures = countNoProgressStreak(history, toolName, argsHash, true);
+  const terminalFailures = countNoProgressStreak(history, toolName, argsHash, true, resetOnError);
   return terminalFailures.count > repeatedArguments.count ? terminalFailures : repeatedArguments;
 }
 
@@ -19,6 +28,7 @@ function countNoProgressStreak(
   toolName: string,
   argsHash: string,
   terminalExecFailuresOnly: boolean,
+  resetOnError: boolean,
 ): { count: number; latestResultHash?: string } {
   let streak = 0;
   let latestOutcome: ToolCallRecord | undefined;
@@ -77,6 +87,12 @@ function countNoProgressStreak(
     }
     streak += pendingLoopVetoes + 1;
     pendingLoopVetoes = 0;
+  }
+  // resetOnError (config-gated): a failed call anchors a legitimate retry, so an
+  // error-anchored tail carries no no-progress evidence. Successful identical
+  // loops keep counting; the anchor's own error result stays in history.
+  if (resetOnError && latestOutcome !== undefined && isErrorResultRecord(latestOutcome)) {
+    return { count: 0, latestResultHash: latestOutcome.resultHash };
   }
 
   return {

@@ -219,6 +219,12 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   fastModeAuto?: boolean;
   beforeAgentFinalizeRevisionAttempts?: number;
   maxBeforeAgentFinalizeRevisions?: number;
+  /**
+   * Run-scoped graceful stop checked by the harness loop after each completed
+   * model turn. Bounded background runs share one run-loop-owned closure across
+   * attempts, so recovery retries cannot reset the non-refundable turn budget.
+   */
+  shouldStopAfterTurn?: () => boolean;
 };
 
 export type EmbeddedRunAttemptResult = {

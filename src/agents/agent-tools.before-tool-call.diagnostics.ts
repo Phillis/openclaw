@@ -557,7 +557,10 @@ export function shouldEmitLoopWarning(
     state.toolLoopWarningBuckets = new Map();
   }
   const bucket = Math.floor(count / LOOP_WARNING_BUCKET_SIZE);
-  const lastBucket = state.toolLoopWarningBuckets.get(warningKey) ?? 0;
+  // An unset key has never emitted: seed at -1 so a detector whose threshold
+  // sits below the bucket floor (typed_error_repeat warns at 3) still reaches
+  // the model on its first crossing. Thresholds ≥ the bucket size are unaffected.
+  const lastBucket = state.toolLoopWarningBuckets.get(warningKey) ?? -1;
   if (bucket <= lastBucket) {
     return false;
   }

@@ -1,3 +1,7 @@
+import {
+  isStreamEndedWithoutFinishReasonError,
+  isStreamEndedWithoutFinishReasonMessage,
+} from "@openclaw/ai/transports";
 /**
  * PHIL-FORK (BUG-019, 2026-09-04): retry-eligibility for mid-stream drops.
  *
@@ -21,6 +25,10 @@
  * Safety contract for the retry this module enables:
  *  - Only the harness-owned deterministic stream-drop signature matches
  *    (never provider-authored error text, which can carry refusal semantics).
+ *    The typed StreamEndedWithoutFinishReasonError thrown by the transport is
+ *    the canonical signal; the message fallback exists only because this
+ *    check sees the serialized assistant errorMessage, where the error class
+ *    identity is lost.
  *  - The current attempt must be replay-safe (no uncommitted side-effect
  *    bearing work in THIS attempt) — callers enforce via
  *    isCurrentAttemptReplaySafe; this module never overrides that.
@@ -30,11 +38,19 @@
  */
 import type { AssistantMessage } from "../../../llm/types.js";
 
-/** Deterministic harness-owned error emitted when a stream ends without finish_reason. */
-const STREAM_ENDED_WITHOUT_FINISH_REASON = /stream ended without finish_reason/i;
-
 /** Bounded local retries for the mid-stream drop class (matches empty-error budget). */
 export const MAX_MIDSTREAM_DROP_RETRIES = 3;
+
+/**
+ * Live-error check: typed class when the throw is in process, canonical
+ * signature fallback for wrapped or serialized Error instances.
+ */
+export function isMidStreamDropError(error: unknown): boolean {
+  if (isStreamEndedWithoutFinishReasonError(error)) {
+    return true;
+  }
+  return error instanceof Error && isStreamEndedWithoutFinishReasonMessage(error.message);
+}
 
 export function isMidStreamDropWithoutFinishReason(
   assistant: AssistantMessage | null | undefined,
@@ -46,5 +62,5 @@ export function isMidStreamDropWithoutFinishReason(
   // body, it simply stopped sending frames. Partial content may have been
   // streamed; it is discarded from the final assistant message (content: [],
   // zero usage observed live), so a re-request cannot duplicate output.
-  return STREAM_ENDED_WITHOUT_FINISH_REASON.test(assistant.errorMessage);
+  return isStreamEndedWithoutFinishReasonMessage(assistant.errorMessage);
 }

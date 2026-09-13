@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Interim right-sizing for ai.openclaw.ewt-idle-dispatch-watchdog: StartInterval
+     180 -> 600 (10 min). The watchdog retires entirely once the in-plane backlog
+     ships (productivity order P1). Its log is covered by logrotate.conf.
+     WC ships at ceremony (do NOT edit the live plist from this repo copy):
+       cp operations/logrotate/ai.openclaw.ewt-idle-dispatch-watchdog.plist ~/Library/LaunchAgents/
+       launchctl unload ~/Library/LaunchAgents/ai.openclaw.ewt-idle-dispatch-watchdog.plist
+       launchctl load   ~/Library/LaunchAgents/ai.openclaw.ewt-idle-dispatch-watchdog.plist
+-->
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>IDLE_MIN_SEC</key>
+		<string>600</string>
+	</dict>
+	<key>Label</key>
+	<string>ai.openclaw.ewt-idle-dispatch-watchdog</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/phil/.openclaw/workspace/oscar/bin/ewt-idle-dispatch-watchdog</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/phil/Library/Logs/openclaw/ewt-idle-dispatch-watchdog.err</string>
+	<key>StartInterval</key>
+	<integer>600</integer>
+</dict>
+</plist>

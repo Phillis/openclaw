@@ -29,6 +29,12 @@ export type ToolCallRecord = {
   // Keep the raw result identity while this bounded identity survives alias
   // merges and lets the no-progress owner ignore diagnostic drift.
   failureIdentityHash?: string;
+  // Typed-error records only: the admission-matchable family (outer tool plus
+  // dispatcher inner id) and the tool's own error code. The outcome-derived hash
+  // alone is unknowable before the next result exists, so the typed_error_repeat
+  // detector matches on the family and reports the code.
+  failureIdentityFamily?: string;
+  typedErrorCode?: string;
   noProgress?: true;
   unknownToolName?: string;
   timestamp: number;

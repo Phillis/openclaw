@@ -15,8 +15,14 @@ import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-syn
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
-import { ensureLoopGovernorTurnCountsSchema } from "../state/openclaw-state-db-schema-additive.js";
-import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
+import {
+  ensureLoopGovernorKindTurnCountsSchema,
+  ensureLoopGovernorTurnCountsSchema,
+} from "../state/openclaw-state-db-schema-additive.js";
+import type {
+  Generated,
+  DB as OpenClawStateKyselyDatabase,
+} from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
@@ -63,7 +69,36 @@ export interface LoopGovernorAlertChannel {
 export interface LoopGovernorPolicy {
   agents: ReadonlySet<string>;
   maxTurnsPerHour: number;
+  /** Per-session-kind budgets; keys are normalized kind ids (cron/subagent/incognito). */
+  byKind?: Readonly<Record<LoopGovernorSessionKind, number>>;
   alertChannel?: LoopGovernorAlertChannel;
+}
+
+export type LoopGovernorSessionKind = "cron" | "subagent" | "incognito";
+
+/** Normalizes a byKind config key ("cron:" / "cron") to the kind id. */
+function normalizeLoopGovernorKindKey(key: string): LoopGovernorSessionKind | undefined {
+  const normalized = normalizeOptionalString(key)?.toLowerCase().replace(/:$/, "");
+  if (normalized === "cron" || normalized === "subagent" || normalized === "incognito") {
+    return normalized;
+  }
+  return undefined;
+}
+
+/** Classifies a governed non-interactive session key into its budget kind. */
+export function loopGovernorKindFromSessionKey(
+  sessionKey: string | undefined | null,
+): LoopGovernorSessionKind | undefined {
+  if (isCronSessionKey(sessionKey)) {
+    return "cron";
+  }
+  if (isSubagentSessionKey(sessionKey)) {
+    return "subagent";
+  }
+  if (isIncognitoSessionKey(sessionKey)) {
+    return "incognito";
+  }
+  return undefined;
 }
 
 /** Resolve the active loop-governor policy from the runtime config, or null when off. */
@@ -84,9 +119,21 @@ export function resolveLoopGovernorPolicy(
   if (agents.size === 0) {
     return null;
   }
+  let byKind: Record<LoopGovernorSessionKind, number> | undefined;
+  if (lb.byKind) {
+    for (const [key, value] of Object.entries(lb.byKind)) {
+      const kind = normalizeLoopGovernorKindKey(key);
+      if (kind === undefined || typeof value !== "number" || !Number.isFinite(value)) {
+        continue;
+      }
+      byKind ??= {} as Record<LoopGovernorSessionKind, number>;
+      byKind[kind] = Math.max(1, Math.floor(value));
+    }
+  }
   return {
     agents,
     maxTurnsPerHour: lb.maxTurnsPerHour,
+    ...(byKind ? { byKind } : {}),
     alertChannel: lb.alertChannel,
   };
 }
@@ -116,6 +163,7 @@ function ensureSchema(options: OpenClawStateDatabaseOptions): void {
     return;
   }
   ensureLoopGovernorTurnCountsSchema(state.db);
+  ensureLoopGovernorKindTurnCountsSchema(state.db);
   ensuredDatabases.add(state.db);
 }
 
@@ -158,6 +206,68 @@ function upsertTurnCount(
       })
       .onConflict((conflict) =>
         conflict.columns(["agent_id", "hour_bucket"]).doUpdateSet({
+          turn_count: turnCount,
+          alerted,
+          updated_at_ms: nowMs,
+        }),
+      ),
+  );
+}
+
+type LoopGovernorKindStore = {
+  loop_governor_kind_turn_counts: {
+    agent_id: string;
+    hour_bucket: number;
+    kind: string;
+    turn_count: Generated<number>;
+    alerted: Generated<number>;
+    updated_at_ms: number;
+  };
+};
+
+function readKindTurnCount(
+  db: DatabaseSync,
+  agentId: string,
+  hourBucket: number,
+  kind: LoopGovernorSessionKind,
+): { count: number; alerted: number } {
+  const kysely = getNodeSqliteKysely<LoopGovernorKindStore>(db);
+  const row = executeSqliteQuerySync(
+    db,
+    kysely
+      .selectFrom("loop_governor_kind_turn_counts")
+      .select(["turn_count", "alerted"])
+      .where("agent_id", "=", agentId)
+      .where("hour_bucket", "=", hourBucket)
+      .where("kind", "=", kind),
+  ).rows[0];
+  return row ? { count: row.turn_count, alerted: row.alerted } : { count: 0, alerted: 0 };
+}
+
+function upsertKindTurnCount(
+  db: DatabaseSync,
+  agentId: string,
+  hourBucket: number,
+  kind: LoopGovernorSessionKind,
+  turnCount: number,
+  alerted: number,
+  nowMs: number,
+): void {
+  const kysely = getNodeSqliteKysely<LoopGovernorKindStore>(db);
+  executeSqliteQuerySync(
+    db,
+    kysely
+      .insertInto("loop_governor_kind_turn_counts")
+      .values({
+        agent_id: agentId,
+        hour_bucket: hourBucket,
+        kind,
+        turn_count: turnCount,
+        alerted,
+        updated_at_ms: nowMs,
+      })
+      .onConflict((conflict) =>
+        conflict.columns(["agent_id", "hour_bucket", "kind"]).doUpdateSet({
           turn_count: turnCount,
           alerted,
           updated_at_ms: nowMs,
@@ -228,12 +338,18 @@ export function checkLoopGovernorAdmission(params: {
   try {
     ensureSchema(params.stateOptions ?? {});
     const state = openOpenClawStateDatabase(params.stateOptions ?? {});
-    const { count, alerted } = readTurnCount(state.db, normalizedAgent, hourBucket);
-    if (count >= policy.maxTurnsPerHour) {
+    const kind = loopGovernorKindFromSessionKey(params.sessionKey);
+    const kindBudget = kind !== undefined ? policy.byKind?.[kind] : undefined;
+    const budget = kindBudget ?? policy.maxTurnsPerHour;
+    const { count, alerted } =
+      kind !== undefined && kindBudget !== undefined
+        ? readKindTurnCount(state.db, normalizedAgent, hourBucket, kind)
+        : readTurnCount(state.db, normalizedAgent, hourBucket);
+    if (count >= budget) {
       if (alerted === 0) {
         onAlert(
-          `[loop-governor] agent "${agentId}" reached ${policy.maxTurnsPerHour} non-interactive ` +
-            `turns this UTC hour (${hourBucket}); further non-interactive runs parked until the ` +
+          `[loop-governor] agent "${agentId}" reached ${budget} non-interactive ` +
+            `${kindBudget !== undefined ? `${kind} ` : ""}turns this UTC hour (${hourBucket}); further non-interactive runs parked until the ` +
             `next hour.`,
           policy,
         );
@@ -242,18 +358,22 @@ export function checkLoopGovernorAdmission(params: {
         agentId: normalizedAgent,
         hourBucket,
         turnCount: count,
-        maxTurnsPerHour: policy.maxTurnsPerHour,
+        maxTurnsPerHour: budget,
+        ...(kindBudget !== undefined ? { kind } : {}),
         sessionKey,
       });
-      upsertTurnCount(state.db, normalizedAgent, hourBucket, count, 1, nowMs);
-      throw new LoopGovernorBudgetExceededError(
-        normalizedAgent,
-        hourBucket,
-        count,
-        policy.maxTurnsPerHour,
-      );
+      if (kind !== undefined && kindBudget !== undefined) {
+        upsertKindTurnCount(state.db, normalizedAgent, hourBucket, kind, count, 1, nowMs);
+      } else {
+        upsertTurnCount(state.db, normalizedAgent, hourBucket, count, 1, nowMs);
+      }
+      throw new LoopGovernorBudgetExceededError(normalizedAgent, hourBucket, count, budget);
     }
-    upsertTurnCount(state.db, normalizedAgent, hourBucket, count + 1, alerted, nowMs);
+    if (kind !== undefined && kindBudget !== undefined) {
+      upsertKindTurnCount(state.db, normalizedAgent, hourBucket, kind, count + 1, alerted, nowMs);
+    } else {
+      upsertTurnCount(state.db, normalizedAgent, hourBucket, count + 1, alerted, nowMs);
+    }
     return true;
   } catch (error) {
     if (error instanceof LoopGovernorBudgetExceededError) {

@@ -161,6 +161,20 @@ export type ToolProfileId = "minimal" | "coding" | "messaging" | "full";
 export type ToolLoopDetectionConfig = {
   /** Enable tool-loop protection (default: false). */
   enabled?: boolean;
+  /**
+   * Overrides the built-in trip thresholds for repeated identical tool calls
+   * (identical arguments AND identical outcomes): both the critical block
+   * threshold and the global circuit breaker for that pattern use this value.
+   * Absent = built-in thresholds (10 warning / 20 critical / 30 breaker).
+   */
+  identicalCallLimit?: number;
+  /**
+   * When true, a tool result that was an ERROR resets the identical-call
+   * no-progress streak (retry-after-failure is legitimate; runaway successful
+   * loops still trip). Absent/false = today's behavior (repeated identical
+   * failures keep counting as no progress).
+   */
+  resetOnError?: boolean;
 };
 
 export type ToolSearchConfig =

@@ -435,6 +435,21 @@ function createTimeoutAbortReason(): Error {
   return error;
 }
 
+/**
+ * Structured marker on run-budget timeout aborts (the runner's own wall clock,
+ * not a provider stall). Diagnostic-only: the user-visible message/name stay
+ * identical to a plain timeout, but `diagnosticErrorFailureKind` maps this
+ * code to `run_budget_timeout` so consumers (model-limit-optimizer circuit)
+ * can exclude operator-policy kills from provider-health evidence. Never use
+ * the code as failover authority.
+ */
+export const RUN_BUDGET_TIMEOUT_ERROR_CODE = "OPENCLAW_RUN_BUDGET_TIMEOUT";
+
+export function createRunBudgetTimeoutError() {
+  const error = createTimeoutAbortReason();
+  return Object.assign(error, { code: RUN_BUDGET_TIMEOUT_ERROR_CODE });
+}
+
 /** Owns the external AbortSignal listener and its handoff to the live session. */
 export function createEmbeddedAttemptExternalAbortController(input: {
   abortSignal?: AbortSignal;

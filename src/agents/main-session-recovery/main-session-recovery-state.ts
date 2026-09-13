@@ -136,6 +136,12 @@ function recordLifecycleFence(entry: SessionEntry, run: RestartRecoveryRun): voi
 }
 
 export function isMainRestartRecoveryCandidate(entry: SessionEntry, sessionKey: string): boolean {
+  // Isolated heartbeat sessions are heartbeat-runner scratch lanes, never
+  // recoverable main lanes; adopting one restarts a background poll as a
+  // full interrupt-recovery marathon.
+  if (entry.heartbeatIsolatedBaseSessionKey !== undefined) {
+    return false;
+  }
   if (typeof entry.spawnDepth === "number" && entry.spawnDepth > 0) {
     return false;
   }

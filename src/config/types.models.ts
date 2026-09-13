@@ -260,6 +260,34 @@ export type ModelCatalogRefreshConfig = {
   url?: string;
 };
 
+/** One preferred interactive mirror route (ordered; first healthy wins). */
+export type InteractiveLatencyRouteEntry = {
+  /** Provider id as configured under models.providers. */
+  provider: string;
+  /** Model id served by that provider. */
+  model: string;
+};
+
+/**
+ * Latency-aware routing for interactive lanes (default OFF). When enabled,
+ * interactive user turns on the configured channel kinds prefer the configured
+ * mirror list instead of the agent's configured (cache-optimized) model.
+ */
+export type InteractiveLatencyRoutingConfig = {
+  /** Enables interactive latency routing. Default: false (exact today's behavior). */
+  enabled?: boolean;
+  /** Interactive lane match: channel ids whose delivery sessions route. Default: none. */
+  sessionMatch?: {
+    kinds?: string[];
+  };
+  /** Ordered (provider, model) mirrors; first healthy entry carries the turn. */
+  prefer?: InteractiveLatencyRouteEntry[];
+  /** Fall back to the agent's configured model when no mirror is healthy. Default: true. */
+  fallbackToConfigured?: boolean;
+  /** Mirror calls slower than this on 2 consecutive calls park the mirror. Default: 15000. */
+  maxFallbackLatencyMs?: number;
+};
+
 export type ModelsConfig = {
   /** Merge provider config with bundled catalogs or replace bundled catalogs entirely. */
   mode?: "merge" | "replace";
@@ -267,6 +295,8 @@ export type ModelsConfig = {
   providers?: Record<string, ModelProviderConfig>;
   /** Hosted model catalog refresh settings. */
   catalogRefresh?: ModelCatalogRefreshConfig;
+  /** Latency-aware interactive-lane routing. Absent/disabled = exactly today's behavior. */
+  interactiveLatencyRouting?: InteractiveLatencyRoutingConfig;
 };
 
 /** Top-level models config input before provider entries are normalized. */

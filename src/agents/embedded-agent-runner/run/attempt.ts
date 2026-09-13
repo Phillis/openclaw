@@ -4,6 +4,7 @@ import {
   OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
 } from "../../../context-engine/host-compat.js";
 import { resolveContextEngineOwnerPluginId } from "../../../context-engine/registry.js";
+import { clearLlmStreamActivityRun } from "../../../shared/llm-stream-activity.js";
 import { createBundleLspToolRuntime } from "../../agent-bundle-lsp-runtime.js";
 import { materializeBundleMcpToolsForRun } from "../../agent-bundle-mcp-tools.js";
 import { AgentRunTerminalOutcomeError } from "../../agent-run-terminal-error.js";
@@ -592,6 +593,7 @@ export async function runEmbeddedAttempt(
     await Promise.allSettled(cleanups.map(async (cleanup) => await cleanup(cleanupReason)));
     externalAbortController.dispose();
     clearToolActivityRun(params.runId);
+    clearLlmStreamActivityRun(params.runId);
     try {
       await cleanupEmbeddedPrepResourcesAfterEarlyExit();
     } catch (cleanupErr) {

@@ -6,8 +6,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resetConfigRuntimeState, type OpenClawConfig } from "../config/config.js";
 import { wake as wakeCronService } from "../cron/service/wake.js";
-import { setHeartbeatsEnabled, startHeartbeatRunner } from "./heartbeat-runner.js";
-import { requestHeartbeat } from "./heartbeat-wake.js";
+import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
+import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
+import {
+  runHeartbeatOnce,
+  setHeartbeatsEnabled,
+  startHeartbeatRunner,
+} from "./heartbeat-runner.js";
+import { seedSessionStore, withTempHeartbeatSandbox } from "./heartbeat-runner.test-utils.js";
+import {
+  HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
+  requestHeartbeat,
+  type HeartbeatRunResult,
+} from "./heartbeat-wake.js";
 
 describe("startHeartbeatRunner targeted unscheduled wake dispatch", () => {
   type RunOnce = Parameters<typeof startHeartbeatRunner>[0]["runOnce"];
@@ -512,4 +523,100 @@ describe("startHeartbeatRunner targeted unscheduled wake dispatch", () => {
       }
     },
   );
+
+  it("defers a session-state immediate wake behind an active same-agent run", async () => {
+    // Storm regression (2026-09-09): automatic immediate wakes are background
+    // work and must serialize behind same-agent runs instead of stacking
+    // concurrent full-context marathons. The wake layer retains and retries
+    // the deferred wake until the active run settles.
+    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      useFakeHeartbeatTime();
+      const previousRegistry = getActivePluginRegistry();
+      const noopOutbound = {
+        deliveryMode: "direct" as const,
+        sendText: async () => ({ channel: "telegram" as const, messageId: "1", chatId: "1" }),
+        sendMedia: async () => ({ channel: "telegram" as const, messageId: "1", chatId: "1" }),
+      };
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "telegram",
+            plugin: createOutboundTestPlugin({ id: "telegram", outbound: noopOutbound }),
+            source: "test",
+          },
+        ]),
+      );
+      const cfg = {
+        session: { store: storePath },
+        agents: { defaults: { heartbeat: { every: "30m" } }, list: [{ id: "main" }] },
+        channels: { telegram: { enabled: true, token: "fake", allowFrom: ["123"] } },
+      } as OpenClawConfig;
+      const watchedThreadKey = "agent:main:telegram:direct:111:thread:1784430202.983759";
+      let sameAgentRunActive = true;
+      const listActiveReplyRunSessionKeys = vi.fn(() =>
+        sameAgentRunActive ? [watchedThreadKey] : [],
+      );
+      const results: Promise<HeartbeatRunResult>[] = [];
+      const runSpy = vi.fn((opts: Parameters<typeof runHeartbeatOnce>[0]) => {
+        const result = runHeartbeatOnce({
+          ...opts,
+          deps: {
+            ...opts.deps,
+            getQueueSize: () => 0,
+            getReplyFromConfig: replySpy,
+            listActiveReplyRunSessionKeys,
+          },
+        });
+        results.push(result);
+        return result;
+      });
+      const runner = startHeartbeatRunner({ cfg, runOnce: runSpy });
+      try {
+        await seedSessionStore(storePath, watchedThreadKey, {
+          sessionId: "watched-thread-session",
+          lastChannel: "telegram",
+          lastProvider: "telegram",
+          lastTo: "123",
+        });
+        replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
+
+        requestHeartbeat({
+          source: "session-state",
+          intent: "immediate",
+          reason: "session-state:watch",
+          sessionKey: watchedThreadKey,
+          coalesceMs: 0,
+        });
+        await vi.advanceTimersByTimeAsync(1);
+        expect(runSpy).toHaveBeenCalledOnce();
+        await expect(results[0]).resolves.toEqual({
+          status: "skipped",
+          reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
+        });
+        expect(replySpy).not.toHaveBeenCalled();
+
+        // The deferred wake is retryable: the wake layer re-dispatches it after
+        // DEFAULT_RETRY_MS while the same-agent run is still active, and it
+        // still must not run.
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(runSpy).toHaveBeenCalledTimes(2);
+        await expect(results[1]).resolves.toEqual({
+          status: "skipped",
+          reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
+        });
+        expect(replySpy).not.toHaveBeenCalled();
+
+        sameAgentRunActive = false;
+        await vi.advanceTimersByTimeAsync(1_500);
+        expect(replySpy).toHaveBeenCalledOnce();
+        await expect(results[2]).resolves.toEqual({
+          status: "ran",
+          durationMs: expect.any(Number),
+        });
+      } finally {
+        runner.stop();
+        setActivePluginRegistry(previousRegistry);
+      }
+    });
+  });
 });

@@ -339,6 +339,22 @@ export type RunEmbeddedAgentParams = {
   execApprovalContinuationTranscriptPromptRange?: ExecApprovalContinuationPromptRange;
   timeoutMs: number;
   /**
+   * Hard, non-refundable model-turn cap for bounded background runs (e.g.
+   * heartbeat wakes). The run loop turns this into a run-scoped stop hook
+   * shared across attempts, so retry-budget refunds cannot extend it; when
+   * the cap is reached the loop stops dispatching and the run settles through
+   * the normal terminal path. Undefined leaves the harness loop unbounded —
+   * user/manual/interactive runs must not set it.
+   */
+  maxToolLoopAttempts?: number;
+  /**
+   * Run-scoped graceful stop checked by the harness loop after each completed
+   * model turn. Installed by the run loop from `maxToolLoopAttempts`; the
+   * closure is shared across attempts so recovery retries cannot reset the
+   * non-refundable turn budget.
+   */
+  shouldStopAfterTurn?: () => boolean;
+  /**
    * Explicit per-run timeout override, in milliseconds, when the caller knows
    * the run was launched with a deliberate per-run value (e.g. a cron payload's
    * `timeoutSeconds`) rather than inheriting `agents.defaults.timeoutSeconds`.

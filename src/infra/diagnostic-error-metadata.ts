@@ -21,7 +21,8 @@ type DiagnosticErrorFailureKind =
   | "connection_closed"
   | "connection_reset"
   | "terminated"
-  | "timeout";
+  | "timeout"
+  | "run_budget_timeout";
 
 function isObjectLike(value: unknown): value is object {
   return (typeof value === "object" || typeof value === "function") && value !== null;
@@ -189,6 +190,11 @@ export function diagnosticErrorFailureKind(err: unknown): DiagnosticErrorFailure
   switch (code) {
     case undefined:
       break;
+    case "OPENCLAW_RUN_BUDGET_TIMEOUT":
+      // Producer-tagged runner wall-clock kill (attempt-timeout-prepare), not
+      // a provider-side timeout. Diagnostic classification only — never
+      // failover authority.
+      return "run_budget_timeout";
     case "ABORT_ERR":
     case "ECONNABORTED":
     case "ERR_ABORTED":

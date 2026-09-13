@@ -342,6 +342,7 @@ export async function dispatchEmbeddedRunAttempt(input: {
     // the accepted candidate boundary to that owner.
     onContextEngineTurnCandidate: params.onContextEngineTurnCandidate,
     skipPreparedUserTurnMessage: runtime.skipPreparedUserTurnMessage,
+    shouldStopAfterTurn: params.shouldStopAfterTurn,
     currentInboundEventKind: params.currentInboundEventKind,
     currentInboundContext: params.currentInboundContext,
     explicitSkillSelections: params.explicitSkillSelections?.map((selection) => ({

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
+import { resolveSettledTurnFinalizationRequest } from "./settled-turn-finalization.js";
 import {
   createSettledFinalizationTestInput,
   createSettledProviderFailureAttempt,
 } from "./settled-turn-finalization.test-support.js";
 import { prepareEmbeddedRunTerminal } from "./terminal-preparation.js";
-import { resolveSettledTurnFinalizationRequest } from "./terminal-resolution.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 function prepareRequest(

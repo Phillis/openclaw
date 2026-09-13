@@ -219,6 +219,7 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     beforeToolBatch: input.clientToolPreparation.catalogToolHookContext
       ? createToolLoopBatchAdmission(input.clientToolPreparation.catalogToolHookContext)
       : undefined,
+    shouldStopAfterTurn: attempt.shouldStopAfterTurn,
   });
   const activeSession = createdSession.session;
   if (!activeSession) {

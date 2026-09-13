@@ -22,7 +22,9 @@ import {
 } from "../runtime/index.js";
 import {
   setInternalBeforeToolBatch,
+  setInternalShouldStopAfterTurn,
   type InternalBeforeToolBatchHook,
+  type InternalShouldStopAfterTurnHook,
 } from "../runtime/internal-hooks.js";
 import type { AgentSessionConfig } from "./agent-session-types.js";
 import { AgentSession, type AgentSessionWriteSettlementRunner } from "./agent-session.js";
@@ -101,7 +103,11 @@ export interface CreateAgentSessionOptions {
 type CreateAgentSessionInternalOptions = Pick<
   AgentSessionConfig,
   "cleanupProviderSessionResourcesOnDispose" | "contextOverflowRecoveryOwner"
-> & { beforeToolBatch?: InternalBeforeToolBatchHook };
+> & {
+  beforeToolBatch?: InternalBeforeToolBatchHook;
+  /** Run-scoped graceful stop installed for bounded background runs (heartbeat budget). */
+  shouldStopAfterTurn?: InternalShouldStopAfterTurnHook;
+};
 
 /** Result from createAgentSession */
 interface CreateAgentSessionResult {
@@ -507,6 +513,7 @@ async function createAgentSessionImpl(
     maxRetryDelayMs: settingsManager.getProviderRetrySettings().maxRetryDelayMs,
   });
   setInternalBeforeToolBatch(agent, internalOptions.beforeToolBatch);
+  setInternalShouldStopAfterTurn(agent, internalOptions.shouldStopAfterTurn);
   if (agent.streamFn) {
     bindStreamLlmRuntime(agent.streamFn, modelRegistryRuntime.llmRuntime);
   }

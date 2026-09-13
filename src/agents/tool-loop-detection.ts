@@ -19,7 +19,7 @@ import {
   getArgumentChurnNoProgressStreak,
 } from "./tool-loop-argument-churn.js";
 import { isKnownPollToolCall } from "./tool-loop-call-kind.js";
-import { getNoProgressStreak } from "./tool-loop-no-progress.js";
+import { ERROR_RESULT_HASH_PREFIX, getNoProgressStreak } from "./tool-loop-no-progress.js";
 import { TOOL_LOOP_WARNING_THRESHOLD } from "./tool-loop-thresholds.js";
 import {
   detectTypedErrorRepeatIntervention,
@@ -56,6 +56,22 @@ const TOOL_CALL_HISTORY_SIZE = 30;
 export const UNKNOWN_TOOL_THRESHOLD = 10;
 const CRITICAL_THRESHOLD = 20;
 const GLOBAL_CIRCUIT_BREAKER_THRESHOLD = 30;
+
+/**
+ * Resolves the effective no-progress trip thresholds. identicalCallLimit
+ * (config-gated) replaces both the critical block threshold and the global
+ * circuit breaker for repeated identical-call patterns; absent = built-ins.
+ */
+function resolveNoProgressThresholds(config: ToolLoopDetectionConfig | undefined): {
+  critical: number;
+  globalBreaker: number;
+} {
+  const limit = config?.identicalCallLimit;
+  if (typeof limit === "number" && Number.isFinite(limit) && limit >= 2) {
+    return { critical: Math.floor(limit), globalBreaker: Math.floor(limit) };
+  }
+  return { critical: CRITICAL_THRESHOLD, globalBreaker: GLOBAL_CIRCUIT_BREAKER_THRESHOLD };
+}
 
 type ToolLoopDetectionScope = {
   runId?: string;
@@ -318,7 +334,7 @@ function hashToolOutcome(
       ? undefined
       : readTypedErrorIdentity(toolName, params, errorText);
     return {
-      resultHash: `error:${digestToolOutcome(errorText)}`,
+      resultHash: `${ERROR_RESULT_HASH_PREFIX}${digestToolOutcome(errorText)}`,
       noProgress: true,
       unknownToolName,
       ...typedIdentity,
@@ -557,8 +573,11 @@ export function detectToolCallLoop(
   const history = selectHistoryForScope(state.toolCallHistory ?? [], scope);
   const currentHash = hashToolCall(toolName, params);
   const unknownToolStreak = getUnknownToolRepeatStreak(history, toolName);
-  const noProgress = getNoProgressStreak(history, toolName, currentHash);
+  const noProgress = getNoProgressStreak(history, toolName, currentHash, {
+    resetOnError: config?.resetOnError === true,
+  });
   const noProgressStreak = noProgress.count;
+  const noProgressThresholds = resolveNoProgressThresholds(config);
   const argumentChurn = getArgumentChurnNoProgressStreak(history, toolName, currentHash);
   const knownPollTool = isKnownPollToolCall(toolName, params);
   const pingPong = getPingPongStreak(history, currentHash);
@@ -576,7 +595,7 @@ export function detectToolCallLoop(
     };
   }
 
-  if (noProgressStreak >= GLOBAL_CIRCUIT_BREAKER_THRESHOLD) {
+  if (noProgressStreak >= noProgressThresholds.globalBreaker) {
     log.error(
       `Global circuit breaker triggered: ${toolName} repeated ${noProgressStreak} times with no progress`,
     );
@@ -590,7 +609,7 @@ export function detectToolCallLoop(
     };
   }
 
-  if (knownPollTool && noProgressStreak >= CRITICAL_THRESHOLD) {
+  if (knownPollTool && noProgressStreak >= noProgressThresholds.critical) {
     log.error(`Critical polling loop detected: ${toolName} repeated ${noProgressStreak} times`);
     return {
       stuck: true,
@@ -666,7 +685,7 @@ export function detectToolCallLoop(
   const recentCount = history.filter(
     (h) => h.toolName === toolName && h.argsHash === currentHash,
   ).length;
-  if (!knownPollTool && noProgressStreak >= CRITICAL_THRESHOLD) {
+  if (!knownPollTool && noProgressStreak >= noProgressThresholds.critical) {
     log.error(`Critical generic loop detected: ${toolName} repeated ${noProgressStreak} times`);
     return {
       stuck: true,

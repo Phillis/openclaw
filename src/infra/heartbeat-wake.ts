@@ -61,13 +61,9 @@ export function isRetryableHeartbeatSkipReason(reason: string): boolean {
 
 let heartbeatsEnabled = true;
 
-export function setHeartbeatsEnabled(enabled: boolean) {
-  heartbeatsEnabled = enabled;
-}
+export const setHeartbeatsEnabled = (enabled: boolean) => (heartbeatsEnabled = enabled);
 
-export function areHeartbeatsEnabled(): boolean {
-  return heartbeatsEnabled;
-}
+export const areHeartbeatsEnabled = () => heartbeatsEnabled;
 
 type PendingWakeReason = {
   source: HeartbeatWakeSource;
@@ -787,4 +783,12 @@ export function requestHeartbeatRetry(
   runWithoutOwnedSessionTranscriptWrites(() => {
     retryPendingWake(wake, resolveHeartbeatRetrySchedule(wake, result));
   });
+}
+
+// Test-only reset: disposal leaves queued wakes + the armed timer, so stale wakes dispatch into a later test's handler.
+export function resetHeartbeatWakesForTest(): void {
+  clearTimeout(timer ?? undefined);
+  timer = null;
+  pendingWakes.clear();
+  activeWakeTargets.clear();
 }

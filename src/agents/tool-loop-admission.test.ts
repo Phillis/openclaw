@@ -290,3 +290,154 @@ describe("whole-batch tool-loop admission", () => {
     otherAdmission.releaseSkippedCalls?.([sharedId]);
   });
 });
+
+describe("typed-error retry storm admission", () => {
+  beforeEach(() => {
+    resetDiagnosticSessionStateForTest();
+    resetDiagnosticEventsForTest();
+  });
+
+  // Mirrors the live dispatcher conflict: the typed code arrives inside the
+  // wrapped result JSON while every retry rotates fabricated arguments.
+  const conflictArgs = (index: number) => ({
+    id: "ewt_v2_story_control",
+    args: {
+      action: "approve_exception",
+      story_id: "story-9f2",
+      expected_story_version: 9,
+      attempt: index,
+    },
+  });
+  const readArgs = { id: "ewt_v2_story_get", args: { story_id: "story-9f2" } };
+  const conflictResult = (index: number) => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          tool: { id: "ewt_v2_story_control" },
+          result: {
+            status: "error",
+            typed_code: "EXPECTED_VERSION_CONFLICT",
+            error: `version 9 conflicted with ${14 + index} | typed_code=EXPECTED_VERSION_CONFLICT`,
+          },
+        }),
+      },
+    ],
+    details: {
+      tool: { id: "ewt_v2_story_control" },
+      result: { status: "error", typed_code: "EXPECTED_VERSION_CONFLICT" },
+      status: "failed",
+    },
+  });
+
+  function recordConflict(index: number) {
+    const state = getDiagnosticSessionState(ctx);
+    recordToolCall(
+      state,
+      "tool_call",
+      conflictArgs(index),
+      `conflict-${index}`,
+      ctx.loopDetection,
+      {
+        runId: ctx.runId,
+      },
+    );
+    recordToolCallOutcome(state, {
+      toolName: "tool_call",
+      toolParams: conflictArgs(index),
+      toolCallId: `conflict-${index}`,
+      result: conflictResult(index),
+      runId: ctx.runId,
+    });
+  }
+
+  it("warns once with remediation text after three conflicts and blocks after five", async () => {
+    recordConflict(0);
+    recordConflict(1);
+    recordConflict(2);
+    const toolLoopEvents: unknown[] = [];
+    const unsubscribe = onDiagnosticEvent((event) => {
+      if (event.type === "tool.loop") {
+        toolLoopEvents.push(event);
+      }
+    });
+    try {
+      const fourth = await admitToolCallBatch(
+        [call("conflict-3", "tool_call", conflictArgs(3))],
+        ctx,
+      );
+      expect(fourth.intervention).toBeUndefined();
+      expect(fourth.warnings).toEqual([
+        { kind: "tool-loop-warning", toolCallId: "conflict-3", count: 3 },
+      ]);
+      expect(toolLoopEvents).toHaveLength(1);
+      expect(toolLoopEvents[0]).toMatchObject({
+        action: "warn",
+        level: "warning",
+        detector: "typed_error_repeat",
+        count: 3,
+      });
+      expect((toolLoopEvents[0] as { message?: string }).message).toContain(
+        "EXPECTED_VERSION_CONFLICT",
+      );
+      expect((toolLoopEvents[0] as { message?: string }).message).toContain("park");
+      fourth.commitReadyCalls?.([{ toolCallId: "conflict-3", args: conflictArgs(3) }]);
+      recordConflict(3);
+
+      // Same warning bucket: the model is not re-nudged until counts move a bucket.
+      const fifth = await admitToolCallBatch(
+        [call("conflict-4", "tool_call", conflictArgs(4))],
+        ctx,
+      );
+      expect(fifth.intervention).toBeUndefined();
+      expect(fifth.warnings ?? []).toEqual([]);
+      fifth.commitReadyCalls?.([{ toolCallId: "conflict-4", args: conflictArgs(4) }]);
+      recordConflict(4);
+
+      const sixth = await admitToolCallBatch(
+        [call("conflict-5", "tool_call", conflictArgs(5))],
+        ctx,
+      );
+      expect(sixth.intervention).toMatchObject({
+        kind: "critical-tool-loop",
+        toolCallId: "conflict-5",
+        toolName: "tool_call",
+        detector: "typed_error_repeat",
+        count: 5,
+      });
+      expect(sixth.intervention?.reason).toContain("EXPECTED_VERSION_CONFLICT");
+      expect(sixth.intervention?.reason).toContain("park");
+      expect(sixth.intervention?.reason).toContain("final summary");
+      expect(consumeBatchAdmittedToolCall("conflict-5", ctx.runId)).toBe(false);
+      const state = getDiagnosticSessionState(ctx);
+      expect(state.toolCallHistory?.at(-1)).toMatchObject({
+        toolName: "tool_call",
+        outcomeKind: "tool-loop-veto",
+      });
+      // A recovery retry of the same storm stays blocked.
+      await expect(
+        admitToolCallBatch([call("conflict-6", "tool_call", conflictArgs(6))], ctx),
+      ).resolves.toMatchObject({
+        intervention: { kind: "critical-tool-loop", detector: "typed_error_repeat" },
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("keeps the succeeding interleaved dispatcher target admissible during a storm", async () => {
+    for (let index = 0; index < 5; index += 1) {
+      recordConflict(index);
+    }
+    const admission = await admitToolCallBatch([call("read-0", "tool_call", readArgs)], ctx);
+    expect(admission.intervention).toBeUndefined();
+    expect(admission.warnings ?? []).toEqual([]);
+    admission.commitReadyCalls?.([{ toolCallId: "read-0", args: readArgs }]);
+    const state = getDiagnosticSessionState(ctx);
+    expect(state.toolCallHistory?.at(-1)).toMatchObject({
+      toolName: "tool_call",
+      toolCallId: "read-0",
+    });
+    expect(state.toolCallHistory?.at(-1)?.outcomeKind).toBeUndefined();
+  });
+});
