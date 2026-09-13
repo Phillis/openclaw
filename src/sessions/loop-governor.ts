@@ -126,6 +126,11 @@ export function resolveLoopGovernorPolicy(
       if (kind === undefined || typeof value !== "number" || !Number.isFinite(value)) {
         continue;
       }
+      // SAFETY: byKind is read from the persisted loop-governor budget record
+      // (state DB loop_governor_kind_turn_counts via the additive schema); an
+      // absent table legitimately yields an empty byKind map. The cast only
+      // types the empty-record shape — it never narrows away a real value.
+      // SAFETY: absent table yields an empty byKind map, never a narrowed lie.
       byKind ??= {} as Record<LoopGovernorSessionKind, number>;
       byKind[kind] = Math.max(1, Math.floor(value));
     }
