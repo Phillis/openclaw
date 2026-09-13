@@ -28,16 +28,18 @@ type AssistantFailureInput = Parameters<typeof handleEmbeddedAssistantFailure>[0
 function makeMidStreamDropInput(options?: {
   assistantTexts?: string[];
   emptyErrorRetries?: number;
+  errorMessage?: string;
   maybeRetryTransient?: () => Promise<boolean>;
   replaySafe?: boolean;
 }) {
   const replaySafe = options?.replaySafe !== false;
-  // Byte-for-byte the live evidence shape.
+  // Byte-for-byte the live evidence shape (errorMessage overridable for the
+  // premature-termination mirror: undici `TypeError: terminated`).
   const assistant = buildEmbeddedRunnerAssistant({
     provider: "opencode-go",
     model: "glm-5.3-flash",
     stopReason: "error",
-    errorMessage: "Stream ended without finish_reason",
+    errorMessage: options?.errorMessage ?? "Stream ended without finish_reason",
     content: [],
   });
   const replayMetadata = { hadPotentialSideEffects: !replaySafe, replaySafe };
@@ -100,6 +102,13 @@ describe("isMidStreamDropError", () => {
     expect(isMidStreamDropError(new Error("Stream ended without finish_reason"))).toBe(true);
     expect(isMidStreamDropError(new Error("rate limit exceeded, retry after 30s"))).toBe(false);
   });
+
+  it("matches premature body termination signatures (undici terminated family)", () => {
+    expect(isMidStreamDropError(new TypeError("terminated"))).toBe(true);
+    expect(isMidStreamDropError(new Error("Premature close"))).toBe(true);
+    expect(isMidStreamDropError(new Error("other side closed"))).toBe(true);
+    expect(isMidStreamDropError(new Error("This operation was aborted"))).toBe(false);
+  });
 });
 
 describe("isMidStreamDropWithoutFinishReason", () => {
@@ -109,6 +118,33 @@ describe("isMidStreamDropWithoutFinishReason", () => {
       errorMessage: "Stream ended without finish_reason",
     } as AssistantMessage;
     expect(isMidStreamDropWithoutFinishReason(assistant)).toBe(true);
+  });
+
+  it("matches premature body termination signatures", () => {
+    expect(
+      isMidStreamDropWithoutFinishReason({
+        stopReason: "error",
+        errorMessage: "terminated",
+      } as AssistantMessage),
+    ).toBe(true);
+    expect(
+      isMidStreamDropWithoutFinishReason({
+        stopReason: "error",
+        errorMessage: "Premature close",
+      } as AssistantMessage),
+    ).toBe(true);
+  });
+
+  it("excludes process kill signals: sigkill/sigterm are not body terminations", () => {
+    // Deliberately narrower than diagnosticErrorFailureKind's terminated
+    // family: a process kill is not a connection body death, so it never
+    // claims the bounded re-request.
+    expect(
+      isMidStreamDropWithoutFinishReason({
+        stopReason: "error",
+        errorMessage: "sigkill",
+      } as AssistantMessage),
+    ).toBe(false);
   });
 
   it("rejects non-error stop reasons and missing messages", () => {
@@ -146,6 +182,17 @@ describe("handleEmbeddedAssistantFailure mid-stream drop retry (BUG-019)", () =>
 
   it("retries the live-evidence shape: partial streamed text, replay-safe, first drop", async () => {
     const { input } = makeMidStreamDropInput();
+    const outcome = await handleEmbeddedAssistantFailure(input);
+    expect(outcome.action).toBe("retry");
+    expect(outcome.emptyErrorRetries).toBe(1);
+  });
+
+  it("retries the premature-termination mirror: undici terminated after transport retry exhausted", async () => {
+    // RCA 2026-09-13 (assignment_a7919909): the transport retry gate did not
+    // match `terminated`, so the run synthesized an error assistant with that
+    // message and went terminal with no run-level retry either. Both gates
+    // now recognize the signature; the run-level re-request stays bounded.
+    const { input } = makeMidStreamDropInput({ errorMessage: "terminated" });
     const outcome = await handleEmbeddedAssistantFailure(input);
     expect(outcome.action).toBe("retry");
     expect(outcome.emptyErrorRetries).toBe(1);

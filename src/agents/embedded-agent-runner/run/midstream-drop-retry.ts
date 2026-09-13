@@ -1,4 +1,5 @@
 import {
+  isPrematureBodyTerminationMessage,
   isStreamEndedWithoutFinishReasonError,
   isStreamEndedWithoutFinishReasonMessage,
 } from "@openclaw/ai/transports";
@@ -29,6 +30,13 @@ import {
  *    the canonical signal; the message fallback exists only because this
  *    check sees the serialized assistant errorMessage, where the error class
  *    identity is lost.
+ *  - Premature body terminations (undici `TypeError: terminated`,
+ *    ERR_STREAM_PREMATURE_CLOSE / UND_ERR_SOCKET families — RCA 2026-09-13:
+ *    synthetic Kimi-K3 stream `terminated` mid-thinking with zero
+ *    toolcall_end) share the same harness-owned replay-safety class, so their
+ *    serialized signatures match too. A transport retry that exhausts its
+ *    single attempt still reaches the bounded run-level re-request and the
+ *    transient-controller consult below instead of going terminal.
  *  - The current attempt must be replay-safe (no uncommitted side-effect
  *    bearing work in THIS attempt) — callers enforce via
  *    isCurrentAttemptReplaySafe; this module never overrides that.
@@ -43,13 +51,21 @@ export const MAX_MIDSTREAM_DROP_RETRIES = 3;
 
 /**
  * Live-error check: typed class when the throw is in process, canonical
- * signature fallback for wrapped or serialized Error instances.
+ * signature fallback for wrapped or serialized Error instances. Premature
+ * body terminations match by their serialized message signatures (same
+ * replay-safety class as the finish-less drop).
  */
 export function isMidStreamDropError(error: unknown): boolean {
   if (isStreamEndedWithoutFinishReasonError(error)) {
     return true;
   }
-  return error instanceof Error && isStreamEndedWithoutFinishReasonMessage(error.message);
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    isStreamEndedWithoutFinishReasonMessage(error.message) ||
+    isPrematureBodyTerminationMessage(error.message)
+  );
 }
 
 export function isMidStreamDropWithoutFinishReason(
@@ -58,9 +74,13 @@ export function isMidStreamDropWithoutFinishReason(
   if (!assistant || assistant.stopReason !== "error" || !assistant.errorMessage) {
     return false;
   }
-  // Only the harness-owned signature: the provider never authored an error
-  // body, it simply stopped sending frames. Partial content may have been
-  // streamed; it is discarded from the final assistant message (content: [],
-  // zero usage observed live), so a re-request cannot duplicate output.
-  return isStreamEndedWithoutFinishReasonMessage(assistant.errorMessage);
+  // Only harness-owned signatures: the provider never authored an error
+  // body, the connection simply died (finish-less or premature body
+  // termination). Partial content may have been streamed; it is discarded
+  // from the final assistant message (content: [], zero usage observed
+  // live), so a re-request cannot duplicate output.
+  return (
+    isStreamEndedWithoutFinishReasonMessage(assistant.errorMessage) ||
+    isPrematureBodyTerminationMessage(assistant.errorMessage)
+  );
 }
