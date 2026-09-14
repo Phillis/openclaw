@@ -109,7 +109,7 @@ export const processSchema = Type.Object({
   timeout: Type.Optional(
     Type.Number({
       description:
-        "For poll: wait up to this many milliseconds before returning; max 30000 ms, higher values are clamped to 30000",
+        "For poll: wait up to this many milliseconds before returning; max 600000 ms, higher values are clamped to 600000",
       minimum: 0,
     }),
   ),

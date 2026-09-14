@@ -586,18 +586,46 @@ test.each([
   },
 );
 
-test("process poll clamps long waits to 30 seconds", async () => {
+test("process poll honors explicit waits beyond the old 30 second default", async () => {
   vi.useFakeTimers();
   try {
-    const { processTool } = createProcessSessionHarness("sess-clamp");
+    const { processTool, session } = createProcessSessionHarness("sess-long-wait");
 
-    const pollPromise = pollSession(processTool, "toolcall", "sess-clamp", 120_000);
+    setTimeout(() => {
+      appendOutput(session, "stdout", "done late\n");
+      markExited(session, 0, null, "completed");
+    }, 45_000);
+
+    const pollPromise = pollSession(processTool, "toolcall", "sess-long-wait", 120_000);
     let resolved = false;
     void pollPromise.finally(() => {
       resolved = true;
     });
 
-    await vi.advanceTimersByTimeAsync(29_999);
+    // A 45s completion must be captured inside a single 120s poll instead of
+    // forcing the model to burn a round-trip at the old 30s clamp.
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(resolved).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const poll = await pollPromise;
+    expect(pollStatus(poll)).toBe("completed");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("process poll clamps model-requested waits to the 10 minute cap", async () => {
+  vi.useFakeTimers();
+  try {
+    const { processTool } = createProcessSessionHarness("sess-cap");
+
+    const pollPromise = pollSession(processTool, "toolcall", "sess-cap", 700_000);
+    let resolved = false;
+    void pollPromise.finally(() => {
+      resolved = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(599_999);
     expect(resolved).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1);
@@ -608,9 +636,19 @@ test("process poll clamps long waits to 30 seconds", async () => {
   }
 });
 
-test("process poll schema advertises the 30 second wait cap", () => {
+test("process poll without an explicit timeout returns immediately (default unchanged)", async () => {
+  const sessionId = "sess-no-timeout";
+  const { processTool, session } = createProcessSessionHarness(sessionId);
+
+  const poll = await pollSession(processTool, "toolcall", sessionId);
+  expect(pollStatus(poll)).toBe("running");
+  expect(retryMs(poll)).toBe(5000);
+  expect(session.exited).toBe(false);
+});
+
+test("process poll schema advertises the 10 minute wait cap", () => {
   const timeoutSchema = processSchema.properties.timeout;
-  expect((timeoutSchema as { description?: string }).description).toContain("max 30000 ms");
+  expect((timeoutSchema as { description?: string }).description).toContain("max 600000 ms");
 });
 
 test("process poll aborts while waiting for completion", async () => {

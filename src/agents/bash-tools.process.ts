@@ -107,7 +107,10 @@ function retentionCapNote(session: Pick<ProcessSession, "totalOutputChars" | "ag
   return session.totalOutputChars > session.aggregated.length ? EXEC_RETENTION_CAP_NOTE : "";
 }
 
-const MAX_POLL_WAIT_MS = 30_000;
+// Explicit model-requested poll waits are honored up to this cap so long-running
+// background work does not burn an extra model round-trip on a silently clamped wait.
+// No explicit timeout still returns immediately with an adaptive retryInMs hint.
+const MAX_MODEL_POLL_WAIT_MS = 600_000;
 
 type RunningSessionRuntime = {
   stdinWritable: boolean;
@@ -141,12 +144,12 @@ function runningSessionInputDetails(runtime: RunningSessionRuntime) {
 
 function resolvePollWaitMs(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.min(MAX_POLL_WAIT_MS, Math.floor(value)));
+    return Math.max(0, Math.min(MAX_MODEL_POLL_WAIT_MS, Math.floor(value)));
   }
   if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
     const parsed = Number(value.trim());
     if (Number.isSafeInteger(parsed)) {
-      return Math.max(0, Math.min(MAX_POLL_WAIT_MS, parsed));
+      return Math.max(0, Math.min(MAX_MODEL_POLL_WAIT_MS, parsed));
     }
   }
   return 0;
