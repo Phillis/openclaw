@@ -325,6 +325,14 @@ export type AgentDefaultsConfig = {
      * avoiding the full session transcript.
      */
     isolatedSession?: boolean;
+    /**
+     * Transcript token cap for isolated heartbeat windows. When the previous
+     * beat's stored context exceeds the cap, the next beat emits a reset
+     * lifecycle so the context engine rotates to a fresh transcript window
+     * instead of replaying an uncompactable conversation. Default: 120000; 0
+     * disables the rotation. Non-isolated heartbeats are never rotated.
+     */
+    maxTranscriptTokens?: number;
   };
   /** Owner for ambient system-agent/Custodian inference and unscoped operator-read fallbacks. */
   systemAgent?: {

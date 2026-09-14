@@ -63,6 +63,7 @@ Example config:
         directPolicy: "allow", // default: allow direct/DM targets; set "block" to suppress
         lightContext: true, // optional: skip workspace bootstrap files for heartbeat runs
         isolatedSession: true, // optional: fresh session each run (no conversation history)
+        // maxTranscriptTokens: 120000, // optional: rotate an oversized isolated transcript window (0 disables)
         // activeHours: { start: "08:00", end: "24:00" },
       },
     },
@@ -129,6 +130,7 @@ Outside heartbeats, stray `HEARTBEAT_OK` at the start/end of a message is stripp
         model: "anthropic/claude-opus-4-6",
         lightContext: false, // default: false; true skips workspace bootstrap files for heartbeat runs
         isolatedSession: false, // default: false; true runs each heartbeat in a fresh session (no conversation history)
+        maxTranscriptTokens: 120000, // default: 120000; rotate an isolated window whose stored context exceeds the cap (0 disables)
         target: "owner", // default | options: last | none | <channel id>
         accountId: "ops-bot", // optional multi-account channel id
         prompt: "Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply NO_REPLY.",
@@ -255,6 +257,9 @@ Use `accountId` to target a specific account on multi-account channels like Tele
 </ParamField>
 <ParamField path="isolatedSession" type="boolean" default="false">
   When true, each heartbeat runs in a fresh session with no prior conversation history. Uses the same isolation pattern as automation jobs with `sessionTarget: "isolated"`. Dramatically reduces per-heartbeat token cost. Combine with `lightContext: true` for maximum savings. Delivery routing and conversation context still follow the selected conversation, including its channel, account, and topic. A background command's completion keeps its original event route if that conversation later moves; it does not borrow the new room's description or activation policy.
+</ParamField>
+<ParamField path="maxTranscriptTokens" type="number" default="120000">
+  Transcript token cap for isolated heartbeat windows. When the previous beat's stored context exceeds the cap, the next beat rotates to a fresh transcript window (journaled in the gateway log) instead of replaying an uncompactable conversation every beat. `0` disables the rotation. Applies only to `isolatedSession` heartbeats; non-isolated heartbeats are never rotated.
 </ParamField>
 <ParamField path="session" type="string">
   Optional session key for heartbeat runs.

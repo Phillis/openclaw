@@ -77,6 +77,11 @@ import {
   resolveStaleHeartbeatIsolatedSessionKey,
 } from "./heartbeat-runner-session.js";
 import { isHeartbeatEnabledForAgent, resolveHeartbeatIntervalMs } from "./heartbeat-summary.js";
+import {
+  emitHeartbeatWindowRotation,
+  resolveHeartbeatWindowRotation,
+  type HeartbeatWindowRotation,
+} from "./heartbeat-transcript-window.js";
 import { resolveHeartbeatVisibility } from "./heartbeat-visibility.js";
 import {
   inferHeartbeatWakeSourceFromReason,
@@ -505,6 +510,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
           },
         ]
       : [];
+    let windowRotation: HeartbeatWindowRotation | undefined;
     const lifecycleResult = await applySessionEntryLifecycleMutation({
       activeSessionKey: isolatedSessionKey,
       storePath: isolatedStorePath,
@@ -525,6 +531,11 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
               ...cronSession.sessionEntry,
               heartbeatIsolatedBaseSessionKey: isolatedBaseSessionKey,
             };
+            windowRotation = resolveHeartbeatWindowRotation({
+              previousEntry: currentEntry,
+              heartbeat,
+              nextSessionId: nextEntry.sessionId,
+            });
             runSessionEntry = nextEntry;
             return nextEntry;
           },
@@ -536,6 +547,13 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
       log.warn("heartbeat: failed to archive stale isolated session transcript", {
         err: formatErrorMessage(lifecycleResult.artifactCleanupError),
         sessionKey: staleIsolatedSessionKey,
+      });
+    }
+    if (windowRotation) {
+      emitHeartbeatWindowRotation({
+        ...windowRotation,
+        agentId,
+        sessionKey: isolatedSessionKey,
       });
     }
     outboundPolicySessionKey = isolatedBaseSessionKey;

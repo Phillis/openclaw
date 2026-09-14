@@ -45,6 +45,23 @@ const DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 10 * 60;
  */
 export const DEFAULT_HEARTBEAT_TOOL_LOOP_BUDGET = 40;
 
+/**
+ * Default cap for isolated heartbeat transcript windows (bounded-transcript
+ * burn fix, 2026-09-14): a wedged heartbeat conversation replays in full on
+ * every beat, so windows rotate to a fresh context-engine conversation once
+ * the stored transcript crosses this many tokens.
+ */
+export const DEFAULT_HEARTBEAT_MAX_TRANSCRIPT_TOKENS = 120_000;
+
+/** Resolves the isolated-heartbeat transcript cap; 0 disables window rotation. */
+export function resolveHeartbeatMaxTranscriptTokens(heartbeat?: HeartbeatConfig) {
+  const cap = heartbeat?.maxTranscriptTokens;
+  if (typeof cap === "number" && Number.isFinite(cap) && cap >= 0) {
+    return Math.floor(cap);
+  }
+  return DEFAULT_HEARTBEAT_MAX_TRANSCRIPT_TOKENS;
+}
+
 export function resolveHeartbeatChannelPlugin(channel: string): ChannelPlugin | undefined {
   const activePlugin = getActivePluginChannelRegistry()?.channels.find(
     (entry) => entry.plugin.id === channel,
