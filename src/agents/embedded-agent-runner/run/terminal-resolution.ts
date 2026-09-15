@@ -24,6 +24,7 @@ import type {
 import { copyAttemptDeliveryState } from "./attempt-delivery-state.js";
 import {
   hasAttemptTerminalState,
+  resolveCurrentAttemptAssistant,
   shouldContinueInteractiveAcceptedSessionSpawns,
 } from "./attempt-terminal-evidence.js";
 import {
@@ -32,10 +33,12 @@ import {
 } from "./auth-profile-success.js";
 import type { EmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { resolveFinalAssistantVisibleText } from "./helpers.js";
+import { countSettledTurnDeliveryPayloads } from "./incomplete-turn-classification.js";
 import {
   resolveEmptyResponseRetryInstruction,
   resolveReasoningOnlyRetryInstruction,
   resolveSettledToolBatchEvidence,
+  resolveSettledToolTerminalContinuationInstruction,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import {
@@ -94,12 +97,73 @@ type TerminalResolution =
   | { action: "retry" }
   | { action: "complete"; result: EmbeddedAgentRunResult };
 
-export function requiresVisibleTerminalReply(runParams: TerminalRunParams): boolean {
+function requiresVisibleTerminalReply(runParams: TerminalRunParams): boolean {
   return (
     runParams.terminalReplyExpectation === "required" ||
     (runParams.terminalReplyExpectation == null &&
       (runParams.trigger == null || runParams.trigger === "user" || runParams.trigger === "manual"))
   );
+}
+
+export function resolveSettledTurnFinalizationRequest(input: {
+  runParams: TerminalRunParams;
+  attempt: EmbeddedRunAttemptResult;
+  activeErrorContext: { provider: string; model: string };
+  modelApi: Parameters<typeof resolveReasoningOnlyRetryInstruction>[0]["modelApi"];
+  executionContract: Parameters<
+    typeof resolveReasoningOnlyRetryInstruction
+  >[0]["executionContract"];
+  payloadsWithToolMedia: EmbeddedAgentRunResult["payloads"];
+  recoveredFinalAssistantPayloadsAfterPromptTimeout?: EmbeddedAgentRunResult["payloads"];
+  hasTerminalToolPresentation: boolean;
+  terminalState: EmbeddedRunTerminalState;
+  settledTurnFinalizationAvailable: boolean;
+}): string | null {
+  const terminalAssistant = resolveCurrentAttemptAssistant(input.attempt);
+  if (!input.settledTurnFinalizationAvailable || isTerminalAssistantError(terminalAssistant)) {
+    return null;
+  }
+  const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
+  const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
+  // Generated errors and pre-tool commentary are fallback surfaces, not authored answers.
+  const preparedPayloadCount = countSettledTurnDeliveryPayloads({
+    payloads: input.payloadsWithToolMedia,
+    attempt: input.attempt,
+  });
+  const silentToolResultReplyPayload = resolveSilentToolResultReplyPayload({
+    isCronTrigger: input.runParams.trigger === "cron",
+    payloadCount: preparedPayloadCount,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
+  const payloadCount = input.recoveredFinalAssistantPayloadsAfterPromptTimeout
+    ? input.recoveredFinalAssistantPayloadsAfterPromptTimeout.length
+    : preparedPayloadCount || (silentToolResultReplyPayload ? 1 : 0);
+  const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
+    allowEmptyAssistantReplyAsSilent: input.runParams.allowEmptyAssistantReplyAsSilent,
+    terminalReplyExpectation: input.runParams.terminalReplyExpectation,
+    onlyExplicitSilentReply: false,
+    payloadCount,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
+  if (emptyAssistantReplyIsSilent) {
+    return null;
+  }
+  return resolveSettledToolTerminalContinuationInstruction({
+    provider: input.activeErrorContext.provider,
+    modelId: input.activeErrorContext.model,
+    modelApi: input.modelApi,
+    executionContract: input.executionContract,
+    allowEmptyStopContinuation: requiresVisibleTerminalReply(input.runParams),
+    payloadCount,
+    hasTerminalToolPresentation: input.hasTerminalToolPresentation,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
 }
 
 export async function resolveEmbeddedRunTerminal(input: {

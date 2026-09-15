@@ -2,10 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { resolveTimestampMsToIsoString } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  deferOpenClawAgentPostCommitPublication,
-  type OpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
+import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type {
   TranscriptMessageAppendOptions,
   TranscriptMessageAppendResult,
@@ -18,7 +15,10 @@ import {
 import { readTranscriptIdentityByEventId } from "./session-accessor.sqlite-read.js";
 import type { ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { readActiveTranscriptEntryAnchorInTransaction } from "./session-accessor.sqlite-transcript-anchor.js";
-import { resolveTranscriptMessageAppendParent } from "./session-accessor.sqlite-transcript-parent.js";
+import {
+  isTranscriptEntryOnActivePathInTransaction,
+  resolveTranscriptMessageAppendParent,
+} from "./session-accessor.sqlite-transcript-parent.js";
 import {
   appendTranscriptEventInTransaction,
   ensureTranscriptHeader,
@@ -50,7 +50,10 @@ function messagesMatchForIdempotentReplay(stored: unknown, candidate: unknown): 
 export function appendTranscriptMessageInTransaction<TMessage>(
   database: OpenClawAgentDatabase,
   resolved: ResolvedTranscriptScope,
-  options: TranscriptMessageAppendOptions<TMessage> & { messageAlreadyRedacted?: boolean },
+  options: TranscriptMessageAppendOptions<TMessage> & {
+    messageAlreadyRedacted?: boolean;
+    appendMode?: "side";
+  },
 ): TranscriptMessageAppendResult<TMessage> | undefined {
   const pending = resolveSessionPendingInputAppend(database, resolved, options.message);
   if (
@@ -82,7 +85,10 @@ export function appendTranscriptMessageInTransaction<TMessage>(
       }
       // A consumed receipt permits terminal mirroring only while its exact user
       // remains on the active path; it cannot revive a replaced transcript branch.
-      if (!anchor) {
+      if (
+        !anchor &&
+        !isTranscriptEntryOnActivePathInTransaction(database, resolved.sessionId, found.messageId)
+      ) {
         throw new Error("Pending input is no longer active in its admitted transcript");
       }
       consumeSessionPendingInput(database, pending);
@@ -116,7 +122,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     }
   }
 
-  if (pending?.alreadyPromoted && !pending.commitRelocation) {
+  if (pending?.alreadyPromoted && !pending.stageRelocation) {
     const committed = readTranscriptMessageByEventId(database, resolved, pending.inputId);
     if (!committed) {
       throw new Error("Pending input custody ended before transcript promotion");
@@ -137,12 +143,18 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     pending && !pending.alreadyPromoted ? pending.inputId : (options.eventId ?? randomUUID());
   const now = options.now ?? Date.now();
   const finalMessage = pending ? prepared : serializeForStorage(prepared);
+  if (!pending) {
+    // Accepted custody and replay retain their original decision. Fresh input
+    // must still belong to its captured owner before any transcript write.
+    options.beforeFreshMessageCommit?.();
+  }
   ensureTranscriptHeader(database, resolved, options.cwd);
   const parentId = resolveTranscriptMessageAppendParent(database, resolved.sessionId, options);
   const event = {
     type: "message",
     id: messageId,
     parentId: parentId ?? null,
+    ...(options.appendMode ? { appendMode: options.appendMode } : {}),
     timestamp: resolveTimestampMsToIsoString(now),
     message: finalMessage,
   };
@@ -190,14 +202,8 @@ export function appendTranscriptMessageInTransaction<TMessage>(
   const persistedMessage = (JSON.parse(appended) as typeof event).message;
   const anchor = readAnchor({ message: persistedMessage, messageId });
   if (pending) {
-    if (pending.commitRelocation) {
-      if (
-        !deferOpenClawAgentPostCommitPublication(database, () =>
-          pending.commitRelocation?.(messageId),
-        )
-      ) {
-        throw new Error("Pending input relocation requires a transcript write transaction");
-      }
+    if (pending.stageRelocation) {
+      pending.stageRelocation(messageId);
     } else {
       consumeSessionPendingInput(database, pending);
     }

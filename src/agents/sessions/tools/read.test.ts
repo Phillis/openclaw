@@ -425,6 +425,7 @@ describe("read tool", () => {
 
     expect(textContent(result)).toContain("Resolved filename");
     expect(textContent(result)).toContain("matched");
+    expect(result.details).toEqual({ kind: "text", content: "matched" });
   });
 
   it("counts filename-resolution notes inside the complete 50 KiB read ceiling", async () => {
@@ -442,12 +443,7 @@ describe("read tool", () => {
     );
 
     expect(textContent(result)).toContain("Resolved filename");
-    // BUG-072 (F1): continuation guidance is structured (details.continuation),
-    // never spliced into page content.
-    expect(textContent(result)).not.toContain("cursor=");
-    expect(
-      (result.details as { continuation?: { cursor?: number } }).continuation?.cursor,
-    ).toBeGreaterThan(0);
+    expect(textContent(result)).toContain("cursor=");
     expect(Buffer.byteLength(textContent(result), "utf8")).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
   });
 
@@ -527,10 +523,8 @@ describe("read tool", () => {
       ).continuation;
       expect(continuation).toMatchObject({ kind: "cursor", offset: 1 });
       expect(continuation?.cursor).toBeGreaterThan(cursor ?? 0);
-      // BUG-072 (F1): no in-band continuation notices in page content.
-      expect(output).not.toContain("offset=1");
-      expect(output).not.toContain("cursor=");
-      reconstructed += output;
+      expect(output).toContain(`offset=1, cursor=${continuation?.cursor}`);
+      reconstructed += output.replace(/\n\n\[Showing[^\]]*\]$/, "");
       cursor = continuation?.cursor;
     }
 
@@ -662,31 +656,55 @@ describe("read tool", () => {
       undefined,
       {} as never,
     );
-    // BUG-072 (F1): page content carries no continuation/truncation notices;
-    // chunks reconstruct the original file exactly.
-    const firstChunk = textContent(first);
-    const secondChunk = textContent(second);
-    expect(`${firstChunk}${secondChunk}`).toBe(longLine);
-    expect(textContent(second)).not.toContain("offset=3");
+    if (first.details.kind !== "truncated" || second.details.kind !== "truncated") {
+      throw new Error("Expected both partial pages to retain their continuation");
+    }
+    expect(first.details.content + second.details.content).toBe(longLine);
+    expect(textContent(second)).toContain("offset=3");
   });
 
-  it("preserves ordinary multi-line selection and trailing newlines", async () => {
+  it.each([
+    {
+      name: "CRLF lines through EOF",
+      contents: "first\r\nsecond\r\nthird\r\n",
+      args: { offset: 2 },
+      expected: "second\nthird\n",
+    },
+    {
+      name: "the last terminated line",
+      contents: "first\nsecond\nthird\n",
+      args: { offset: 3, limit: 1 },
+      expected: "third\n",
+    },
+    {
+      name: "a limit extending past an unterminated EOF",
+      contents: "first\nsecond\nthird",
+      args: { offset: 2, limit: 20 },
+      expected: "second\nthird",
+    },
+    {
+      name: "a later line cursor through EOF",
+      contents: "first\nsecond\nthird\n",
+      args: { offset: 2, limit: 2, cursor: 2 },
+      expected: "cond\nthird\n",
+    },
+  ])("preserves selected content for $name", async ({ contents, args, expected }) => {
     const tool = createReadToolDefinition("/workspace", {
       operations: {
         access: async () => {},
-        readFile: async () => Buffer.from("first\r\nsecond\r\nthird\r\n"),
+        readFile: async () => Buffer.from(contents),
       },
     });
 
     const selected = await tool.execute(
       "call-lines",
-      { path: "lines.txt", offset: 2 },
+      { path: "lines.txt", ...args },
       undefined,
       undefined,
       {} as never,
     );
 
-    expect(textContent(selected)).toBe("second\nthird\n");
+    expect(textContent(selected)).toBe(expected);
   });
 
   it("clamps non-positive line limits before slicing file content", async () => {
@@ -708,10 +726,12 @@ describe("read tool", () => {
       {} as never,
     );
 
-    // BUG-072 (F1): the continuation hint is structural (details.continuation),
-    // so the content is exactly the first line.
-    expect(textContent(result)).toBe("alpha");
-    expect((result.details as { continuation?: { offset?: number } }).continuation?.offset).toBe(2);
+    expect(textContent(result)).toBe("alpha\n\n[2 more lines in file. Use offset=2 to continue.]");
+    expect(result.details).toMatchObject({
+      kind: "truncated",
+      content: "alpha",
+      continuation: { kind: "line", offset: 2, limit: 1 },
+    });
   });
 
   it.each([
@@ -834,27 +854,33 @@ describe("read tool", () => {
     expect(textContent(result)).toBe("import value\nconst marker = '\uFEFF';");
   });
 
-  it("uses an injected backend decoder when declared", async () => {
-    const bytes = Buffer.from([0xc4, 0xe3, 0xba, 0xc3]);
-    const tool = createReadToolDefinition("/workspace", {
-      operations: {
-        decodeText: ({ buffer, absolutePath }) => `${absolutePath}:${buffer.toString("hex")}`,
-        access: async () => {},
-        detectImageMimeType: async () => null,
-        readFile: async () => bytes,
-      },
-    });
-    const result = await tool.execute(
-      "call-1",
-      { path: "legacy.txt" },
-      undefined,
-      undefined,
-      {} as never,
-    );
+  it.each(["\ud800a🦞b\udc00", "\ud800first\udc00\nsecond🦞\ud800\n"])(
+    "preserves an injected backend decoder's exact UTF-16 text: %j",
+    async (decoded) => {
+      const bytes = Buffer.from([0xc4, 0xe3, 0xba, 0xc3]);
+      const tool = createReadToolDefinition("/workspace", {
+        operations: {
+          decodeText: ({ buffer, absolutePath }) =>
+            `${absolutePath}:${buffer.toString("hex")}:${decoded}`,
+          access: async () => {},
+          detectImageMimeType: async () => null,
+          readFile: async () => bytes,
+        },
+      });
+      const result = await tool.execute(
+        "call-1",
+        { path: "legacy.txt" },
+        undefined,
+        undefined,
+        {} as never,
+      );
 
-    expect(decodeWindowsTextFileBufferMock).not.toHaveBeenCalled();
-    expect(textContent(result)).toBe(`${path.resolve("/workspace", "legacy.txt")}:c4e3bac3`);
-  });
+      expect(decodeWindowsTextFileBufferMock).not.toHaveBeenCalled();
+      expect(textContent(result)).toBe(
+        `${path.resolve("/workspace", "legacy.txt")}:c4e3bac3:${decoded}`,
+      );
+    },
+  );
 
   it("waits for an aliased queued write before reading the same new file", async () => {
     const tempDir = tempDirs.make("openclaw-read-write-order-");

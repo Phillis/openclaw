@@ -7,6 +7,7 @@ import * as loggingConfigModule from "../logging/config.js";
 import {
   buildToolLifecycleErrorResult,
   extractToolResultText,
+  extractToolResultTextWithMeta,
   extractToolErrorCode,
   extractToolErrorMessage,
   sanitizeToolArgs,
@@ -602,11 +603,43 @@ describe("extractToolResultText", () => {
     expect(text).toBe("hello");
   });
 
-  it("caps top-level text arrays", () => {
-    const text = extractToolResultText([{ type: "text", text: "x".repeat(9000) }]);
+  it("caps top-level text arrays without in-band markers (BUG-072 F2)", () => {
+    const text = extractToolResultText([{ type: "text", text: "x".repeat(40_000) }]);
 
-    expect(text).toContain("…(truncated)…");
-    expect(text?.length).toBeLessThanOrEqual(8020);
+    // BUG-072 (F2): budget is 32KB and truncation is structured metadata,
+    // never an in-band marker inside the payload text.
+    expect(text?.length).toBeLessThanOrEqual(32 * 1024);
+    expect(text).not.toContain("…(truncated)…");
+    expect(
+      extractToolResultTextWithMeta([{ type: "text", text: "x".repeat(40_000) }]),
+    ).toMatchObject({
+      truncation: { truncated: true, originalChars: 40_000 },
+    });
+  });
+
+  it("passes 20KB read-class results through untruncated without markers (BUG-072 F2)", () => {
+    // BUG-072 defect B: the old 8000-char cut turned every >8KB nested read
+    // into a content-losing partial view. 20KB now bridges whole.
+    const body = `${"line\n".repeat(4 * 1024 - 1)}end`;
+    const result = { content: [{ type: "text", text: body }] };
+
+    expect(extractToolResultText(result)).toBe(body);
+    expect(extractToolResultText(result)).not.toContain("…(truncated)…");
+    expect(extractToolResultTextWithMeta(result).truncation).toBeUndefined();
+  });
+
+  it("attaches structured textTruncation metadata on the bridged result (BUG-072 F2)", () => {
+    const sanitized = sanitizeToolResult({
+      content: [{ type: "text", text: "x".repeat(40_000) }],
+    }) as { textTruncation?: { truncated: boolean; originalChars: number } };
+
+    expect(sanitized.textTruncation).toMatchObject({
+      truncated: true,
+      originalChars: 40_000,
+    });
+    const text = extractToolResultText(sanitized);
+    expect(text).not.toContain("…(truncated)…");
+    expect(text?.length).toBeLessThanOrEqual(32 * 1024);
   });
 
   it("redacts whole data URI values without rewriting ordinary data substrings", () => {
@@ -682,12 +715,12 @@ describe("extractToolResultText", () => {
     expect(text).not.toContain("structured-set-cookie-secret");
   });
 
-  it("caps structured fallback output", () => {
+  it("caps structured fallback output without in-band markers (BUG-072 F2)", () => {
     const text = extractToolResultText({
-      content: [{ type: "json", data: "x".repeat(9000) }],
+      content: [{ type: "json", data: "x".repeat(40_000) }],
     });
 
-    expect(text).toContain("…(truncated)…");
-    expect(text?.length).toBeLessThanOrEqual(8020);
+    expect(text?.length).toBeLessThanOrEqual(32 * 1024);
+    expect(text).not.toContain("…(truncated)…");
   });
 });

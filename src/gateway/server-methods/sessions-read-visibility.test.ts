@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { resolveSessionStorePathCore as resolveStorePath } from "../../config/sessions.js";
 import {
+  patchSessionEntryCore,
   recordSessionParticipant,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
@@ -9,6 +10,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
 import * as sessionTranscriptReaders from "../session-transcript-readers.js";
 import {
   directSessionReq,
@@ -27,6 +29,136 @@ afterEach(() => {
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });
+
+test("projects recap eligibility from current sharing authority, including capped shared viewers", async () => {
+  const client = roleClient("view", "recap-reader");
+  const ownerId = client.authenticatedUserProfile!.profileId;
+  const foreignId = ensureProfileForEmail("recap-owner@example.test").id;
+  const storePath = resolveStorePath(undefined, { agentId: "main" });
+  for (const [name, creator, visibility] of [
+    ["own", ownerId, "draft"],
+    ["member", foreignId, "read-only"],
+    ["viewer", foreignId, "shared"],
+  ] as const) {
+    await replaceSessionEntry(
+      { agentId: "main", sessionKey: `agent:main:recap-${name}`, storePath },
+      {
+        sessionId: `recap-${name}`,
+        updatedAt: 1,
+        visibility,
+        createdActor: { type: "human", source: "profile", id: creator },
+      },
+    );
+  }
+  addSessionMember(
+    { agentId: "main", sessionKey: "agent:main:recap-member", storePath },
+    { identityId: ownerId, addedBy: foreignId },
+  );
+  for (const capped of [true, false]) {
+    const result = await listSessions({
+      client,
+      context: requestContext(capped ? rolePolicyConfig() : {}),
+      request: { includeActivitySummary: true },
+    });
+    const sessions = new Map(result.sessions.map((session) => [session.key, session]));
+    expect(sessions.get("agent:main:recap-own")).toMatchObject({
+      sharingRole: "owner",
+      activitySummary: { canEnsure: true },
+    });
+    expect(sessions.get("agent:main:recap-member")).toMatchObject({
+      sharingRole: "member",
+      activitySummary: { canEnsure: true },
+    });
+    expect(sessions.get("agent:main:recap-viewer")).toMatchObject({
+      sharingRole: "viewer",
+      visibility: "shared",
+      activitySummary: { canEnsure: !capped },
+    });
+  }
+});
+
+test.each([
+  { sessionKey: "global", transcript: false },
+  { sessionKey: "unknown", transcript: false },
+  { sessionKey: "global", transcript: true },
+  { sessionKey: "unknown", transcript: true },
+])(
+  "keeps the selected unscoped $sessionKey row's owner (transcript=$transcript)",
+  async ({ sessionKey, transcript }) => {
+    const ownerId = ensureProfileForEmail("aggregate-owner@example.test").id;
+    const cfg: OpenClawConfig = {
+      session: { scope: "global" },
+      agents: {
+        entries: {
+          main: { default: true, model: { primary: "openai/gpt-5.4" } },
+          research: { model: { primary: "openai/gpt-5.5" } },
+        },
+      },
+    };
+    const storePath = resolveStorePath(undefined, { agentId: "research" });
+    const sessionId = `aggregate-${sessionKey}`;
+    await replaceSessionEntry(
+      { agentId: "research", sessionKey, storePath },
+      {
+        sessionId,
+        updatedAt: 42,
+        visibility: "draft",
+        createdActor: { type: "human", source: "profile", id: ownerId },
+      },
+    );
+    await seedLinearSessionTranscript({
+      agentId: "research",
+      sessionKey,
+      sessionId,
+      storePath,
+      contents: ["Research transcript title", "Research latest message"],
+    });
+    const client = identifiedClient(ownerId);
+    const context = requestContext(cfg);
+    const request = {
+      includeGlobal: true,
+      includeUnknown: true,
+      includeDerivedTitles: transcript,
+      includeLastMessage: transcript,
+    };
+    const result = await listSessions({ client, context, request });
+    expect.soft(result.sessions).toHaveLength(1);
+    expect.soft(result.sessions[0]).toMatchObject({
+      key: sessionKey,
+      sessionId,
+      agentId: "research",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      ...(transcript
+        ? {
+            derivedTitle: "Research transcript title",
+            lastMessagePreview: "Research latest message",
+          }
+        : {}),
+      visibility: "draft",
+      sharingRole: "owner",
+    });
+    const searched = await listSessions({
+      client,
+      context,
+      request: { ...request, search: "gpt-5.5" },
+    });
+    expect.soft(searched.sessions.map((row) => row.sessionId)).toEqual([sessionId]);
+    if (sessionKey === "global") {
+      const scoped = await listSessions({
+        client,
+        context,
+        request: { ...request, agentId: "research" },
+      });
+      expect(scoped.sessions[0]).toMatchObject({
+        agentId: "research",
+        model: "gpt-5.5",
+        visibility: "draft",
+        sharingRole: "owner",
+      });
+    }
+  },
+);
 
 test("a hidden-foreign role cannot discover sessions through search, batch previews, or exact resolve", async () => {
   const ownerId = ensureProfileForEmail("role-viewer@example.com").id;
@@ -157,7 +289,7 @@ test.each(["research", "ops"] as const)(
   },
 );
 
-test("sessions.describe and sessions.get hide foreign drafts at operator role boundaries", async () => {
+test("sessions.describe preserves caller roles and sessions.get hides foreign drafts", async () => {
   const sessionKey = "agent:main:foreign-draft-describe";
   const sessionId = "session-foreign-draft-describe";
   const profileId = (name: string) => ensureProfileForEmail(`${name}@example.com`).id;
@@ -218,34 +350,61 @@ test("sessions.describe and sessions.get hide foreign drafts at operator role bo
       client: identifiedClient(profileId("draft-viewer")),
       cfg: roleConfig("view"),
       hidden: true,
+      sharedRole: "viewer",
     },
     {
       name: "suggest",
       client: identifiedClient(profileId("draft-suggester")),
       cfg: roleConfig("suggest"),
       hidden: true,
+      sharedRole: "viewer",
     },
     {
       name: "write",
       client: identifiedClient(profileId("draft-writer")),
       cfg: roleConfig("write"),
       hidden: true,
+      sharedRole: "member",
     },
-    { name: "member", client: identifiedClient(memberId), cfg: roleConfig("write"), hidden: true },
-    { name: "missing profile", client: missingProfile, cfg: roleConfig("view"), hidden: true },
-    { name: "owner", client: identifiedClient(ownerId), cfg: roleConfig("view"), hidden: false },
-    { name: "admin", client: admin, cfg: roleConfig("view"), hidden: false },
+    {
+      name: "member",
+      client: identifiedClient(memberId),
+      cfg: roleConfig("view"),
+      hidden: true,
+      sharedRole: "member",
+    },
+    {
+      name: "missing profile",
+      client: missingProfile,
+      cfg: roleConfig("view"),
+      hidden: true,
+      sharedRole: null,
+    },
+    {
+      name: "owner",
+      client: identifiedClient(ownerId),
+      cfg: roleConfig("view"),
+      hidden: false,
+      sharedRole: "owner",
+    },
+    { name: "admin", client: admin, cfg: roleConfig("view"), hidden: false, sharedRole: "admin" },
     {
       name: "no roles",
       client: identifiedClient(profileId("draft-outsider")),
       cfg: {},
       hidden: false,
+      sharedRole: "viewer",
     },
   ] as const;
 
-  for (const { name, client, cfg, hidden } of cases) {
+  for (const { name, client, cfg, hidden, sharedRole } of cases) {
     const described = await directSessionReq<{
-      session: { participants?: unknown[]; expandedParticipants?: unknown[] } | null;
+      session: {
+        participants?: unknown[];
+        expandedParticipants?: unknown[];
+        sharingRole?: string;
+        visibility?: string;
+      } | null;
     }>(
       "sessions.describe",
       { key: sessionKey },
@@ -255,6 +414,9 @@ test("sessions.describe and sessions.get hide foreign drafts at operator role bo
     if (hidden) {
       expect(described.payload?.session, name).toBeNull();
     } else {
+      expect
+        .soft(described.payload?.session, name)
+        .toMatchObject({ sharingRole: sharedRole, visibility: "draft" });
       expect(described.payload?.session?.participants, name).toHaveLength(4);
       expect(described.payload?.session?.expandedParticipants, name).toHaveLength(5);
     }
@@ -269,6 +431,50 @@ test("sessions.describe and sessions.get hide foreign drafts at operator role bo
       name,
     ).toEqual(hidden ? [] : ["foreign draft transcript"]);
   }
+
+  await patchSessionEntryCore({ agentId: "main", sessionKey, storePath }, () => ({
+    visibility: "shared",
+  }));
+  for (const { name, client, cfg, sharedRole } of cases) {
+    const described = await directSessionReq<{
+      session: { sharingRole?: string; visibility?: string } | null;
+    }>(
+      "sessions.describe",
+      { key: sessionKey },
+      { client, context: { getRuntimeConfig: () => cfg } },
+    );
+    expect(described.ok, name).toBe(true);
+    if (sharedRole === null) {
+      expect(described.payload?.session, name).toBeNull();
+    } else {
+      expect
+        .soft(described.payload?.session, name)
+        .toMatchObject({ sharingRole: sharedRole, visibility: "shared" });
+    }
+  }
+
+  let describeCfg = roleConfig("write");
+  const describedAfterRoleChange = await directSessionReq<{
+    session: { sharingRole?: string; visibility?: string } | null;
+  }>(
+    "sessions.describe",
+    { key: sessionKey },
+    {
+      client: cases[0].client,
+      context: {
+        getRuntimeConfig: () => describeCfg,
+        readPreparedGatewayModelCatalog: async () => {
+          describeCfg = roleConfig("view");
+          return { entries: [] };
+        },
+      },
+    },
+  );
+  expect(describedAfterRoleChange.ok).toBe(true);
+  expect(describedAfterRoleChange.payload?.session).toMatchObject({
+    sharingRole: "viewer",
+    visibility: "shared",
+  });
 
   const originalRead = sessionTranscriptReaders.readRecentSessionMessagesWithStatsAsync;
   for (const mutation of [

@@ -29,13 +29,49 @@ Gateways. It:
 - discovers nearby Bonjour Gateways and opens each Control UI in a route-scoped window, so several
   Gateway dashboards can stay connected and be used simultaneously
 - opens the Gateway-served Control UI with its resolved authentication URL
-- opens Model Setup for an unconfigured local or remote Gateway, automatically
-  tests available AI credentials, and verifies an existing model before
-  opening the dashboard
+- opens Model Setup for an unconfigured local or remote Gateway, discovers
+  available AI access, and waits for your explicit action before selecting,
+  testing, installing, or saving a provider
 - continues into guided onboarding after connecting a new model; onboarding can
   import detected Claude Code, Codex, or Hermes memories into the agent workspace
   (the same import stays available later under Settings → Import Memory)
 - remains available from the system tray when its window is closed
+
+The window controls share the dashboard's top row. Drag empty header space or a
+session title to move the window, and double-click to maximize or restore it.
+The thin strip below the top resize edge also moves the window. Minimize,
+maximize/restore, and close sit at the top right; the window edges remain
+resizable. Closing the main window leaves OpenClaw available in the system tray.
+When connecting to an older Gateway whose dashboard does not support this layout,
+the companion keeps the system title bar. Update the Gateway to enable the unified
+window controls.
+
+### Desktop compatibility
+
+Published AMD64 AppImages are built on Ubuntu 22.04 and require glibc 2.35 or
+newer plus a `libstdc++` that provides `GLIBCXX_3.4.30`. Ubuntu 22.04 and
+Debian 12 meet that ABI floor. RHEL 9 and Rocky Linux 9 ship glibc 2.34, so
+they cannot run the published AppImage. Extracting the AppImage does not bypass
+this requirement.
+
+`.deb` installs stay owned by the system package manager; installing the download
+does not add an APT repository. AppImages use the signed in-app updater.
+
+Global shortcuts are available on X11. On Wayland, use the tray's **Quick Chat**
+entry when your desktop provides a tray host; global shortcuts are unavailable.
+Tray access is a shortcut fallback, not a native Wayland compatibility guarantee.
+
+The shell does not grant microphone capture to its embedded WebKitGTK WebView,
+so `getUserMedia` is expected to fail there. Open the Gateway's Control UI in a
+regular browser for [Talk mode](/nodes/talk).
+
+The desktop connects as a Gateway operator, not a node host. Device commands
+belong to the [CLI node host](/cli/node) and its
+[Linux Node plugin](/platforms/linux#node-capabilities).
+
+The [native macOS app](/platforms/macos) and [Windows Hub](/platforms/windows)
+are separate applications, not this shell's opt-in macOS and Windows Tauri test
+bundles. See their platform pages for requirements and capabilities.
 
 ### First-run setup
 
@@ -65,11 +101,19 @@ shared-store references must be resolved on their owning Gateway host.
 SSH uses your existing OpenSSH authentication and host-key verification. See
 [Remote access](/gateway/remote) for secure Gateway configuration.
 
-After the connection succeeds, Model Setup checks for existing AI credentials,
-offers provider sign-in or API-key entry when needed, and requires a successful
-model response before opening the agent. An already configured Gateway opens
-its normal dashboard after verification; newly configured access continues into
-guided onboarding.
+After the connection succeeds, Model Setup discovers AI access available to the
+selected Gateway and shows it as a choice. Discovery does not import or copy an
+account. On a fresh visit, the companion does not select, test, install, or save
+a provider until you choose its action. Provider sign-in or API-key entry is
+offered when needed, and a successful model response is required before opening
+the agent. An already configured Gateway opens its normal dashboard after
+verification; newly configured access continues into guided onboarding.
+
+If the Gateway confirms that a live model test failed before saving the model
+and credentials, close the error and retry or choose another connection.
+An uncertain error keeps replacement setup blocked because settings may already
+have been saved. Confirmed cancellation and requests rejected before setup
+started can be retried immediately.
 
 Model Setup can resume an activation across a Gateway restart or app reopen
 while its temporary recovery record is valid. Recovery stays bound to the same
@@ -106,11 +150,6 @@ the Gateway; remote Gateway routes are left untouched. If logind or the system
 bus is unavailable, the sleep hook disables itself and the app continues
 normally.
 
-Realtime voice Talk inside the companion's embedded WebView is not validated:
-the shell does not grant microphone capture to the WebKitGTK WebView, so
-`getUserMedia` is expected to fail there. Until that lands, open the Gateway's
-Control UI in a regular browser for [Talk mode](/nodes/talk).
-
 Stable releases built from `main` or their matching `release/YYYY.M.PATCH` branch
 ship `.deb` and AppImage bundles as assets on the
 [GitHub release](https://github.com/openclaw/openclaw/releases) for the tag,
@@ -121,11 +160,17 @@ or mark the AppImage executable and run it directly. The AppImage runtime
 needs FUSE 2 (`sudo apt install libfuse2`, or `libfuse2t64` on Ubuntu 24.04+);
 without it, run the AppImage with `APPIMAGE_EXTRACT_AND_RUN=1`.
 
-Published AMD64 AppImages are built on Ubuntu 22.04 and require glibc 2.35 or
-newer plus a `libstdc++` that provides `GLIBCXX_3.4.30`. Ubuntu 22.04 and
-Debian 12 meet that ABI floor. RHEL 9 and Rocky Linux 9 ship glibc 2.34, so
-they cannot run the published AppImage. Extracting the AppImage does not bypass
-this requirement.
+Regular stable publication requests Linux bundles automatically after the
+Gateway release becomes visible. Linux build, signing, and publication finish
+independently. While those bundles are pending, the app updater continues to
+offer the previous published Linux version through its original signed download.
+
+Download only a release that contains the named Linux bundles and checksum
+file; a new Gateway release alone does not prove a new Linux app is available.
+The shipped updater still uses `releases/latest/download/latest.json`.
+Independent `linux-stable` publication tooling is not a client endpoint or
+download-link migration. That activation requires separate release approval and
+signed installed-client proof; see [Linux companion publication](/reference/RELEASING#linux-companion-publication).
 
 ### Media codecs
 
@@ -162,7 +207,7 @@ export XDG_CACHE_HOME="$cache"
 apps/linux/scripts/stage-appimage-gstreamer.sh "$plugins"
 apps/linux/scripts/tauri-appimage-tools.sh prepare
 apps/linux/scripts/tauri-appimage-tools.sh verify pre-build
-export LDAI_RUNTIME_FILE="$cache/tauri/.appimage-runtime-x86_64"
+export LDAI_RUNTIME_FILE="$(apps/linux/scripts/tauri-appimage-tools.sh runtime-path)"
 (
   cd apps/linux/src-tauri
   GSTREAMER_PLUGINS_DIR="$plugins" \
@@ -173,10 +218,12 @@ apps/linux/scripts/finalize-appimage.sh \
   apps/linux/src-tauri/target/release/bundle/appimage
 ```
 
-The `Linux App` CI workflow uploads the same bundles as the
-`openclaw-linux-companion` artifact for pull requests touching the app and for
-manual runs. See `apps/linux/README.md` in the repository for Linux build
-dependencies and development commands.
+The `Linux App` workflow checks affected pull requests with Rust tests, native
+builds, and the native inline-browser smoke; it does not build bundles for pull
+requests. Manual runs build and upload the `.deb` and AppImage as the
+`openclaw-linux-companion` workflow artifact; they do not publish a release.
+See `apps/linux/README.md` in the repository for Linux build dependencies and
+development commands.
 
 ### Quick Chat
 
@@ -220,7 +267,7 @@ plain-text reply below the composer. Press `Esc` to dismiss the bar and its repl
 The CLI remains the simplest option for a headless server or VPS. Use a manual
 SSH tunnel when connecting without the Linux desktop companion:
 
-1. Install Node 26 (recommended), or another supported release: Node 22.22.3+, Node 24.15+, or Node 25.9+.
+1. Install Node 26 (recommended), or another supported release: Node 24.16+ or Node 26.1+.
 2. On npm 12 or npm 11.16+, run `npm i -g openclaw@latest --allow-scripts=openclaw`. On npm 11.15 and earlier, omit `--allow-scripts=openclaw`.
 3. `openclaw onboard --install-daemon`
 4. From your laptop: `ssh -N -L 18789:127.0.0.1:18789 <user>@<host>`
@@ -315,8 +362,8 @@ Write a unit by hand only for a custom setup. Minimal user-unit example
 Description=OpenClaw Gateway (profile: <profile>)
 After=network-online.target
 Wants=network-online.target
-StartLimitBurst=5
-StartLimitIntervalSec=60
+StartLimitBurst=10
+StartLimitIntervalSec=300
 
 [Service]
 ExecStart=/usr/local/bin/openclaw gateway --port 18789
@@ -327,13 +374,15 @@ TimeoutStopSec=330
 TimeoutStartSec=30
 SuccessExitStatus=0 143
 OOMPolicy=continue
-KillMode=control-group
+KillMode=mixed
 
 [Install]
 WantedBy=default.target
 ```
 
 Hand-written units do not inherit the adaptive heap sizing that `openclaw gateway install` writes for managed Gateway services. Prefer the managed installer, or set an explicit heap limit in the custom supervisor after accounting for native-memory headroom.
+
+`TimeoutStopSec=330` covers the Gateway's five-minute cooperative drain plus teardown reserve. To inspect the current managed unit body, run `systemctl --user cat openclaw-gateway.service` (or `systemctl --user cat openclaw-gateway-<profile>.service` for a named profile).
 
 Enable it:
 

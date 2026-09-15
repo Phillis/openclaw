@@ -13,6 +13,7 @@ import {
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { Type } from "typebox";
+import { captureAgentToolSourceExecutionGuard } from "../../agent-tool-source-execution-guard.js";
 import { normalizeToLF } from "../../line-endings.js";
 import { renderDiff } from "../../modes/interactive/components/diff.js";
 import type { AgentTool } from "../../runtime/index.js";
@@ -108,7 +109,7 @@ const EDIT_MISMATCH_HINT_LIMIT = 800;
 export const POLLUTION_GUARD_MARKER_IN_PAYLOAD = "POLLUTION_GUARD_MARKER_IN_PAYLOAD";
 
 const POLLUTION_MARKER_RE =
-  /\[Read output capped at |…\(truncated\)…|\.\.\.\(live output truncated\)\.\.\./;
+  /\[Read output capped at |…\(truncated\)…|\.\.\.\(live output truncated\)\.\.\.|\[\d+ more lines? in file\. |\[Showing (?:lines|part of line) /;
 
 /** Reject a single write/edit payload that carries a host-generated truncation marker. */
 export function assertNoPollutionMarkersInText(text: string, path: string): void {
@@ -480,6 +481,7 @@ export function createEditToolDefinition(
       void toolCallId;
       void onUpdate;
       void ctx;
+      const assertCurrent = captureAgentToolSourceExecutionGuard();
       const { path, edits: originalEdits } = validateEditInput(input);
       const absolutePath = resolvePath(path, cwd);
       const queueKey = resolveFileMutationQueueKey(absolutePath, ops.resolveQueueKey, signal);
@@ -488,6 +490,7 @@ export function createEditToolDefinition(
         if (signal?.aborted) {
           throw new Error("Operation aborted");
         }
+        assertCurrent();
 
         let realEdits: Edit[] = [];
         let expectedContent: string | undefined;
@@ -510,6 +513,7 @@ export function createEditToolDefinition(
           if (signal?.aborted) {
             throw new Error("Operation aborted");
           }
+          assertCurrent();
 
           const { bom, text: content } = stripBom(rawContent);
           const normalizedContent = normalizeToLF(content);
@@ -538,12 +542,14 @@ export function createEditToolDefinition(
           if (signal?.aborted) {
             throw new Error("Operation aborted");
           }
+          assertCurrent();
           if (!(await verifyPersistedUtf8File(absolutePath, expectedContent, ops))) {
             throw new Error(
               `Edit verification failed for ${path}: the persisted regular file does not match the requested content. Inspect the target and retry.`,
             );
           }
 
+          assertCurrent();
           const diffResult = generateDiffString(baseContent, newContent);
           const patch = generateUnifiedPatch(path, baseContent, newContent);
           return {
@@ -563,6 +569,7 @@ export function createEditToolDefinition(
             },
           };
         } catch (error: unknown) {
+          assertCurrent();
           const normalizedError = error instanceof Error ? error : new Error(String(error));
           const currentContent = await ops
             .readFile(absolutePath)
@@ -572,6 +579,7 @@ export function createEditToolDefinition(
             expectedContent !== undefined &&
             (await verifyPersistedUtf8File(absolutePath, expectedContent, ops))
           ) {
+            assertCurrent();
             return {
               content: [
                 {

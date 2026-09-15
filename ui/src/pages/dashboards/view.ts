@@ -94,13 +94,12 @@ function renderDashboardCard(
   previewError: string | null,
 ) {
   const target = sessionNavigationTarget({
-    face: "chat",
+    face: "dashboard",
     sessionKey: row.key,
     fallbackAgentId: data.fallbackAgentId,
     basePath: data.basePath,
     row,
     mainKey: data.mainKey,
-    dashboardExpanded: true,
   });
   const author = dashboardAuthor(row, data.fallbackAgentId);
   const title = resolveSessionDisplayName(row.key, row);
@@ -233,28 +232,28 @@ function renderDashboardList(
 
 export function renderDashboards(
   data: DashboardsRouteData | undefined,
-  onRetry: () => void,
   filters: DashboardGalleryFilters = DEFAULT_FILTERS,
   handlers: DashboardGalleryHandlers = NOOP_HANDLERS,
   gatewaySnapshot?: ApplicationGatewaySnapshot,
   previewError: string | null = null,
 ) {
-  const body = data
-    ? html`
-        ${renderPanelRefreshStatus({
-          status: {
-            error: data.error,
-            hasLoaded: data.result !== null,
-            stale: data.result !== null && data.error !== null,
-          },
-          errorMessage: data.error
-            ? t("dashboardsPage.loadError", { error: data.error })
-            : undefined,
-          onRetry,
-        })}
-        ${renderDashboardList(data, filters, handlers, gatewaySnapshot, previewError)}
-      `
-    : html`<section class="card" aria-busy="true">${t("common.loading")}</section>`;
+  const body =
+    data && (data.result || data.error)
+      ? html`
+          ${renderPanelRefreshStatus({
+            status: {
+              error: data.error,
+              hasLoaded: data.result !== null,
+              stale: data.result !== null && data.error !== null,
+              awaitingGateway: false,
+            },
+            errorMessage: data.error
+              ? t("dashboardsPage.loadError", { error: data.error })
+              : undefined,
+          })}
+          ${renderDashboardList(data, filters, handlers, gatewaySnapshot, previewError)}
+        `
+      : html`<section class="card" aria-busy="true">${t("common.loading")}</section>`;
   return html`
     <section class="content-header dashboards-header">
       <div>

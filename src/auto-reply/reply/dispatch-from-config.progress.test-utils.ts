@@ -1,6 +1,8 @@
 // Imported by dispatch-from-config.test.ts to keep its mocked suite in one Vitest module graph.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import { createSessionConversationTestRegistry } from "../../test-utils/session-conversation-registry.js";
 import type { MsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import {
@@ -505,6 +507,8 @@ describe("dispatchReplyFromConfig", () => {
   });
 
   it("exposes live group tool-summary state to reply_dispatch hooks", async () => {
+    // Group policy needs the loaded fixture's conversation grammar.
+    setActivePluginRegistry(createSessionConversationTestRegistry());
     setNoAbort();
     sessionStoreMocks.currentEntry = {
       verboseLevel: "off",
@@ -956,6 +960,34 @@ describe("dispatchReplyFromConfig", () => {
     });
     expect(dispatcher.sendToolResult).toHaveBeenCalledTimes(1);
     expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "done" });
+  });
+
+  it("keeps prepared notes in drafts and the generic receipt in verbose notices", async () => {
+    setNoAbort();
+    const cfg = {
+      ...emptyConfig,
+      agents: { defaults: { verboseDefault: "on" } },
+    } satisfies OpenClawConfig;
+    const dispatcher = createDispatcher();
+    await dispatchReplyFromConfig({
+      ctx: buildTestCtx({ Provider: "telegram", ChatType: "direct" }),
+      cfg,
+      dispatcher,
+      replyResolver: async (_ctx, opts) => {
+        await opts?.onPlanUpdate?.({
+          phase: "update",
+          explanation: "Use **literal** and [label](https://example.com).",
+          explanationFormat: "plain",
+          steps: [],
+        });
+        return { text: "done" };
+      },
+    });
+    expect(firstToolResultPayload(dispatcher)).toMatchObject({
+      text: "Progress updated",
+      isStatusNotice: true,
+    });
+    expect(dispatcher.sendToolResult).toHaveBeenCalledTimes(1);
   });
 
   it("sends only one plan status notice per reply run", async () => {

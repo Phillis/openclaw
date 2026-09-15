@@ -1,13 +1,11 @@
 import { createHash } from "node:crypto";
 import { asNonNegativeFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { SessionCreatedActor } from "../../packages/gateway-protocol/src/index.js";
 import { SESSION_PARTICIPANT_LIMIT } from "../../packages/gateway-protocol/src/schema/session-participant.js";
-import { resolveAuthoredModelContextTokens } from "../agents/context-resolution.js";
-import { resolveContextTokensForModel } from "../agents/context.js";
+import { resolveModelContextTokenProjection } from "../agents/context.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveFastModeState } from "../agents/fast-mode.js";
-import { findModelCatalogEntry, type ModelCatalogEntry } from "../agents/model-catalog.js";
+import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { resolveModelContextWindowProfile } from "../agents/model-context-window.js";
 import { resolveSelectedAndActiveModel } from "../auto-reply/model-runtime.js";
 import { resolveQueueSettingsCore } from "../auto-reply/reply/queue/settings.js";
@@ -15,6 +13,7 @@ import { resolveEffectiveResponseUsage } from "../auto-reply/thinking.js";
 import {
   resolveFreshSessionTotalTokens,
   resolveProjectedSessionContextTokens,
+  resolveProjectedSessionContextBudgetStatus,
   SESSION_TOTAL_TOKENS_VERSION,
   type InternalSessionEntry,
   type SessionEntry,
@@ -25,11 +24,14 @@ import {
   MAX_SESSION_PARTICIPANTS,
   sessionCreatorProfileId,
 } from "../config/sessions/session-entry-provenance.js";
+import { isPinnableSessionEntry } from "../config/sessions/session-pin-policy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { projectPluginSessionExtensionsSync } from "../plugins/host-hook-state.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveActiveSessionAgentStatus } from "../sessions/session-agent-status.js";
+import { deriveSessionUnread } from "../shared/session-unread.js";
+import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { resolveActiveFallbackState } from "../status/fallback-notice-state.js";
+import { readSessionFallbackModel } from "../status/session-fallback-model.js";
 import { projectSessionDeliveryFields } from "../utils/delivery-context.shared.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
 import { buildControlUiChannelAvatarUrl } from "./control-ui-contract.js";
@@ -42,24 +44,19 @@ import {
   projectSessionParticipants,
 } from "./session-identity-projection.js";
 import { isSessionPermissionChangePending } from "./session-permission-change.js";
-import {
-  resolveSessionStoreAgentId,
-  resolveStoredSessionKeyForAgentStore,
-} from "./session-store-key.js";
+import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
+import { buildSessionSwarmSummary } from "./session-swarm-summary.js";
 import { readSessionTitleFieldsFromTranscript as readScopedSessionTitleFieldsFromTranscript } from "./session-transcript-title-reader.js";
 import type {
-  SessionActorProfileIdentity,
+  GatewaySessionModelSource,
   SessionListRowContext,
 } from "./session-utils-contracts.js";
 import {
-  buildCompactionCheckpointPreview,
   deriveSessionTitle,
-  deriveSessionUnread,
   resolveEstimatedSessionCostUsd,
-  resolveLatestCompactionCheckpoint,
+  resolveSessionCompactionSummary,
   resolvePositiveNumber,
-  resolveProjectableCompactionCheckpoints,
-  resolveRuntimeChildSessionKeys,
+  buildStoreChildSessionIndex,
 } from "./session-utils-core.js";
 import {
   resolveGatewaySessionDisplayName,
@@ -72,8 +69,7 @@ import {
   resolveSessionDisplayModelIdentityRefCached,
 } from "./session-utils-model.js";
 import {
-  mergeChildSessionKeys,
-  resolveChildSessionKeys,
+  buildSessionListRowMetadataContext,
   resolveSessionSelectedModelRef,
   resolveTranscriptUsageFallback,
 } from "./session-utils-projection.js";
@@ -86,26 +82,11 @@ function channelAvatarRevision(reference: string): string {
   return createHash("sha256").update(reference).digest("base64url").slice(0, 12);
 }
 
-/**
- * Projects an entry's `archivedBy` for the gateway row surface. A rotation
- * archive actor (`type: "rotation"`) has no human identity and is projected as
- * undefined (the archived state is carried by archivedAt/archived themselves).
- */
-function resolveRowArchivedBy(
-  actor: SessionEntry["archivedBy"],
-  userProfileIdentityById: Map<string, SessionActorProfileIdentity | undefined> = new Map(),
-  cfg?: OpenClawConfig,
-): SessionCreatedActor | undefined {
-  if (!actor || actor.type === "rotation") {
-    return undefined;
-  }
-  return projectSessionActor(actor, userProfileIdentityById, cfg);
-}
-
 export function buildGatewaySessionRow(params: {
   cfg: OpenClawConfig;
   storePath: string;
   store: Record<string, SessionEntry>;
+  modelSource?: GatewaySessionModelSource;
   key: string;
   entry?: InternalSessionEntry;
   modelCatalog?: SessionListModelCatalog | ModelCatalogEntry[];
@@ -116,25 +97,23 @@ export function buildGatewaySessionRow(params: {
   storeChildSessionsByKey?: Map<string, string[]>;
   rowContext?: SessionListRowContext;
   configuredAgentIds?: ReadonlySet<string>;
-  agentId?: string;
+  agentId: string;
   skipTranscriptUsageFallback?: boolean;
   lightweightListRow?: boolean;
+  includeSwarmChildren?: boolean;
 }): GatewaySessionRow {
   const { cfg, storePath, store, key, entry } = params;
   const lightweight = params.lightweightListRow === true;
   const now = params.now ?? Date.now();
+  const rowContext = params.rowContext ?? buildSessionListRowMetadataContext({ now });
   const agentStatus = resolveActiveSessionAgentStatus(entry?.agentStatus, now);
   const owner = projectSessionOwner(
     entry,
-    params.rowContext?.userProfileIdentityById,
+    rowContext.userProfileIdentityById,
     cfg,
     params.configuredAgentIds,
   );
-  const participants = projectSessionParticipants(
-    entry,
-    params.rowContext?.userProfileIdentityById,
-    cfg,
-  );
+  const participants = projectSessionParticipants(entry, rowContext.userProfileIdentityById, cfg);
   if (owner?.actor.identity) {
     participants.delete(JSON.stringify(owner.actor.identity));
   }
@@ -162,13 +141,9 @@ export function buildGatewaySessionRow(params: {
   const channelAvatarUrl = avatar
     ? buildControlUiChannelAvatarUrl(controlUiBasePath, key, channelAvatarRevision(avatar))
     : undefined;
-  const parsedAgent = parseAgentSessionKey(key);
   const displayName = resolveGatewaySessionDisplayName(key, entry);
-  const sessionAgentId = normalizeAgentId(
-    parsedAgent?.agentId ?? params.agentId ?? resolveSessionStoreAgentId(cfg, key),
-  );
+  const sessionAgentId = params.agentId;
   const skipTranscriptUsage = params.skipTranscriptUsageFallback === true;
-  const rowContext = params.rowContext;
   const {
     subagentRun,
     subagentOwner,
@@ -177,7 +152,7 @@ export function buildGatewaySessionRow(params: {
   const selectedModel = resolveSessionSelectedModelRef({
     cfg,
     sessionKey: key,
-    entry,
+    source: params.modelSource ?? { entry, loadSessionEntry: (parentKey) => store[parentKey] },
     agentId: sessionAgentId,
     rowContext,
     allowPluginNormalization: !lightweight,
@@ -193,7 +168,7 @@ export function buildGatewaySessionRow(params: {
         fallbackModelRef: subagentRun?.model,
         allowPluginNormalization: !lightweight,
         maxTranscriptBytes: params.transcriptUsageMaxBytes,
-        rowContext: params.rowContext,
+        rowContext,
         agentId: sessionAgentId,
       })
     : null;
@@ -209,36 +184,41 @@ export function buildGatewaySessionRow(params: {
     totalTokensFresh,
     totalTokensVersion: totalTokensFresh ? SESSION_TOTAL_TOKENS_VERSION : undefined,
   });
-  const childSessions = params.storeChildSessionsByKey
-    ? mergeChildSessionKeys(
-        resolveRuntimeChildSessionKeys(key, now, rowContext?.subagentRuns),
-        params.storeChildSessionsByKey.get(key),
-      )
-    : resolveChildSessionKeys(key, store, now, rowContext?.subagentRuns);
-  const compactionCheckpoints = resolveProjectableCompactionCheckpoints(entry);
-  const compactionCheckpointCount = Array.isArray(entry?.compactionCheckpoints)
-    ? compactionCheckpoints.length
-    : undefined;
-  const latestCompactionCheckpoint = buildCompactionCheckpointPreview(
-    resolveLatestCompactionCheckpoint(compactionCheckpoints),
-  );
-  const selectedModelProvider = selectedModel.provider;
-  const selectedModelId = selectedModel.model;
-  const rowModelIdentity = lightweight
-    ? { provider: selectedModelProvider, model: selectedModelId }
-    : resolveSessionDisplayModelIdentityRefCached({
-        cfg,
-        agentId: sessionAgentId,
-        provider: selectedModelProvider,
-        model: selectedModelId,
-        rowContext: params.rowContext,
-      });
-  const rowModelProvider = rowModelIdentity.provider;
-  const rowModel = rowModelIdentity.model;
-  const runtimeModels = resolveSelectedAndActiveModel({
-    selectedProvider: selectedModelProvider,
-    selectedModel: selectedModelId,
+  const childSessions = (
+    params.storeChildSessionsByKey ??
+    buildStoreChildSessionIndex({
+      store,
+      keys: [key],
+      now,
+      subagentRuns: rowContext.subagentRuns,
+    })
+  ).get(key);
+  const pinnedAt =
+    entry?.pinnedAt !== undefined && isPinnableSessionEntry(key, entry)
+      ? entry.pinnedAt
+      : undefined;
+  const { compactionCheckpointCount, latestCompactionCheckpoint } =
+    resolveSessionCompactionSummary(entry);
+  const rowModelProvider = selectedModel.provider;
+  const rowModel = selectedModel.model;
+  const rowModelIdentity = resolveSessionDisplayModelIdentityRefCached({
+    cfg,
+    provider: rowModelProvider,
+    model: rowModel,
+    rowContext,
+  });
+  // Display aliases do not change the selected route's catalog or runtime policy.
+  const completedModel = readSessionFallbackModel({
+    selectedProvider: rowModelProvider,
+    selectedModel: rowModel,
     sessionEntry: entry,
+    config: cfg,
+    sessionScope: { agentId: sessionAgentId, sessionKey: key, storePath },
+  });
+  const runtimeModels = resolveSelectedAndActiveModel({
+    selectedProvider: rowModelProvider,
+    selectedModel: rowModel,
+    sessionEntry: completedModel ?? entry,
   });
   const activeFallback = resolveActiveFallbackState({
     selectedModelRef: runtimeModels.selected.label,
@@ -258,7 +238,7 @@ export function buildGatewaySessionRow(params: {
         provider: rowModelProvider,
         model: rowModel,
         entry,
-        rowContext: params.rowContext,
+        rowContext,
       }) ?? asNonNegativeFiniteNumber(transcriptUsage?.estimatedCostUsd));
   let derivedTitle: string | undefined;
   let lastMessagePreview: string | undefined;
@@ -298,43 +278,32 @@ export function buildGatewaySessionRow(params: {
     sessionKey: acpSessionKey,
     entry,
     modelCatalog: thinkingModelCatalog,
+    modelCatalogRouteVariants: preparedCatalog?.routeVariants,
     rowContext,
     providerPolicySource: preparedCatalog?.pluginRegistry ?? (lightweight ? "active" : undefined),
   });
   const catalogEntry =
-    rowModelCatalog && rowModelProvider && rowModel
-      ? findModelCatalogEntry(rowModelCatalog, {
-          provider: rowModelProvider,
-          modelId: rowModel,
-        })
-      : undefined;
+    rowModelCatalog && rowModelProvider && rowModel ? thinkingProjection.catalogEntry : undefined;
   const contextWindowProfile = resolveModelContextWindowProfile({
     catalogEntry,
     selected: entry?.contextWindow,
   });
-  const resolvedModelContextTokens = resolvePositiveNumber(
-    resolveContextTokensForModel({
-      cfg,
-      provider: rowModelProvider,
-      model: rowModel,
-      modelContextTokens: catalogEntry?.contextTokens,
-      modelContextWindow: contextWindowProfile.contextTokens,
-      allowAsyncLoad: false,
-    }),
-  );
+  const modelContext = resolveModelContextTokenProjection({
+    cfg,
+    provider: rowModelProvider,
+    model: rowModel,
+    modelContextTokens: catalogEntry?.contextTokens,
+    modelContextWindow: contextWindowProfile.contextTokens,
+    allowAsyncLoad: false,
+  });
+  const resolvedModelContextTokens = resolvePositiveNumber(modelContext.contextTokens);
   const resolvedCurrentContextTokens = contextWindowProfile.contextTokens
     ? Math.min(
         resolvedModelContextTokens ?? contextWindowProfile.contextTokens,
         contextWindowProfile.contextTokens,
       )
     : resolvedModelContextTokens;
-  const authoredContextTokens = resolvePositiveNumber(
-    resolveAuthoredModelContextTokens({
-      cfg,
-      provider: rowModelProvider,
-      model: rowModel,
-    }),
-  );
+  const authoredContextTokens = resolvePositiveNumber(modelContext.authoredContextTokens);
   const contextTokens = resolveProjectedSessionContextTokens({
     entry,
     provider: rowModelProvider,
@@ -345,8 +314,8 @@ export function buildGatewaySessionRow(params: {
   });
   const fastModeState = resolveFastModeState({
     cfg,
-    provider: selectedModelProvider,
-    model: selectedModelId,
+    provider: rowModelProvider,
+    model: rowModel,
     agentId: sessionAgentId,
     sessionEntry:
       entry?.fastMode !== undefined
@@ -357,9 +326,28 @@ export function buildGatewaySessionRow(params: {
   });
   const pluginExtensions =
     !lightweight && entry ? projectPluginSessionExtensionsSync({ sessionKey: key, entry }) : [];
+  const repositoryWorkspace = entry?.repositoryWorkspaceId
+    ? getSessionRepositoryWorkspaceStore().get(entry.repositoryWorkspaceId)
+    : undefined;
+  const repository =
+    repositoryWorkspace?.agentId === sessionAgentId && repositoryWorkspace.sessionKey === key
+      ? {
+          url: repositoryWorkspace.url,
+          ...(repositoryWorkspace.requestedRef ? { ref: repositoryWorkspace.requestedRef } : {}),
+          branch: repositoryWorkspace.branch,
+        }
+      : undefined;
 
+  const swarm = buildSessionSwarmSummary(
+    params.rowContext?.subagentRuns.swarmRunsByRequesterSessionKey.get(key) ?? [],
+    key,
+    sessionAgentId,
+    { includeChildren: params.includeSwarmChildren },
+  );
   return {
     key,
+    // Only explicitly requested summaries may clear swarm state in event merges.
+    ...(params.rowContext ? { swarm } : {}),
     visibility: entry ? (entry.visibility ?? "shared") : undefined,
     incognito: entry?.incognito,
     spawnedBy: subagentOwner || entry?.spawnedBy,
@@ -374,6 +362,8 @@ export function buildGatewaySessionRow(params: {
       ? { sessionRoot: entry.sessionRoot }
       : {}),
     worktree: entry?.worktree,
+    repositoryWorkspaceId: entry?.repositoryWorkspaceId,
+    ...(repository ? { repository } : {}),
     execNode: entry?.execNode,
     execCwd: entry?.execCwd,
     forkedFromParent: sessionEntryForkedFromParent(entry) ? true : undefined,
@@ -383,7 +373,7 @@ export function buildGatewaySessionRow(params: {
     createdVia: entry?.createdVia,
     createdActor: projectSessionActor(
       entry?.createdActor,
-      rowContext?.userProfileIdentityById,
+      rowContext.userProfileIdentityById,
       cfg,
       Boolean(sessionCreatorProfileId(entry?.createdActor)),
     ),
@@ -401,11 +391,13 @@ export function buildGatewaySessionRow(params: {
     previousSessionId: entry?.previousSessionId,
     kind: gatewayKind,
     label: entry?.label,
+    autoLabel: entry?.autoLabel,
     icon: entry?.icon,
     color: entry?.color,
     channelAvatarUrl,
     category: entry?.category,
     boardFace: entry?.boardFace,
+    boardPresentation: entry?.boardPresentation,
     ...sessionClassificationForRow(cfg, key, sessionAgentId, entry),
     displayName,
     derivedTitle,
@@ -419,10 +411,10 @@ export function buildGatewaySessionRow(params: {
     updatedAt,
     archived: entry?.archivedAt !== undefined,
     archivedAt: entry?.archivedAt,
-    archivedBy: resolveRowArchivedBy(entry?.archivedBy, rowContext?.userProfileIdentityById, cfg),
+    archivedBy: projectSessionActor(entry?.archivedBy, rowContext.userProfileIdentityById, cfg),
     archiveReason: entry?.archiveReason,
-    pinned: entry?.pinnedAt !== undefined,
-    pinnedAt: entry?.pinnedAt,
+    pinned: pinnedAt !== undefined,
+    pinnedAt,
     unread: deriveSessionUnread(entry),
     lastReadAt: entry?.lastReadAt,
     markedUnreadAt: entry?.markedUnreadAt,
@@ -488,15 +480,24 @@ export function buildGatewaySessionRow(params: {
       channel: INTERNAL_MESSAGE_CHANNEL,
       sessionEntry: entry,
     }).mode,
-    modelProvider: rowModelProvider,
-    model: rowModel,
+    modelProvider: rowModelIdentity.provider,
+    model: rowModelIdentity.model,
     activeModelProvider: activeFallback.active ? runtimeModels.active.provider : undefined,
     activeModel: activeFallback.active ? runtimeModels.active.model : undefined,
-    modelOverrideSource: resolveSessionModelOverrideSource(entry),
+    modelOverrideSource:
+      selectedModel.storedOverrideSource === "parent"
+        ? "inherited"
+        : resolveSessionModelOverrideSource(entry),
     modelSelectionLocked: entry?.modelSelectionLocked,
+    runtimeSelectionLocked: thinkingProjection.runtimeSelectionLocked,
     agentRuntime: projectWorkerPlacementAgentRuntime(thinkingProjection.agentRuntime),
     contextTokens,
-    contextBudgetStatus: entry?.contextBudgetStatus,
+    contextBudgetStatus: resolveProjectedSessionContextBudgetStatus({
+      entry,
+      provider: rowModelProvider,
+      model: rowModel,
+      contextTokens,
+    }),
     deliveryContext: deliveryFields.deliveryContext,
     lastChannel: deliveryFields.lastChannel,
     lastTo: deliveryFields.lastTo,

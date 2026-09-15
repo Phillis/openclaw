@@ -64,6 +64,8 @@ export function chatAttachmentDraftSignature(
   goalMode?: ChatGoalDraftMode | null,
   mentions?: readonly HumanMention[],
 ): string {
+  // Admission and recovery mint a new ID for each payload. Preview URLs and
+  // moving the same bytes between Blob/data-URL storage do not change that owner.
   return JSON.stringify([
     text,
     goalMode ?? null,
@@ -249,18 +251,22 @@ export class DurableChatComposerPersistence {
   }
 
   restore(
-    baseline: RestoreBaseline,
+    scope: DurableComposerDraftScope,
+    prepare: () => Omit<RestoreBaseline, "scope"> & {
+      onCurrentWins: (storedRevision: number) => void;
+    },
     current: () => { scope: DurableComposerDraftScope | null; signature: string; revision: number },
     apply: (draft: RestoredDraft) => void,
-    onCurrentWins: (storedRevision: number) => void,
   ) {
-    const scopeIdentity = durableComposerScopeIdentity(baseline.scope);
+    const scopeIdentity = durableComposerScopeIdentity(scope);
     if (this.restoredScopeKey === scopeIdentity) {
       return;
     }
+    // Capture edits before storage yields so a newer edit invalidates this baseline.
+    const { onCurrentWins, ...baseline } = prepare();
     this.restoredScopeKey = scopeIdentity;
     const generation = ++this.restoreGeneration;
-    void this.restoreScope(baseline, generation, current, apply, onCurrentWins);
+    void this.restoreScope({ scope, ...baseline }, generation, current, apply, onCurrentWins);
   }
 
   private async restoreScope(

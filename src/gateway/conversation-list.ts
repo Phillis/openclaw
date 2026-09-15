@@ -11,6 +11,7 @@ import {
   listConversations,
   registerConversationAddresses,
   resolveConversationRegistryScope,
+  runConversationDatabaseWrite,
   type ConversationRecord,
   type ConversationRegistryScope,
 } from "../config/sessions/conversation-registry.js";
@@ -195,37 +196,22 @@ async function discoverChannelAddresses(params: {
       }
     }
   }
-  const currentConfig = params.readCurrentConfig?.() ?? params.config;
-  // OSCAR-COMMS fix: route-ownership "unavailable" is a TRANSIENT condition
-  // (a channel's session-binding adapter is briefly unregistered around a
-  // gateway restart — Slack declares bindingStore "adapter"). Throwing here
-  // failed the ENTIRE channel discovery for the whole post-restart window
-  // (live 2026-09-08 02:01–02:06Z: oscar's WC relay failed 3× with
-  // "Conversation route ownership is temporarily unavailable" 11–14 min
-  // after a restart) — treat it as "skip for now" and let the next call
-  // discover the addresses once the adapter re-registers.
-  const eligibleIdentities: ConversationIdentity[] = [];
-  let unavailableIdentities = 0;
-  for (const identity of [...identities.values()]) {
-    const eligibility = resolveConversationRouteEligibilityForAgent({
-      config: currentConfig,
-      agentId: params.agentId,
-      conversation: { ...identity, target: identity.deliveryTarget },
+  const eligibleIdentities = await runConversationDatabaseWrite(params.scope, (scope) => {
+    const currentConfig = params.readCurrentConfig?.() ?? params.config;
+    const eligible = [...identities.values()].filter((identity) => {
+      const eligibility = resolveConversationRouteEligibilityForAgent({
+        config: currentConfig,
+        agentId: params.agentId,
+        conversation: { ...identity, target: identity.deliveryTarget },
+      });
+      if (eligibility === "unavailable") {
+        throw new Error("Conversation route ownership is temporarily unavailable");
+      }
+      return eligibility === "eligible";
     });
-    if (eligibility === "unavailable") {
-      unavailableIdentities += 1;
-      continue;
-    }
-    if (eligibility === "eligible") {
-      eligibleIdentities.push(identity);
-    }
-  }
-  if (unavailableIdentities > 0) {
-    log.warn(
-      `channel discovery for agent ${params.agentId}: ${unavailableIdentities} conversation(s) skipped — route ownership temporarily unavailable (transient; re-discovered on a later call)`,
-    );
-  }
-  params.deps.registerConversationAddresses(params.scope, eligibleIdentities);
+    params.deps.registerConversationAddresses(scope, eligible);
+    return eligible;
+  });
   return {
     channel: plugin.id,
     discoveredConversationRefs: new Set(
@@ -234,16 +220,10 @@ async function discoverChannelAddresses(params: {
   };
 }
 
-function matchesConversationQuery(conversation: ConversationRecord, rawQuery: string): boolean {
-  const query = rawQuery.trim().toLowerCase();
-  if (!query) {
-    return true;
-  }
-  const terms = query.startsWith("@") ? [query, query.slice(1)] : [query];
-  const values = [conversation.conversationRef, conversation.target, conversation.label]
-    .filter((value): value is string => Boolean(value))
-    .map((value) => value.toLowerCase());
-  return terms.some((term) => term && values.some((value) => value.includes(term)));
+function matchesConversationQuery(conversation: ConversationRecord, query: string): boolean {
+  return [conversation.conversationRef, conversation.target, conversation.label].some((value) =>
+    value?.toLowerCase().includes(query),
+  );
 }
 
 /** Lists persisted and channel-directory addresses from the Gateway's live plugin runtime. */
@@ -277,17 +257,17 @@ export async function runGatewayConversationList(
     discovery ? { channel: discovery.channel } : {},
   );
   const currentConfig = params.readCurrentConfig?.() ?? params.config;
-  // OSCAR-COMMS fix: same transient-"unavailable" tolerance as channel
-  // discovery above — skip the conversation for this call instead of failing
-  // the whole listing (the route-ownership adapter re-registers shortly
-  // after a gateway restart; a later listing re-includes it).
-  let unavailableCount = 0;
+  const normalizedQuery = query?.toLowerCase() ?? "";
+  const searchQuery =
+    normalizedQuery.startsWith("@") && normalizedQuery.length > 1
+      ? normalizedQuery.slice(1)
+      : normalizedQuery;
   const selected = conversations
     .filter((entry) => {
       if (
         query &&
         discovery?.discoveredConversationRefs.has(entry.conversationRef) !== true &&
-        !matchesConversationQuery(entry, query)
+        !matchesConversationQuery(entry, searchQuery)
       ) {
         return false;
       }
@@ -297,16 +277,10 @@ export async function runGatewayConversationList(
         conversation: entry,
       });
       if (eligibility === "unavailable") {
-        unavailableCount += 1;
-        return false;
+        throw new Error("Conversation route ownership is temporarily unavailable");
       }
       return eligibility === "eligible";
     })
     .slice(0, params.limit);
-  if (unavailableCount > 0) {
-    log.warn(
-      `conversation list for agent ${params.agentId}: ${unavailableCount} conversation(s) skipped — route ownership temporarily unavailable (transient; re-listed on a later call)`,
-    );
-  }
   return { conversations: selected.map(presentConversation) };
 }

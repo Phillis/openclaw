@@ -365,4 +365,147 @@ describe("openai completions transport", () => {
     expect(request.headers.get("api-version")).toBe("proxy-header");
     expect(request.headers.get("x-tenant")).toBe("acme");
   });
+
+  it("re-requests a finish-less managed stream once with an identical body", async () => {
+    const capturedBodies: string[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        capturedBodies.push(body);
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        if (capturedBodies.length === 1) {
+          // Attempt 1: stream text, then die with no finish_reason and no [DONE].
+          res.write(`data: ${JSON.stringify(makeCompletionsChunk({ content: "dropped" }))}\n\n`);
+          res.end();
+          return;
+        }
+        res.write(`data: ${JSON.stringify(makeCompletionsChunk({ content: "final answer" }))}\n\n`);
+        res.write(`data: ${JSON.stringify(makeCompletionsChunk({}, "stop"))}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Missing loopback server address");
+      }
+      const model = makeCompletionsModel({
+        id: "gpt-5.6-luna",
+        name: "GPT-5.6 Luna",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        reasoning: false,
+      });
+      const stream = createOpenAICompletionsTransportStreamFn()(
+        model,
+        {
+          systemPrompt: "system",
+          messages: [{ role: "user", content: "Reply OK", timestamp: Date.now() }],
+          tools: [],
+        } as never,
+        { apiKey: "test-key" } as never,
+      );
+
+      let terminal: string | undefined;
+      const doneMessage: { content?: Array<{ type?: string; text?: string }> } = {};
+      for await (const event of stream as AsyncIterable<{
+        type: string;
+        message?: { content?: Array<{ type?: string; text?: string }> };
+      }>) {
+        if (event.type === "done") {
+          terminal = "done";
+          if (event.message) {
+            Object.assign(doneMessage, event.message);
+          }
+        }
+        if (event.type === "error") {
+          terminal = "error";
+        }
+      }
+
+      expect(capturedBodies).toHaveLength(2);
+      expect(capturedBodies[0]).toBe(capturedBodies[1]);
+      expect(terminal).toBe("done");
+      expect(
+        (doneMessage.content ?? [])
+          .filter((block) => block.type === "text")
+          .map((block) => block.text),
+      ).toEqual(["final answer"]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("fails with a single error without a third request when the managed retry also ends finish-less", async () => {
+    let requests = 0;
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        requests += 1;
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        res.write(`data: ${JSON.stringify(makeCompletionsChunk({ content: "partial" }))}\n\n`);
+        res.end();
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Missing loopback server address");
+      }
+      const model = makeCompletionsModel({
+        id: "gpt-5.6-luna",
+        name: "GPT-5.6 Luna",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        reasoning: false,
+      });
+      const stream = createOpenAICompletionsTransportStreamFn()(
+        model,
+        {
+          systemPrompt: "system",
+          messages: [{ role: "user", content: "Reply OK", timestamp: Date.now() }],
+          tools: [],
+        } as never,
+        { apiKey: "test-key" } as never,
+      );
+
+      let errorEvents = 0;
+      for await (const event of stream as AsyncIterable<{ type: string }>) {
+        if (event.type === "error") {
+          errorEvents += 1;
+        }
+      }
+      const result = await (await stream).result();
+
+      expect(requests).toBe(2);
+      expect(errorEvents).toBe(1);
+      expect(result.stopReason).toBe("error");
+      expect(result.errorMessage).toContain("Stream ended without finish_reason");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
 });

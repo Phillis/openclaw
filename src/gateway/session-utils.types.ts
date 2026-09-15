@@ -63,6 +63,7 @@ export type GatewaySessionRow = Omit<SessionRow, "archivedBy" | "updatedAt" | "w
   // project archivedBy as absent (see resolveRowArchivedBy in session-utils-row).
   archivedBy?: Exclude<SessionEntry["archivedBy"], { type: "rotation" }>;
   agentStatus?: SessionEntry["agentStatus"];
+  activitySummary?: import("../../packages/gateway-protocol/src/schema/sessions-activity-summary.js").SessionActivitySummary;
   observerDigest?: Pick<
     SessionObserverDigest,
     "agentId" | "runId" | "headline" | "health" | "updatedAt" | "revision"
@@ -101,6 +102,7 @@ export type GatewaySessionRow = Omit<SessionRow, "archivedBy" | "updatedAt" | "w
   queueMode?: QueueMode;
   effectiveQueueMode?: QueueMode;
   modelSelectionLocked?: boolean;
+  runtimeSelectionLocked?: boolean;
   agentRuntime?: GatewayAgentRuntime;
   contextBudgetStatus?: SessionEntry["contextBudgetStatus"];
   deliveryContext?: DeliveryContext;
@@ -132,7 +134,7 @@ export type SessionPreviewItem = {
 
 export type SessionsPreviewEntry = {
   key: string;
-  status: "ok" | "empty" | "missing" | "error";
+  status: "ok" | "empty" | "missing" | "cold" | "error";
   items: SessionPreviewItem[];
 };
 
@@ -156,6 +158,7 @@ export type SessionsPatchResult = SessionsPatchResultBase<SessionEntry> & {
     modelProvider?: string;
     model?: string;
     agentRuntime?: GatewayAgentRuntime;
+    runtimeSelectionLocked?: boolean;
     contextWindow?: string;
     contextWindows?: GatewayContextWindowOption[];
     thinkingLevel?: string;

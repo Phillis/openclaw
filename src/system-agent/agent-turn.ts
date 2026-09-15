@@ -3,12 +3,18 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.js";
-import { extractAgentRunText, type AgentRunResultView } from "../agents/agent-run-result.js";
+import {
+  extractAgentRunTerminalError,
+  extractAgentRunText,
+  type AgentRunResultView,
+} from "../agents/agent-run-result.js";
 import { resolveCliBackendConfig, type ResolvedCliBackend } from "../agents/cli-backends.js";
 import { normalizeCliModel } from "../agents/cli-runner/helpers.js";
 import { SessionManager } from "../agents/sessions/index.js";
+import { resolveAgentTimeoutMs } from "../agents/timeout.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { CliSessionBinding } from "../config/sessions.js";
+import { CommandLane } from "../process/lanes.js";
 import { buildAgentMainSessionKey, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { SYSTEM_AGENT_ID } from "./agent-id.js";
 import { SYSTEM_AGENT_SYSTEM_PROMPT } from "./assistant-prompts.js";
@@ -32,10 +38,6 @@ import {
  * Turns share one persistent session so the conversation has genuine
  * multi-turn memory. Inference setup must succeed before this runner is entered.
  */
-// Flat budget for both route classes: agent-loop turns run multi-step tool
-// calls, so even metered external routes need the full window, and 120s
-// already covers local startup + generation (planner evidence).
-const AGENT_TURN_TIMEOUT_MS = 120_000;
 const SYSTEM_AGENT_TOOL_NAME = "openclaw";
 
 export type SystemAgentTurnDirective =
@@ -328,7 +330,7 @@ async function runSystemAgentTurnWithDeps(
     workspaceDir,
     config: plan.runConfig,
     prompt: params.input,
-    timeoutMs: AGENT_TURN_TIMEOUT_MS,
+    timeoutMs: resolveAgentTimeoutMs({ cfg: plan.runConfig }),
     thinkLevel: "off" as const,
     runId,
     messageChannel: "openclaw",
@@ -404,9 +406,12 @@ async function runSystemAgentTurnWithDeps(
         deps.runEmbeddedAgent ?? (await import("../agents/embedded-agent.js")).runEmbeddedAgent;
       result = (await runEmbedded({
         ...shared,
+        lane: CommandLane.SystemAgentInference,
         preparedRunAdmission,
         extraSystemPrompt: SYSTEM_AGENT_SYSTEM_PROMPT,
         toolsAllow: ["openclaw"],
+        // The helper cannot read workspace skills; skip their discovery and environment setup.
+        toolExecutionAllow: ["openclaw"],
         systemAgentTool,
         disableMessageTool: true,
         provider: plan.provider,
@@ -419,6 +424,11 @@ async function runSystemAgentTurnWithDeps(
           ? { authProfileId: plan.authProfileId, authProfileIdSource: "user" as const }
           : {}),
       })) as EmbeddedRunResult;
+    }
+    // Failed runs can retain partial text; it must not publish a reply or a tool directive.
+    const terminalError = extractAgentRunTerminalError(result);
+    if (terminalError) {
+      throw new Error(terminalError);
     }
     if (params.session.verifiedInference !== binding) {
       throw new SystemAgentInferenceUnavailableError("agent-turn");

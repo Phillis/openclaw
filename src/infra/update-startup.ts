@@ -13,12 +13,15 @@ import type {
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveRemoteCatalogUrl } from "../model-catalog/remote-config.js";
+import { checkRemoteModelCatalogUpdate } from "../model-catalog/remote-overlay.js";
 import {
   refreshRemoteModelCatalog,
   REMOTE_MODEL_CATALOG_TTL_MS,
 } from "../model-catalog/remote-refresh.js";
 import { classifyUpdateOutcome } from "../shared/update-outcome.js";
-import { readConfigMachineState, writeConfigMachineState } from "../state/config-machine-state.js";
+import { writeConfigMachineState } from "../state/config-machine-state-write.js";
+import { readConfigMachineState } from "../state/config-machine-state.js";
 import { VERSION } from "../version.js";
 import { isTruthyEnvValue } from "./env.js";
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
@@ -35,11 +38,7 @@ import {
   writeRestartSentinelIfUnchanged,
   type VerifiedGitUpdateReceipt,
 } from "./restart-sentinel.js";
-import {
-  normalizeGatewayRestartDelayMs,
-  resolveGatewayRestartDeferralTimeoutMs,
-  scheduleGatewaySigusr1Restart,
-} from "./restart.js";
+import { resolveGatewayRestartDeferralTimeoutMs } from "./restart.js";
 import { detectRespawnSupervisor } from "./supervisor-markers.js";
 import { checkTelemetryUpdate } from "./telemetry.js";
 import { gatewayUpdateCampaign, type UpdateCampaignController } from "./update-campaign.js";
@@ -65,6 +64,7 @@ import {
   cancelManagedServiceUpdateHandoff,
   formatManagedServiceUpdateCommand,
   startManagedServiceUpdateHandoff,
+  transferManagedServiceUpdateHandoff,
 } from "./update-managed-service-handoff.js";
 import { buildUpdateRestartSentinelPayload } from "./update-restart-sentinel-payload.js";
 import {
@@ -73,7 +73,8 @@ import {
   recordUpdateRunPhase,
   recordUpdateRunStep,
 } from "./update-run-ledger.js";
-import { summarizeUpdateStepFailure } from "./update-run-record.js";
+import { updateRunStepsFromResultStep } from "./update-run-step.js";
+import { AUTO_UPDATE_STEP_TIMEOUT_MS } from "./update-run-timeouts.js";
 import { runGatewayUpdatePreflight, type UpdateRunResult } from "./update-runner.js";
 
 type UpdateCheckState = {
@@ -93,7 +94,7 @@ type UpdateCheckState = {
 
 type AutoUpdateRunResult =
   | { status: "handoff"; command?: string; logPath?: string }
-  | { status: "failed"; result: UpdateRunResult; message: string };
+  | { status: "failed" | "skipped"; result: UpdateRunResult; message: string };
 
 type AutoUpdateRunParams = {
   runId: string;
@@ -215,13 +216,11 @@ export function resetUpdateAvailableStateForTest(): void {
   updateScheduleCache = null;
   void updateCheckLifecycle?.stop();
   updateCheckLifecycle = undefined;
-  gatewayUpdateCampaign.resetForTest();
 }
 
 const UPDATE_CHECK_STATE_KEY = "update.checkState";
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
-const AUTO_UPDATE_COMMAND_TIMEOUT_MS = 45 * 60 * 1000;
 const AUTO_STABLE_DELAY_HOURS = 6;
 const AUTO_STABLE_JITTER_HOURS = 12;
 const DEV_COMMIT_LIMIT = 5;
@@ -425,7 +424,6 @@ async function runAutoUpdateCommand(
   const command = formatManagedServiceUpdateCommand({
     channel: params.channel,
     ...(params.packageTargetVersion ? { tag: params.packageTargetVersion } : {}),
-    timeoutMs: params.timeoutMs,
   });
   const failure = (
     reason: string,
@@ -473,6 +471,13 @@ async function runAutoUpdateCommand(
       );
       params.signal?.throwIfAborted();
       if (result) {
+        if (classifyUpdateOutcome(result) === "noop") {
+          return {
+            status: "skipped",
+            result,
+            message: "Automatic update skipped: the selected version is already current.",
+          };
+        }
         return {
           status: "failed",
           result,
@@ -483,17 +488,15 @@ async function runAutoUpdateCommand(
     if (!params.root?.trim()) {
       throw new Error("managed auto-update install root is unavailable");
     }
-    const restartDelayMs = normalizeGatewayRestartDelayMs(supervisor === "systemd" ? undefined : 0);
     const handoffId = randomUUID();
     const started = await startManagedServiceUpdateHandoff({
       root: params.root,
-      timeoutMs: params.timeoutMs,
+      recoveryTimeoutMs: params.timeoutMs,
       restartDrainTimeoutMs:
         resolveGatewayRestartDeferralTimeoutMs(params.restartDrainTimeoutMs) ??
         resolveGatewayRestartDeferralTimeoutMs(),
       channel: params.channel,
       ...(params.packageTargetVersion ? { tag: params.packageTargetVersion } : {}),
-      restartDelayMs,
       supervisor,
       handoffId,
       ...(params.devTarget ? { devTarget: params.devTarget } : {}),
@@ -516,15 +519,17 @@ async function runAutoUpdateCommand(
         }
         params.signal.throwIfAborted();
       }
-      // Pair owned helper creation with restart scheduling before persistence;
-      // a joined helper belongs to its original caller, including cancellation.
-      scheduleGatewaySigusr1Restart({
-        delayMs: restartDelayMs,
-        reason: "update.auto",
-        successorOwner,
-        skipCooldown: true,
-        skipDeferral: true,
-      });
+      // Transfer starts validation while this generation remains available. Only
+      // the orchestrator's activation request may park the managed service.
+      try {
+        if (!(await transferManagedServiceUpdateHandoff(successorOwner))) {
+          throw new Error("managed update ownership transfer failed");
+        }
+        params.signal?.throwIfAborted();
+      } catch (error) {
+        await cancelManagedServiceUpdateHandoff(successorOwner);
+        throw error;
+      }
     } else {
       // A joined helper owns another run; it cannot complete this campaign's admission.
       finishUpdateRun(params.runId, {
@@ -773,7 +778,7 @@ async function runCampaignUpdate(params: {
   campaign: UpdateCampaignController;
   onUpdateRunCreated?: () => void;
   signal?: AbortSignal;
-}): Promise<"handoff" | "failed"> {
+}): Promise<"handoff" | "applied" | "failed"> {
   const campaignId = params.campaign.getState()?.id;
   const isCurrent = () =>
     campaignId !== undefined &&
@@ -817,7 +822,7 @@ async function runCampaignUpdate(params: {
       runId,
       channel: params.channel,
       mode: params.mode,
-      timeoutMs: AUTO_UPDATE_COMMAND_TIMEOUT_MS,
+      timeoutMs: AUTO_UPDATE_STEP_TIMEOUT_MS,
       restartDrainTimeoutMs: resolveGatewayRestartDeferralTimeoutMs(),
       ...(params.root ? { root: params.root } : {}),
       ...(params.channel === "dev" ? {} : { packageTargetVersion: params.version }),
@@ -841,15 +846,10 @@ async function runCampaignUpdate(params: {
         before: outcome.result.before,
         origin: { nextAction: outcome.message },
       });
-      for (const step of outcome.result.steps) {
+      for (const step of outcome.result.steps.flatMap(updateRunStepsFromResultStep)) {
         recordUpdateRunStep(runId, {
-          step: step.name,
-          status: step.exitCode === 0 || step.advisory ? "completed" : "failed",
+          ...step,
           endedAtMs: Date.now(),
-          detail:
-            step.exitCode === 0
-              ? undefined
-              : (step.advisory?.message ?? summarizeUpdateStepFailure(step)),
         });
       }
     }
@@ -903,7 +903,8 @@ async function runCampaignUpdate(params: {
         isCurrent,
       });
     }
-    params.log.info("auto-update attempt failed", {
+    const skipped = classifyUpdateOutcome(outcome.result) === "noop";
+    params.log.info(skipped ? "auto-update attempt skipped" : "auto-update attempt failed", {
       channel: params.channel,
       version: params.version,
       tag: params.tag,
@@ -912,6 +913,14 @@ async function runCampaignUpdate(params: {
       message: outcome.message,
       ...(triageHint ? { triage: triageHint } : {}),
     });
+    if (skipped) {
+      if (terminal) {
+        finishUpdateRun(runId, terminal);
+      }
+      terminal = undefined;
+      params.campaign.clear();
+      return "applied";
+    }
     return "failed";
   } finally {
     if (terminal) {
@@ -1306,7 +1315,7 @@ async function runGatewayUpdateCheckOwned(
   const channel = configuredChannel;
   const resolved =
     shouldRunAutoUpdate || channel !== "stable"
-      ? await resolveNpmChannelTag({ channel, timeoutMs: 2500 })
+      ? await resolveNpmChannelTag({ channel })
       : {
           tag: "latest",
           version: telemetryUpdate?.version ?? null,
@@ -1469,6 +1478,7 @@ export function createGatewayUpdateCheck(params: {
   const lifecycle = createUpdateCheckLifecycle();
   updateCheckLifecycle = lifecycle;
   let started = false;
+  let observedCatalog: { sourceUrl: string; generatedAt: number } | undefined;
   return {
     initialize: lifecycle.initialize,
     stop: lifecycle.stop,
@@ -1486,30 +1496,47 @@ export function createGatewayUpdateCheck(params: {
         return resolveCheckIntervalMs(params.getConfig(), updateScheduleCache?.install?.kind);
       });
       lifecycle.schedule(async () => {
+        let nextCheckInMs = REMOTE_MODEL_CATALOG_TTL_MS;
         try {
+          const config = params.getConfig();
+          const sourceUrl = resolveRemoteCatalogUrl(config);
           const result = await refreshRemoteModelCatalog({
-            config: params.getConfig(),
+            config,
             signal: lifecycle.signal,
           });
           if (lifecycle.signal.aborted) {
             return REMOTE_MODEL_CATALOG_TTL_MS;
           }
+          nextCheckInMs =
+            result.status === "fresh" ? result.nextCheckInMs : REMOTE_MODEL_CATALOG_TTL_MS;
           if (result.status === "error") {
             params.log.info("remote model catalog refresh failed", { error: result.error });
-          } else if (result.status === "updated") {
-            params.log.info("remote model catalog updated; restart the Gateway to apply it", {
-              providers: result.providers,
-              models: result.models,
-              generatedAt: result.generatedAt,
-            });
+          } else if (
+            result.status !== "disabled" &&
+            (observedCatalog?.sourceUrl !== sourceUrl ||
+              observedCatalog.generatedAt !== result.generatedAt)
+          ) {
+            const expected = { sourceUrl, generatedAt: result.generatedAt };
+            const state = checkRemoteModelCatalogUpdate(params.getConfig(), expected);
+            if (state !== "superseded") {
+              observedCatalog = expected;
+            }
+            if (state === "restart-required") {
+              params.log.info("remote model catalog downloaded; restart the Gateway to apply it", {
+                providers: result.providers,
+                models: result.models,
+                generatedAt: result.generatedAt,
+              });
+            } else if (state === "superseded") {
+              params.log.info("remote model catalog check superseded; deferred to the next check");
+            }
           }
-          return result.status === "fresh" ? result.nextCheckInMs : REMOTE_MODEL_CATALOG_TTL_MS;
         } catch (error) {
           if (!lifecycle.signal.aborted) {
-            params.log.info("remote model catalog refresh failed", { error: String(error) });
+            params.log.info("remote model catalog check failed", { error: String(error) });
           }
-          return REMOTE_MODEL_CATALOG_TTL_MS;
         }
+        return nextCheckInMs;
       }, true);
     },
   };

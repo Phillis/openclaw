@@ -17,6 +17,7 @@ import {
   clearArgumentChurnPolicyWaits,
   type DiagnosticArgumentChurnObservationParams,
 } from "./diagnostic-argument-churn-activity.js";
+import { resolveCurrentDiagnosticOwner } from "./diagnostic-owned-activity.js";
 import {
   clearRepeatedRequestActivity,
   recordRepeatedRequestObservation,
@@ -47,11 +48,13 @@ import {
   resolveSessionActivity,
   sessionRefs,
   touchSessionActivity,
-  type DiagnosticBackendActivity,
-  type DiagnosticOwnerRegistration,
   type SessionActivity,
 } from "./diagnostic-run-activity-state.js";
 
+export {
+  beginDiagnosticBackendActivity,
+  beginDiagnosticRetryWait,
+} from "./diagnostic-owned-activity.js";
 export {
   BLOCKED_TOOL_CALL_ABORT_FLOOR_MS,
   RUN_STALE_TAKEOVER_MS,
@@ -168,65 +171,6 @@ function hasDiagnosticOwnerForRefs(params: {
     (params.runId && hasDiagnosticActivityOwner(activityByRunId.get(params.runId))) ||
     sessionRefs(params).some((ref) => hasDiagnosticActivityOwner(activityByRef.get(ref)))
   );
-}
-
-function resolveCurrentDiagnosticOwner(
-  owner: DiagnosticEmbeddedRunOwner,
-  assertCurrent?: () => void,
-): DiagnosticOwnerRegistration | undefined {
-  const registration = activeDiagnosticOwners.get(owner.generation);
-  if (registration?.owner !== owner) {
-    return undefined;
-  }
-  try {
-    assertCurrent?.();
-  } catch {
-    return undefined;
-  }
-  // The caller assertion may synchronously retire or replace the registration.
-  return activeDiagnosticOwners.get(owner.generation) === registration &&
-    registration.activity.activeEmbeddedRuns.get(owner.workKey)?.generation === owner.generation
-    ? registration
-    : undefined;
-}
-
-/** Binds one backend attempt's quiet allowance to its exact live core owner. */
-export function beginDiagnosticBackendActivity(params: {
-  owner: DiagnosticEmbeddedRunOwner;
-  noOutputTimeoutMs: number;
-  assertCurrent: () => void;
-}): { observeOutput: (modelProgress: boolean) => boolean; close: () => void } {
-  const { owner, noOutputTimeoutMs, assertCurrent } = params;
-  const registration = resolveCurrentDiagnosticOwner(owner, assertCurrent);
-  const backendActivity: DiagnosticBackendActivity = {
-    deadlineAtMs: Date.now() + noOutputTimeoutMs,
-    assertCurrent,
-  };
-  if (registration) {
-    registration.backendActivity = backendActivity;
-  }
-  return {
-    observeOutput: (modelProgress) => {
-      const current = resolveCurrentDiagnosticOwner(owner, assertCurrent);
-      if (!current || current.backendActivity !== backendActivity) {
-        return false;
-      }
-      const now = Date.now();
-      backendActivity.deadlineAtMs = now + noOutputTimeoutMs;
-      if (!modelProgress || current.activity.activeTools.size > 0) {
-        return false;
-      }
-      touchSessionActivity(current.activity, "model_call:stream_progress", now);
-      return true;
-    },
-    close: () => {
-      // Compare-release remains valid after abort and cannot retire a later attempt.
-      const current = activeDiagnosticOwners.get(owner.generation);
-      if (current?.owner === owner && current.backendActivity === backendActivity) {
-        delete current.backendActivity;
-      }
-    },
-  };
 }
 
 function recordModelStarted(
@@ -427,6 +371,7 @@ export function closeDiagnosticEmbeddedRunOwner(owner: DiagnosticEmbeddedRunOwne
     return;
   }
   const { activity } = registration;
+  registration.retryWait?.close();
   activeDiagnosticOwners.delete(owner.generation);
   closedDiagnosticOwnerGenerations.add(owner.generation);
   activity.activeCoreModelCalls.delete(owner.generation);
@@ -582,10 +527,24 @@ export function getDiagnosticSessionActivitySnapshot(
   }
 
   let activeBackendLivenessDeadlineAtMs: number | undefined;
+  let activeRetryWaitDeadlineAtMs: number | undefined;
   for (const embeddedRun of activity.activeEmbeddedRuns.values()) {
     const registration = embeddedRun.generation
       ? activeDiagnosticOwners.get(embeddedRun.generation)
       : undefined;
+    const retryWait = registration?.retryWait;
+    if (
+      registration &&
+      retryWait &&
+      resolveCurrentDiagnosticOwner(registration.owner, retryWait.assertCurrent) === registration &&
+      registration.activity === activity &&
+      registration.retryWait === retryWait
+    ) {
+      activeRetryWaitDeadlineAtMs = Math.max(
+        activeRetryWaitDeadlineAtMs ?? retryWait.deadlineAtMs,
+        retryWait.deadlineAtMs,
+      );
+    }
     const backendActivity = registration?.backendActivity;
     if (
       !registration ||
@@ -607,6 +566,7 @@ export function getDiagnosticSessionActivitySnapshot(
     ...(activeBackendLivenessDeadlineAtMs !== undefined
       ? { activeBackendLivenessDeadlineAtMs }
       : {}),
+    ...(activeRetryWaitDeadlineAtMs !== undefined ? { activeRetryWaitDeadlineAtMs } : {}),
   };
 }
 
