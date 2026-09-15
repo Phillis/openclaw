@@ -68,6 +68,26 @@ describe("edit tool", () => {
     );
   });
 
+  it("rejects replacement payloads carrying host-generated truncation markers (BUG-072 F3)", async () => {
+    const filePath = await createTempFile("alpha\nbeta\n");
+    const tool = createEditTool(tmpDir);
+
+    await expect(
+      tool.execute("call-pollution-guard", {
+        path: filePath,
+        edits: [
+          {
+            oldText: "beta",
+            newText:
+              "beta\n[Read output capped at 128KB for this call. Use offset=81 to continue.]",
+          },
+        ],
+      }),
+    ).rejects.toThrow(/POLLUTION_GUARD_MARKER_IN_PAYLOAD/);
+    // The guard fires before any write, so the target stays untouched.
+    await expect(fs.readFile(filePath, "utf-8")).resolves.toBe("alpha\nbeta\n");
+  });
+
   it("writes and reports only the requested fuzzy Unicode replacement", async () => {
     const original =
       "export const RETRY\u00A0MAX = 3; // \u518D\u8A66\u884C\uFF08\u6700\u5927\uFF13\u56DE\uFF09\uFF71\uFF72\uFF73 \u2014 \u8A2D\u5B9A\n";

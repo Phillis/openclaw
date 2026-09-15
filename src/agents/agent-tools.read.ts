@@ -45,6 +45,7 @@ import type { AgentTool, AgentToolResult } from "./runtime/index.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 import { resolveSandboxFileMutationQueueKey } from "./sandbox/file-mutation-identity.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
+import { assertNoPollutionMarkersInText } from "./sessions/tools/edit.js";
 import {
   createEditTool,
   createReadTool,
@@ -53,10 +54,7 @@ import {
   type ReadToolTruncationDetails,
 } from "./sessions/tools/index.js";
 import { expandOsHomePrefix, resolveToCwd } from "./sessions/tools/path-utils.js";
-import {
-  createBoundedReadTextPage,
-  formatReadContinuationNotice,
-} from "./sessions/tools/read-page.js";
+import { createBoundedReadTextPage } from "./sessions/tools/read-page.js";
 import {
   ReadToolContinuationSchema,
   type ReadToolContinuation,
@@ -128,8 +126,14 @@ type ReadTruncationDetails = {
   continuation?: ReadToolContinuation;
 };
 
-const READ_CONTINUATION_NOTICE_RE =
-  /\n\n\[(?:Showing (?:lines|part of line) [^\]]*|Read output capped [^\]]*|\d+ more lines? in file\. [^\]]*)\]\s*$/;
+// BUG-072 (F3): pollution sink guard. Sentinel-owned error lives in
+// sessions/tools/edit.ts (assertNoPollutionMarkersInText); write sinks here
+// refuse payloads carrying host-generated truncation markers so a
+// read-all+write-back lane cannot persist synthetic read-path output.
+function guardWritePayload(content: string, filePath: string): string {
+  assertNoPollutionMarkersInText(content, filePath);
+  return content;
+}
 
 export function resolveAdaptiveReadMaxBytes(options?: OpenClawReadToolOptions): number {
   const contextWindowTokens = options?.modelContextWindowTokens;
@@ -269,10 +273,6 @@ function withReadContinuation(
   };
 }
 
-function stripReadContinuationNotice(text: string): string {
-  return text.replace(READ_CONTINUATION_NOTICE_RE, "");
-}
-
 function stripReadTruncationContentDetails(
   result: AgentToolResult<unknown>,
 ): AgentToolResult<unknown> {
@@ -326,7 +326,6 @@ async function executeReadWithAdaptivePaging(params: {
   let firstResult: AgentToolResult<unknown> | undefined;
   let aggregatedText = "";
   let aggregatedBytes = 0;
-  let previousNotice = "";
 
   for (let page = 0; page < MAX_ADAPTIVE_READ_PAGES; page += 1) {
     const pageArgs = {
@@ -351,25 +350,20 @@ async function executeReadWithAdaptivePaging(params: {
     const reachedEof =
       Boolean(truncation?.truncated) && pageEndLine >= (truncation?.totalLines ?? 0);
     const pageContinuation = truncation?.continuation;
-    const pageText =
-      pageContinuation || reachedEof ? stripReadContinuationNotice(rawText) : rawText;
+    // BUG-072 (F1): page text is content-pure — continuation/cap state lives in
+    // details.truncation + details.continuation, never spliced into content.
+    const pageText = rawText;
     const delimiter = aggregatedText && pageText && next.kind === "line" ? "\n" : "";
     const candidateBytes = aggregatedBytes + delimiter.length + Buffer.byteLength(pageText, "utf8");
-    const continuationNotice = pageContinuation
-      ? formatReadContinuationNotice(pageContinuation, params.maxBytes)
-      : "";
 
     if (
-      candidateBytes + Buffer.byteLength(continuationNotice, "utf8") > params.maxBytes ||
-      !toolResultFitsBudget(
-        `${aggregatedText}${delimiter}${pageText}${continuationNotice}`,
-        params.modelBudget,
-      )
+      candidateBytes > params.maxBytes ||
+      !toolResultFitsBudget(`${aggregatedText}${delimiter}${pageText}`, params.modelBudget)
     ) {
       if (aggregatedText) {
         return withReadContinuation(
           firstResult,
-          `${aggregatedText}${previousNotice}`,
+          aggregatedText,
           next,
           aggregatedBytes,
           initialOffset,
@@ -408,13 +402,12 @@ async function executeReadWithAdaptivePaging(params: {
     if (hasExplicitLimit || page === MAX_ADAPTIVE_READ_PAGES - 1) {
       return withReadContinuation(
         firstResult,
-        `${aggregatedText}${continuationNotice}`,
+        aggregatedText,
         pageContinuation,
         aggregatedBytes,
         initialOffset,
       );
     }
-    previousNotice = continuationNotice;
     next = pageContinuation;
   }
   return firstResult!;
@@ -1051,6 +1044,10 @@ export function createOpenClawReadTool(
   const modelBudget = resolveToolResultBudget(options?.modelContextWindowTokens);
   return {
     ...base,
+    // BUG-072 (F1): pagination guidance is structural. The model is taught here
+    // (and via the TUI renderer) that continuation state lives in
+    // details.truncation/details.continuation and is never part of the content.
+    description: `${base.description}\n\nPaging: when the result details include a \`continuation\` (or \`truncation\`) object, the page was cut off — continue with offset=continuation.offset (plus cursor/limit when present). That state is tool metadata, never file content; do not copy it into files.`,
     execute: async (toolCallId, params, signal) => {
       const record = getToolParamsRecord(params);
       const normalizedRecord = record
@@ -1278,6 +1275,7 @@ function createSandboxWriteOperations(params: SandboxToolParams) {
         await params.bridge.mkdirp({ filePath: dir, cwd: params.root, signal: params.abortSignal });
       },
       writeFile: async (absolutePath: string, content: string) => {
+        guardWritePayload(content, absolutePath);
         await params.bridge.writeFile({
           filePath: absolutePath,
           cwd: params.root,
@@ -1409,7 +1407,7 @@ function createHostWriteOperations(
           await fs.mkdir(resolved, { recursive: true });
         },
         writeFile: (filePath: string, content: string) =>
-          writeHostFile(filePath, content, options?.abortSignal),
+          writeHostFile(filePath, guardWritePayload(content, filePath), options?.abortSignal),
         readFile: async (absolutePath: string) =>
           fs.readFile(path.resolve(expandOsHomePrefix(absolutePath))),
         statFile: (absolutePath: string) =>
@@ -1435,7 +1433,13 @@ function createHostWriteOperations(
         await fs.mkdir(resolved, { recursive: true });
       },
       writeFile: (absolutePath: string, content: string) =>
-        writeWorkspaceFile(root, getRoot, absolutePath, content, options?.abortSignal),
+        writeWorkspaceFile(
+          root,
+          getRoot,
+          absolutePath,
+          guardWritePayload(content, absolutePath),
+          options?.abortSignal,
+        ),
       readFile: async (absolutePath: string) => {
         // Canonicalize symlink parents like the write path: fs-safe 0.5.2
         // rejects intermediate symlinks by default, but in-workspace symlink

@@ -94,6 +94,39 @@ type LegacyEditToolInput = Record<string, unknown> & {
 
 const EDIT_MISMATCH_MESSAGE = "Could not find the exact text in";
 const EDIT_MISMATCH_HINT_LIMIT = 800;
+
+/**
+ * BUG-072 (F3): pollution sink guard.
+ *
+ * These sentinels are host-generated read-cap/truncation markers; a write or
+ * edit payload that contains one is synthetic read-path output, not file data.
+ * Persisting them amplified BUG-072 (read-all + write-back round trips), so
+ * file-writing sinks reject payloads carrying them with a named error. Edit
+ * `oldText` is NOT checked: already-polluted files must remain repairable by
+ * targeted edits.
+ */
+export const POLLUTION_GUARD_MARKER_IN_PAYLOAD = "POLLUTION_GUARD_MARKER_IN_PAYLOAD";
+
+const POLLUTION_MARKER_RE =
+  /\[Read output capped at |…\(truncated\)…|\.\.\.\(live output truncated\)\.\.\./;
+
+/** Reject a single write/edit payload that carries a host-generated truncation marker. */
+export function assertNoPollutionMarkersInText(text: string, path: string): void {
+  if (POLLUTION_MARKER_RE.test(text)) {
+    throw new Error(
+      `${POLLUTION_GUARD_MARKER_IN_PAYLOAD}: refusing to write read-cap/truncation markers into ${path}. ` +
+        "The payload contains a host-generated truncation notice ([Read output capped at …], …(truncated)…, or ...(live output truncated)...), which is not file content. " +
+        "Re-read the file (windows are content-pure) and write only verified content.",
+    );
+  }
+}
+
+/** Reject replacement texts carrying pollution markers; oldText stays exempt. */
+export function assertNoPollutionMarkers(edits: readonly Edit[], path: string): void {
+  for (const edit of edits) {
+    assertNoPollutionMarkersInText(edit.newText, path);
+  }
+}
 /** Context lines shown before/after the best-match line in a windowed mismatch dump. */
 const EDIT_MISMATCH_CONTEXT_LINES = 4;
 
@@ -484,6 +517,9 @@ export function createEditToolDefinition(
           const noOpEdits = editSets.noOpEdits;
           realEdits = editSets.realEdits;
           validateNoOpEditTargets(normalizedContent, noOpEdits, realEdits, path);
+          // BUG-072 (F3): reject polluted replacement payloads before anything
+          // is written. oldText is exempt so polluted files stay repairable.
+          assertNoPollutionMarkers(realEdits, path);
           // No-op: not terminal — the model may still be mid-task and needs a
           // continuation, not an ended turn.
           if (realEdits.length === 0) {

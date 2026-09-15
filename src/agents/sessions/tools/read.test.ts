@@ -442,7 +442,12 @@ describe("read tool", () => {
     );
 
     expect(textContent(result)).toContain("Resolved filename");
-    expect(textContent(result)).toContain("cursor=");
+    // BUG-072 (F1): continuation guidance is structured (details.continuation),
+    // never spliced into page content.
+    expect(textContent(result)).not.toContain("cursor=");
+    expect(
+      (result.details as { continuation?: { cursor?: number } }).continuation?.cursor,
+    ).toBeGreaterThan(0);
     expect(Buffer.byteLength(textContent(result), "utf8")).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
   });
 
@@ -522,8 +527,10 @@ describe("read tool", () => {
       ).continuation;
       expect(continuation).toMatchObject({ kind: "cursor", offset: 1 });
       expect(continuation?.cursor).toBeGreaterThan(cursor ?? 0);
-      expect(output).toContain(`offset=1, cursor=${continuation?.cursor}`);
-      reconstructed += output.replace(/\n\n\[Showing[^\]]*\]$/, "");
+      // BUG-072 (F1): no in-band continuation notices in page content.
+      expect(output).not.toContain("offset=1");
+      expect(output).not.toContain("cursor=");
+      reconstructed += output;
       cursor = continuation?.cursor;
     }
 
@@ -655,10 +662,12 @@ describe("read tool", () => {
       undefined,
       {} as never,
     );
-    const firstChunk = textContent(first).replace(/\n\n\[Showing[^\]]*\]$/, "");
-    const secondChunk = textContent(second).replace(/\n\n\[\d+ more lines[^\]]*\]$/, "");
+    // BUG-072 (F1): page content carries no continuation/truncation notices;
+    // chunks reconstruct the original file exactly.
+    const firstChunk = textContent(first);
+    const secondChunk = textContent(second);
     expect(`${firstChunk}${secondChunk}`).toBe(longLine);
-    expect(textContent(second)).toContain("offset=3");
+    expect(textContent(second)).not.toContain("offset=3");
   });
 
   it("preserves ordinary multi-line selection and trailing newlines", async () => {
@@ -699,7 +708,10 @@ describe("read tool", () => {
       {} as never,
     );
 
-    expect(textContent(result)).toBe("alpha\n\n[2 more lines in file. Use offset=2 to continue.]");
+    // BUG-072 (F1): the continuation hint is structural (details.continuation),
+    // so the content is exactly the first line.
+    expect(textContent(result)).toBe("alpha");
+    expect((result.details as { continuation?: { offset?: number } }).continuation?.offset).toBe(2);
   });
 
   it.each([

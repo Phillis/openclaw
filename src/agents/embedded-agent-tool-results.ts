@@ -21,7 +21,12 @@ import {
   readToolResultStatus,
 } from "./tool-result-error.js";
 
-const TOOL_RESULT_MAX_CHARS = 8000;
+// BUG-072 (F2): the old 8000-char hard cut was what turned every >8KB read
+// bridged into a nested/exec context into a content-losing partial view (the
+// BUG-072 undercounts). Read pages already self-cap at 50KB via read-page, and
+// the transcript display path separately elides >32KB nested results
+// (createNestedToolActivity), so 32KB bounds disk without losing page content.
+const TOOL_RESULT_MAX_CHARS = 32 * 1024;
 const TOOL_ERROR_MAX_CHARS = 400;
 const LIVE_EXEC_OUTPUT_MAX_CHARS = 8000;
 const TOOL_DENIAL_ERROR_CODES = ["SYSTEM_RUN_DENIED", "INVALID_REQUEST"] as const;
@@ -35,11 +40,30 @@ const SENSITIVE_STRUCTURED_HEADER_FIELDS = new Set([
   "x-auth-token",
 ]);
 
-function truncateToolText(text: string): string {
+/**
+ * BUG-072 (F2): budget-aware, content-safe truncation. Never appends an
+ * in-band marker (`…(truncated)…`) to the text — that marker is ordinary
+ * string data to any downstream consumer and was persisted into files by
+ * read-all+write-back lanes. Truncation is reported as structured metadata
+ * instead (see `truncateToolTextWithMeta`).
+ */
+export type ToolTextTruncation = { truncated: true; originalChars: number };
+
+export function truncateToolTextWithMeta(text: string): {
+  text: string;
+  truncation?: ToolTextTruncation;
+} {
   if (text.length <= TOOL_RESULT_MAX_CHARS) {
-    return text;
+    return { text };
   }
-  return `${truncateUtf16Safe(text, TOOL_RESULT_MAX_CHARS)}\n…(truncated)…`;
+  return {
+    text: truncateUtf16Safe(text, TOOL_RESULT_MAX_CHARS),
+    truncation: { truncated: true, originalChars: text.length },
+  };
+}
+
+function truncateToolText(text: string): string {
+  return truncateToolTextWithMeta(text).text;
 }
 
 export function truncateLiveExecOutput(text: string): string {
@@ -285,6 +309,8 @@ export function sanitizeToolResult(result: unknown): unknown {
   // Deep-redact the entire result so any top-level or nested string is
   // protected, not just `details` and text content blocks.
   const out = redactModelVisibleSecrets(preCleaned);
+  let truncatedChars = 0;
+  let anyTextTruncated = false;
   const content = Array.isArray(out.content) ? out.content : null;
   if (content) {
     out.content = content.map((item) => {
@@ -293,12 +319,24 @@ export function sanitizeToolResult(result: unknown): unknown {
       }
       const entry = item as Record<string, unknown>;
       if (readStringValue(entry.type) === "text" && typeof entry.text === "string") {
-        const text = truncateToolText(entry.text);
+        const { text, truncation } = truncateToolTextWithMeta(entry.text);
+        if (truncation) {
+          anyTextTruncated = true;
+          truncatedChars = Math.max(truncatedChars, truncation.originalChars);
+        }
         // Nonplain blocks can still be caller-owned; spread keeps JSON keys as own data.
         return Object.assign({ ...entry }, { text });
       }
       return entry;
     });
+  }
+  if (anyTextTruncated && out && typeof out === "object" && !Array.isArray(out)) {
+    // BUG-072 (F2): structured truncation metadata on the bridged result —
+    // never an in-band marker inside the payload text.
+    (out as Record<string, unknown>).textTruncation = {
+      truncated: true,
+      originalChars: truncatedChars,
+    };
   }
   return out;
 }
@@ -411,13 +449,23 @@ function resolveToolResultContentBlocks(result: object): unknown[] {
   return [record];
 }
 
-export function extractToolResultText(result: unknown): string | undefined {
+/**
+ * Extract model-visible text from a tool result plus structured truncation
+ * metadata (BUG-072 F2). The text itself never carries a truncation marker.
+ */
+export function extractToolResultTextWithMeta(result: unknown): {
+  text?: string;
+  truncation?: ToolTextTruncation;
+} {
   if (typeof result === "string") {
     const trimmed = redactModelVisibleToolPayloadText(redactInlineDataUriValue(result)).trim();
-    return trimmed ? truncateToolText(trimmed) : undefined;
+    if (!trimmed) {
+      return {};
+    }
+    return truncateToolTextWithMeta(trimmed);
   }
   if (!result || typeof result !== "object") {
-    return undefined;
+    return {};
   }
   const content = resolveToolResultContentBlocks(result);
   const texts = collectTextContentBlocks(content)
@@ -427,7 +475,7 @@ export function extractToolResultText(result: unknown): string | undefined {
     })
     .filter((value): value is string => Boolean(value));
   if (texts.length > 0) {
-    return truncateToolText(texts.join("\n"));
+    return truncateToolTextWithMeta(texts.join("\n"));
   }
   const structuredTexts: string[] = [];
   for (const item of content) {
@@ -437,9 +485,13 @@ export function extractToolResultText(result: unknown): string | undefined {
     }
   }
   if (structuredTexts.length === 0) {
-    return undefined;
+    return {};
   }
-  return truncateToolText(structuredTexts.join("\n"));
+  return truncateToolTextWithMeta(structuredTexts.join("\n"));
+}
+
+export function extractToolResultText(result: unknown): string | undefined {
+  return extractToolResultTextWithMeta(result).text;
 }
 
 export function extractToolErrorCode(result: unknown): string | undefined {
