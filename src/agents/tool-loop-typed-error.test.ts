@@ -435,10 +435,13 @@ describe("typed_error_repeat detector", () => {
     ).toBe(true);
   });
 
-  it("leaves exec outcome identity untouched", () => {
+  it("joins exec cell storms into the typed breaker (BUG-073)", () => {
     const state = createState();
-    for (let index = 0; index < 6; index += 1) {
-      const record = recordOutcome({
+    let stormIndex = 0;
+    const recordExecStorm = () => {
+      const index = stormIndex;
+      stormIndex += 1;
+      return recordOutcome({
         state,
         toolName: "exec",
         toolParams: { command: `report-${index}` },
@@ -454,6 +457,68 @@ describe("typed_error_repeat detector", () => {
             status: "completed",
             exitCode: 1,
             aggregated: `lane held\ntyped_code=EXPECTED_VERSION_CONFLICT\n(command exited with code 1)`,
+          },
+        },
+      });
+    };
+    const first = recordExecStorm();
+    expect(first).toMatchObject({ outcomeKind: "terminal-exec-failure" });
+    expect(first?.failureIdentityFamily).toBe("exec");
+    expect(first?.typedErrorCode).toBe("EXPECTED_VERSION_CONFLICT");
+    expect(first?.failureIdentityHash).toBeDefined();
+    recordExecStorm();
+    // Two failures stay silent; the third warns; the fifth blocks.
+    expect(
+      detectToolCallLoop(state, "exec", { command: "report-2" }, enabledLoopDetectionConfig),
+    ).toEqual({ stuck: false });
+    recordExecStorm();
+    const warning = detectToolCallLoop(
+      state,
+      "exec",
+      { command: "report-3" },
+      enabledLoopDetectionConfig,
+    );
+    expect(warning).toMatchObject({
+      stuck: true,
+      level: "warning",
+      detector: "typed_error_repeat",
+      count: 3,
+    });
+    recordExecStorm();
+    recordExecStorm();
+    const critical = detectToolCallLoop(
+      state,
+      "exec",
+      { command: "report-5" },
+      enabledLoopDetectionConfig,
+    );
+    expect(critical).toMatchObject({
+      stuck: true,
+      level: "critical",
+      detector: "typed_error_repeat",
+      count: 5,
+    });
+  });
+
+  it("exec without a typed code keeps shape-based identity only", () => {
+    const state = createState();
+    for (let index = 0; index < 6; index += 1) {
+      const record = recordOutcome({
+        state,
+        toolName: "exec",
+        toolParams: { command: `report-${index}` },
+        toolCallId: `exec-${index}`,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: `lane held\n(command exited with code 1)`,
+            },
+          ],
+          details: {
+            status: "completed",
+            exitCode: 1,
+            aggregated: `lane held\n(command exited with code 1)`,
           },
         },
       });

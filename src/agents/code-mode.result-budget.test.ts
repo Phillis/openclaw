@@ -234,7 +234,7 @@ describe("fresh producer results through persistence and model guards", () => {
         if (fail) {
           expect(details).toMatchObject({
             code: "internal_error",
-            failurePhase: "bridge",
+            failurePhase: "guest",
             bridgeDispatchStarted: true,
             error: expect.stringMatching(/^Error: DIAGNOSTIC.*\[error truncated\]$/s),
           });
@@ -331,10 +331,13 @@ describe("fresh producer results through persistence and model guards", () => {
             break;
           }
           expect(continuation.kind).toBe("cursor");
-          const chunk = pageText.slice(0, pageText.lastIndexOf("\n\n["));
+          // BUG-072 (F1): pages are content-pure; continuation state is
+          // structural only.
+          expect(pageText).not.toContain("[Read output capped at");
+          expect(pageText).not.toContain(`cursor=${collected.length}`);
+          const chunk = pageText;
           expect(chunk.length).toBeGreaterThan(0);
           collected += chunk;
-          expect(text(sent)).toContain(`cursor=${collected.length}`);
           expect(collected).toBe(source.slice(0, collected.length));
         }
         expect(collected).toBe(source);

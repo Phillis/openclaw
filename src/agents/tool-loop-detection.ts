@@ -365,6 +365,17 @@ function hashToolOutcome(
         details.timedOut !== true &&
         output !== "" &&
         output !== `(Command exited with code ${exitCode})`;
+      // Typed codes in exec output/error text now join the typed breaker
+      // (BUG-073): rotated-argument cell storms are invisible to the shape
+      // hash. The typed identity supersedes the exec-shape hash when present.
+      const typedIdentity = readTypedErrorIdentity(toolName, params, text);
+      if (typedIdentity) {
+        return {
+          resultHash: execHash,
+          ...(terminalFailure ? { outcomeKind: "terminal-exec-failure" as const } : {}),
+          ...typedIdentity,
+        };
+      }
       return terminalFailure
         ? {
             resultHash: execHash,

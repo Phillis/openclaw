@@ -269,7 +269,7 @@ describe("Code Mode restart-safe replay", () => {
 
     expect(failed).toMatchObject({
       status: "failed",
-      failurePhase: "bridge",
+      failurePhase: "input",
       bridgeDispatchStarted: true,
       replaySafe: true,
     });

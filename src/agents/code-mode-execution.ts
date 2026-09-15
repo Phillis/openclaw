@@ -140,11 +140,7 @@ export async function runCodeModeExec(params: {
       {
         status: "failed" as const,
         code,
-        failurePhase: bridgeDispatch.started
-          ? ("bridge" as const)
-          : code === "invalid_input"
-            ? ("input" as const)
-            : ("host" as const),
+        failurePhase: code === "invalid_input" ? ("input" as const) : ("host" as const),
         bridgeDispatchStarted: bridgeDispatch.started,
         replaySafe: params.restartSafe,
         telemetry: telemetry(runtime),
@@ -417,7 +413,7 @@ async function settleCodeModeResult(params: {
         {
           status: "failed" as const,
           code: "invalid_input" as const,
-          failurePhase: params.bridgeDispatch.started ? ("bridge" as const) : ("input" as const),
+          failurePhase: "input" as const,
           bridgeDispatchStarted: params.bridgeDispatch.started,
           replaySafe: true,
           telemetry: telemetry(params.runtime),
@@ -458,7 +454,11 @@ async function settleCodeModeResult(params: {
       ? {
           status: result.status,
           code: result.code,
-          failurePhase: params.bridgeDispatch.started ? ("bridge" as const) : result.failurePhase,
+          // The worker owns failure classification (input vs guest); the host
+          // settle path must not clobber it with the bridgeDispatch telemetry
+          // flag — a guest error after a successful dispatch is still a guest
+          // error (BUG-073).
+          failurePhase: result.failurePhase,
           bridgeDispatchStarted: params.bridgeDispatch.started,
         }
       : { status: result.status }),
@@ -522,7 +522,7 @@ export async function runWait(params: {
       // parking it would pin a process-global active-run slot until TTL expiry.
       if (signal.aborted) {
         disposeCodeModeRun(state.runId);
-        return { ...codeModeAbortedResult(state), failurePhase: "bridge" as const };
+        return { ...codeModeAbortedResult(state), failurePhase: "host" as const };
       }
       // Not ready, or ready without a usable resume budget: keep the snapshot
       // so the next wait can resume with a fresh deadline instead of losing
@@ -595,7 +595,7 @@ export async function runWait(params: {
       {
         status: "failed" as const,
         code: aborted ? ("aborted" as const) : codeModeFailureCode(error),
-        failurePhase: "bridge" as const,
+        failurePhase: "host" as const,
         bridgeDispatchStarted: state.bridgeDispatch.started,
         replaySafe: state.replaySafe,
         telemetry: telemetry(state.runtime),

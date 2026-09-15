@@ -40,7 +40,7 @@ describe("Code Mode preflight repair", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(details).toMatchObject({
       status: "failed",
-      failurePhase: "bridge",
+      failurePhase: "guest",
       bridgeDispatchStarted: true,
     });
     expect(details.error).toContain("timeout");
@@ -66,7 +66,7 @@ describe("Code Mode preflight repair", () => {
     expect(preflight.execute).not.toHaveBeenCalled();
     expect(details).toMatchObject({
       status: "failed",
-      failurePhase: "bridge",
+      failurePhase: "guest",
       bridgeDispatchStarted: true,
     });
   });
@@ -92,7 +92,7 @@ describe("Code Mode preflight repair", () => {
     expect(target.execute).toHaveBeenCalledOnce();
     expect(details).toMatchObject({
       status: "failed",
-      failurePhase: "bridge",
+      failurePhase: "guest",
       bridgeDispatchStarted: true,
     });
   });

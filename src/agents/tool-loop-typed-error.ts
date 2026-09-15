@@ -1,8 +1,9 @@
 // Typed-error retry identity for loop detection: tool error contracts stamp
 // codes like EXPECTED_VERSION_CONFLICT, and retries rotate arguments, so every
 // identical-args detector misses the storm. Identity = outer tool (+ dispatched
-// inner id) + typed code, args-agnostic by design. Exec is excluded: it owns its
-// own failure identity and no-progress handling.
+// inner id) + typed code, args-agnostic by design. Exec participates when its
+// output/error text carries a typed code (BUG-073): its shape-based no-progress
+// hashing cannot see rotated-argument cell storms.
 import { sha256Hex } from "../infra/crypto-digest.js";
 import type { ToolCallRecord } from "../logging/diagnostic-session-state.js";
 import {
@@ -42,9 +43,6 @@ export function readTypedErrorIdentity(
   params: unknown,
   text: string,
 ): TypedErrorIdentity | undefined {
-  if (toolName === "exec") {
-    return undefined;
-  }
   const typedErrorCode = extractTypedErrorCode(text);
   const family = typedErrorCode ? resolveTypedFailureFamily(toolName, params) : undefined;
   if (!typedErrorCode || !family) {

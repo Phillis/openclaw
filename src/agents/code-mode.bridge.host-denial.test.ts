@@ -153,7 +153,7 @@ describe("Code Mode subscribed host denial", () => {
         );
         expect(details).toMatchObject({
           status: "failed",
-          failurePhase: "bridge",
+          failurePhase: "guest",
           bridgeDispatchStarted: true,
         });
         expect(details.error).toContain(error);

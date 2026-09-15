@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { formatErrorMessage } from "../infra/errors.js";
+import { extractErrorCode, formatErrorMessage } from "../infra/errors.js";
 import { NODE_FS_LIST_DIR_COMMAND } from "../infra/node-commands.js";
 import { createLazyRuntimeNamedExport } from "../shared/lazy-runtime.js";
 import { parseNodeList } from "../shared/node-list-parse.js";
@@ -412,8 +412,16 @@ export async function runBridgeRequest(params: {
     }
     return { id: params.request.id, ok: true, value };
   } catch (error) {
+    // Preserve the typed code across the guest boundary: the only channel into
+    // the cell is the message string, so stamp a breaker-readable token when
+    // the error carries a structured code (BUG-073).
+    const code = extractErrorCode(error);
+    const message =
+      typeof code === "string" && /^[A-Z0-9_]{2,64}$/u.test(code)
+        ? `${formatErrorMessage(error)} (typed_code=${code})`
+        : formatErrorMessage(error);
     const boundedError = boundCodeModeError(
-      redactCodeModeCatalogIds(formatErrorMessage(error), catalogProjection.bindings),
+      redactCodeModeCatalogIds(message, catalogProjection.bindings),
       params.maxOutputBytes,
     );
     return {

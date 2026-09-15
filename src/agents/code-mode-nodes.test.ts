@@ -296,9 +296,29 @@ describe("Code Mode nodes", () => {
 
     expect(details).toMatchObject({
       status: "failed",
-      failurePhase: "bridge",
+      failurePhase: "guest",
       bridgeDispatchStarted: true,
     });
+  });
+
+  // BUG-073 regression: a guest error AFTER a successful bridge dispatch must
+  // stay "guest" — the settle path previously clobbered it to "bridge" whenever
+  // any dispatch had started.
+  it("keeps a post-dispatch guest error classified as guest (BUG-073)", async () => {
+    const details = await runUntilCompleted({
+      ...createHarness(),
+      code: `
+        await nodes.list();
+        throw new Error("cell blew up after a successful call");
+      `,
+    });
+
+    expect(details).toMatchObject({
+      status: "failed",
+      failurePhase: "guest",
+      bridgeDispatchStarted: true,
+    });
+    expect(String(details.error)).toContain("cell blew up after a successful call");
   });
 
   it("reports a guest error after nodes.invoke without replaying the invocation", async () => {
@@ -313,7 +333,7 @@ describe("Code Mode nodes", () => {
 
     expect(details).toMatchObject({
       status: "failed",
-      failurePhase: "bridge",
+      failurePhase: "guest",
       bridgeDispatchStarted: true,
     });
     expect(gatewayMocks.callGatewayTool).toHaveBeenCalledWith(

@@ -13,7 +13,7 @@
  *
  * Bridge half: the guest's pending request rejects with that message and the
  * controller `settle` wrapper re-throws it (controller source `settle`), so an
- * uncaught guest rejection finalizes the exec with failurePhase=bridge and
+ * uncaught guest rejection finalizes the exec with failurePhase=guest and
  * replaySafe=false (code-mode-execution.ts).
  */
 import { expectDefined } from "@openclaw/normalization-core";
@@ -91,7 +91,7 @@ describe("code-mode nested terminal read surfaces the terminal tool's sessionId 
     resetCodeModeTestState();
   });
 
-  it("reproduces the live failure: nested terminal read without sessionId fails with phase=bridge and replaySafe=false", async () => {
+  it("reproduces the live failure: nested terminal read without sessionId fails with phase=guest and replaySafe=false", async () => {
     const {
       config,
       catalogRef,
@@ -123,7 +123,7 @@ describe("code-mode nested terminal read surfaces the terminal tool's sessionId 
     });
 
     expect(details.status).toBe("failed");
-    expect(details.failurePhase).toBe("bridge");
+    expect(details.failurePhase).toBe("guest");
     expect(details.replaySafe).toBe(false);
     expect(String(details.error)).toContain("sessionId required");
   });

@@ -500,7 +500,7 @@ export function codeModeAbortedResult(params: {
     {
       status: "failed" as const,
       code: "aborted" as const,
-      failurePhase: params.bridgeDispatch.started ? ("bridge" as const) : ("host" as const),
+      failurePhase: "host" as const,
       bridgeDispatchStarted: params.bridgeDispatch.started,
       replaySafe: params.replaySafe,
       telemetry: telemetry(params.runtime),

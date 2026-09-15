@@ -538,7 +538,7 @@ describe("Code Mode agent-loop error recovery", () => {
         isError: true,
         details: expect.objectContaining({
           status: "failed",
-          failurePhase: "bridge",
+          failurePhase: "guest",
           bridgeDispatchStarted: true,
           error: expect.stringContaining("terminal unavailable"),
         }),
@@ -576,7 +576,7 @@ describe("Code Mode agent-loop error recovery", () => {
         isError: true,
         details: expect.objectContaining({
           status: "failed",
-          failurePhase: "bridge",
+          failurePhase: "guest",
           bridgeDispatchStarted: true,
           error: expect.stringContaining("value"),
         }),
