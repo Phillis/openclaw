@@ -8,6 +8,10 @@ import type {
   ToolLoopWarning,
 } from "./types.js";
 
+export type InternalShouldStopAfterTurnHook = NonNullable<
+  import("./types.js").AgentLoopConfig["shouldStopAfterTurn"]
+>;
+
 export type InternalBeforeToolBatchHook = (
   context: InternalBeforeToolBatchContext,
   signal?: AbortSignal,
@@ -92,6 +96,26 @@ export function getInternalBeforeToolBatch(agent: object): InternalBeforeToolBat
 }
 
 /** Attach scheduler lifecycle ownership without widening the public admission result. */
+const shouldStopAfterTurnByAgent = new WeakMap<object, InternalShouldStopAfterTurnHook>();
+
+/** Install OpenClaw-owned graceful turn budget without adding a plugin-facing Agent option. */
+export function setInternalShouldStopAfterTurn(
+  agent: object,
+  hook: InternalShouldStopAfterTurnHook | undefined,
+): void {
+  if (hook) {
+    shouldStopAfterTurnByAgent.set(agent, hook);
+  } else {
+    shouldStopAfterTurnByAgent.delete(agent);
+  }
+}
+
+export function getInternalShouldStopAfterTurn(
+  agent: object,
+): InternalShouldStopAfterTurnHook | undefined {
+  return shouldStopAfterTurnByAgent.get(agent);
+}
+
 export function attachInternalToolBatchLifecycle(
   result: InternalBeforeToolBatchResult,
   lifecycle: InternalToolBatchLifecycle,

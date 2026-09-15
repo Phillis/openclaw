@@ -399,6 +399,13 @@ function createAttemptAbortError(signal: AbortSignal): Error {
   return error;
 }
 
+export const RUN_BUDGET_TIMEOUT_ERROR_CODE = "OPENCLAW_RUN_BUDGET_TIMEOUT";
+
+export function createRunBudgetTimeoutError() {
+  const error = createTimeoutAbortReason();
+  return Object.assign(error, { code: RUN_BUDGET_TIMEOUT_ERROR_CODE });
+}
+
 function createTimeoutAbortReason(): Error {
   const error = new Error("request timed out");
   error.name = "TimeoutError";
