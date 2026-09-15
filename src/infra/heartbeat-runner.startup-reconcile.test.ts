@@ -6,11 +6,13 @@ import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/sessio
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { markStartupOrphanedHeartbeatIsolatedSessions } from "./heartbeat-runner-session.js";
 
-function seedEntry(params: { storePath: string; sessionKey: string; isolated: boolean }): {
-  sessionId: string;
-} {
+async function seedEntry(params: {
+  storePath: string;
+  sessionKey: string;
+  isolated: boolean;
+}): Promise<{ sessionId: string }> {
   const sessionId = `session-${params.isolated ? "isolated" : "plain"}`;
-  void replaceSessionEntry(
+  await replaceSessionEntry(
     { storePath: params.storePath, sessionKey: params.sessionKey },
     {
       sessionId,
@@ -26,14 +28,20 @@ function seedEntry(params: { storePath: string; sessionKey: string; isolated: bo
 it("marks stale running isolated heartbeat windows failed exactly once at boot", async () => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-hb-reconcile-"));
   const storePath = path.join(stateDir, "sessions.json");
+  // The merged session stack resolves custom store paths through the state db
+  // registry, so seed/discovery/assertions must share one OPENCLAW_STATE_DIR.
+  const prevStateDir = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = stateDir;
   const isolatedKey = "agent:main:main:heartbeat";
   const plainKey = "agent:main:plain-running";
   try {
-    seedEntry({ storePath, sessionKey: isolatedKey, isolated: true });
-    seedEntry({ storePath, sessionKey: plainKey, isolated: false });
+    await seedEntry({ storePath, sessionKey: isolatedKey, isolated: true });
+    await seedEntry({ storePath, sessionKey: plainKey, isolated: false });
 
     const first = await markStartupOrphanedHeartbeatIsolatedSessions({
-      cfg: { session: { store: storePath } },
+      // Upstream store discovery fences unconfigured paths: the cfg must name
+      // the owning agent for the seeded store to be scanned.
+      cfg: { agents: { entries: { main: {} } }, session: { store: storePath } },
       stateDir,
     });
     expect(first).toEqual({ marked: 1, skipped: 1 });
@@ -58,12 +66,13 @@ it("marks stale running isolated heartbeat windows failed exactly once at boot",
     // running row (owned by main-session recovery, not this reconcile) is seen
     // and skipped; the isolated row is no longer a running candidate at all.
     const second = await markStartupOrphanedHeartbeatIsolatedSessions({
-      cfg: { session: { store: storePath } },
+      cfg: { agents: { entries: { main: {} } }, session: { store: storePath } },
       stateDir,
     });
     expect(second).toEqual({ marked: 0, skipped: 1 });
     expect(loadSessionEntry({ storePath, sessionKey: isolatedKey })?.status).toBe("failed");
   } finally {
+    process.env.OPENCLAW_STATE_DIR = prevStateDir;
     closeOpenClawAgentDatabasesForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   }
@@ -72,6 +81,10 @@ it("marks stale running isolated heartbeat windows failed exactly once at boot",
 it("ignores terminal isolated heartbeat windows entirely", async () => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-hb-reconcile-done-"));
   const storePath = path.join(stateDir, "sessions.json");
+  // The merged session stack resolves custom store paths through the state db
+  // registry, so seed/discovery/assertions must share one OPENCLAW_STATE_DIR.
+  const prevStateDir = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = stateDir;
   const key = "agent:main:main:heartbeat";
   try {
     await replaceSessionEntry(
@@ -85,7 +98,7 @@ it("ignores terminal isolated heartbeat windows entirely", async () => {
       },
     );
     const result = await markStartupOrphanedHeartbeatIsolatedSessions({
-      cfg: { session: { store: storePath } },
+      cfg: { agents: { entries: { main: {} } }, session: { store: storePath } },
       stateDir,
     });
     expect(result).toEqual({ marked: 0, skipped: 0 });
@@ -93,6 +106,7 @@ it("ignores terminal isolated heartbeat windows entirely", async () => {
     expect(untouched?.status).toBe("done");
     expect(untouched?.abortedLastRun).toBeUndefined();
   } finally {
+    process.env.OPENCLAW_STATE_DIR = prevStateDir;
     closeOpenClawAgentDatabasesForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   }

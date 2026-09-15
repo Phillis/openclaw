@@ -49,6 +49,11 @@ import {
   resolveStaleHeartbeatIsolatedSessionKey,
 } from "./heartbeat-runner-session.js";
 import { isHeartbeatEnabledForAgent, resolveHeartbeatIntervalMs } from "./heartbeat-summary.js";
+import {
+  emitHeartbeatWindowRotation,
+  resolveHeartbeatWindowRotation,
+  type HeartbeatWindowRotation,
+} from "./heartbeat-transcript-window.js";
 import { resolveHeartbeatVisibility } from "./heartbeat-visibility.js";
 import {
   inferHeartbeatWakeSourceFromReason,
@@ -453,6 +458,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
           sessionKey: staleIsolatedSessionKey,
         })?.entry
       : undefined;
+    let windowRotation: HeartbeatWindowRotation | undefined;
     const removals: SessionEntryLifecycleRemoval[] = staleIsolatedSessionKey
       ? [
           {
@@ -494,6 +500,13 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
               ...cronSession.sessionEntry,
               heartbeatIsolatedBaseSessionKey: isolatedBaseSessionKey,
             };
+            // Transcript-window cap lifecycle (BUG-070-era invariant): rotating
+            // isolated windows emit a reset event so the window stays bounded.
+            windowRotation = resolveHeartbeatWindowRotation({
+              previousEntry: currentEntry,
+              heartbeat,
+              nextSessionId: nextEntry.sessionId,
+            });
             runSessionEntry = nextEntry;
             return nextEntry;
           },
@@ -505,6 +518,13 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
       log.warn("heartbeat: failed to archive stale isolated session transcript", {
         err: formatErrorMessage(lifecycleResult.artifactCleanupError),
         sessionKey: staleIsolatedSessionKey,
+      });
+    }
+    if (windowRotation) {
+      emitHeartbeatWindowRotation({
+        ...windowRotation,
+        agentId,
+        sessionKey: isolatedSessionKey,
       });
     }
     outboundPolicySessionKey = isolatedBaseSessionKey;

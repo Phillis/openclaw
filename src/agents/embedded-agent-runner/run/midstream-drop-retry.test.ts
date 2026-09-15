@@ -74,16 +74,21 @@ function makeMidStreamDropInput(options?: {
     authProfileStore: { version: 1, profiles: {}, usageStats: {} },
     runtimeAuthRetry: false,
     maybeRefreshRuntimeAuthForAuthError: vi.fn(async () => false),
-    resolveAuthProfileFailureReason: () => null,
     emptyErrorRetries: options?.emptyErrorRetries ?? 0,
     overloadProfileRotations: 0,
-    overloadProfileRotationLimit: 1,
     previousRetryFailoverReason: null,
-    maybeMarkAuthProfileFailure: vi.fn(async () => {}),
-    getTransientRetryCount: () => 0,
-    maybeRetryTransient: vi.fn(options?.maybeRetryTransient ?? (async () => false)),
-    advanceAuthProfile: vi.fn(async () => false),
-    advanceRateLimitAuthProfile: vi.fn(async () => false),
+    // Upstream consolidated the failover collaborators under `input.failover`
+    // (EmbeddedRunFailoverRetryController pick); the mid-stream port consults
+    // failover.maybeRetryTransient once the local budget is exhausted.
+    failover: {
+      resolveAuthProfileFailureReason: () => null,
+      maybeMarkAuthProfileFailure: vi.fn(async () => {}),
+      advanceAuthProfile: vi.fn(async () => false),
+      advanceRateLimitAuthProfile: vi.fn(async () => false),
+      transientRetryCount: 0,
+      overloadProfileRotationLimit: 1,
+      maybeRetryTransient: vi.fn(options?.maybeRetryTransient ?? (async () => false)),
+    },
     traceAttempts: [],
     suspendForFailure: vi.fn(),
     suspensionSessionId: "session:midstream-drop-test",

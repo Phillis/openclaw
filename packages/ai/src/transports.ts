@@ -23,6 +23,7 @@ export * from "./transports/provider-compaction-replay.js";
 export * from "./transports/provider-transport-stream.js";
 export * from "./transports/responses-image-payload-sanitizer.js";
 export * from "./transports/simple-completion-transport.js";
+export * from "./transports/finish-less-stream-retry.js";
 export * from "./transports/transport-stream-shared.js";
 export {
   isCodeModeModelVisibleToolName,

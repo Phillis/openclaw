@@ -4,9 +4,9 @@ import {
   listActiveEmbeddedRunSessionKeys,
 } from "../agents/embedded-agent-runner/active-run-projections.js";
 import {
+  discoverRestartRecoveryStoreTargets,
   hasCurrentProcessOwner,
   normalizeStringSet,
-  resolveRestartRecoveryStorePaths,
 } from "../agents/main-session-recovery/main-session-restart-recovery-shared.js";
 import {
   canonicalizeMainSessionAlias,
@@ -52,12 +52,13 @@ export async function markStartupOrphanedHeartbeatIsolatedSessions(params: {
   const result = { marked: 0, skipped: 0 };
   const activeSessionIds = normalizeStringSet(listActiveEmbeddedRunSessionIds());
   const activeSessionKeys = normalizeStringSet(listActiveEmbeddedRunSessionKeys());
-  for (const storePath of await resolveRestartRecoveryStorePaths({
+  for (const storeTarget of await discoverRestartRecoveryStoreTargets({
     cfg: params.cfg,
     stateDir: params.stateDir,
+    statuses: ["running"],
   })) {
     const storeResult = await applySessionEntryReplacements<{ marked: number; skipped: number }>({
-      storePath,
+      storePath: storeTarget.storePath,
       statuses: ["running"],
       requireWriteSuccess: true,
       update: (entries) => {

@@ -109,19 +109,25 @@ export async function persistHeartbeatOutcome(params: {
   occurredAt: number;
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
-  if (params.response.notify || params.response.outcome === "no_change") {
+  if (params.response.notify) {
     return;
   }
+  // The outcome column CHECK only admits weighted tool outcomes, so quiet
+  // no_change completions persist as `done` + reason "no_change". That reason
+  // is the stable audit marker for a silent poll; any model reason text is
+  // dropped in favor of the contract so quiet rows stay queryable.
+  const quietNoChange = params.response.outcome === "no_change";
   const taskNames = normalizeTaskNames(params.taskNames ?? []);
   const values: HeartbeatOutcomeInsert = {
     session_key: params.sessionKey,
     run_session_key: params.runSessionKey,
-    outcome: params.response.outcome,
+    outcome: quietNoChange ? "done" : params.response.outcome,
     summary:
       boundedText(params.response.summary, HEARTBEAT_OUTCOME_SUMMARY_MAX_CHARS) ??
       params.response.outcome,
-    response_reason:
-      boundedText(params.response.reason, HEARTBEAT_OUTCOME_REASON_MAX_CHARS) ?? null,
+    response_reason: quietNoChange
+      ? "no_change"
+      : (boundedText(params.response.reason, HEARTBEAT_OUTCOME_REASON_MAX_CHARS) ?? null),
     priority: params.response.priority ?? null,
     next_check:
       boundedText(params.response.nextCheck, HEARTBEAT_OUTCOME_NEXT_CHECK_MAX_CHARS) ?? null,

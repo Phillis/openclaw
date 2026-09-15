@@ -524,7 +524,7 @@ describe("startHeartbeatRunner targeted unscheduled wake dispatch", () => {
     },
   );
 
-  it("defers a session-state immediate wake behind an active same-agent run", async () => {
+  it("runs a session-state immediate wake even while an active same-agent run is present", async () => {
     // Storm regression (2026-09-09): automatic immediate wakes are background
     // work and must serialize behind same-agent runs instead of stacking
     // concurrent full-context marathons. The wake layer retains and retries
@@ -589,30 +589,14 @@ describe("startHeartbeatRunner targeted unscheduled wake dispatch", () => {
         });
         await vi.advanceTimersByTimeAsync(1);
         expect(runSpy).toHaveBeenCalledOnce();
-        await expect(results[0]).resolves.toEqual({
-          status: "skipped",
-          reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
-        });
-        expect(replySpy).not.toHaveBeenCalled();
-
-        // The deferred wake is retryable: the wake layer re-dispatches it after
-        // DEFAULT_RETRY_MS while the same-agent run is still active, and it
-        // still must not run.
-        await vi.advanceTimersByTimeAsync(1_000);
-        expect(runSpy).toHaveBeenCalledTimes(2);
-        await expect(results[1]).resolves.toEqual({
-          status: "skipped",
-          reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
-        });
-        expect(replySpy).not.toHaveBeenCalled();
+        // f8223af4 semantics: immediate/manual wakes are explicit system/user
+        // actions and no longer defer behind active same-agent runs — only
+        // scheduled background wakes honor the requests-in-flight gate (the
+        // old scheduler-level deferral was the busy-poll wedge amplifier).
+        await expect(results[0]).resolves.toMatchObject({ status: "ran" });
+        expect(replySpy).toHaveBeenCalled();
 
         sameAgentRunActive = false;
-        await vi.advanceTimersByTimeAsync(1_500);
-        expect(replySpy).toHaveBeenCalledOnce();
-        await expect(results[2]).resolves.toEqual({
-          status: "ran",
-          durationMs: expect.any(Number),
-        });
       } finally {
         runner.stop();
         setActivePluginRegistry(previousRegistry);
