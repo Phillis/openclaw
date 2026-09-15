@@ -41,6 +41,73 @@ const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
 
 /** Hard cap on transcript context embedded into a budget-stopped finalization prompt. */
 const BUDGET_STOPPED_NARRATION_CHAR_LIMIT = 1200;
+/** Hard cap on the embedded last-successful-tool-result text. */
+const BUDGET_STOPPED_TOOL_RESULT_CHAR_LIMIT = 300;
+/** Hard cap on the embedded per-tool outcome tally line. */
+const BUDGET_STOPPED_TOOL_TALLY_CHAR_LIMIT = 600;
+
+/**
+ * Compact per-tool outcome tally from toolMetas (toolName + isError), e.g.
+ * "edit: 27 call(s), 26 failed". Bounded so pathological tool mixes stay
+ * within the finalizer prompt budget.
+ */
+function buildPerToolOutcomeTally(
+  toolMetas: IncompleteTurnAttempt["toolMetas"],
+): string | undefined {
+  const tally = new Map<string, { calls: number; failures: number }>();
+  for (const meta of toolMetas) {
+    const entry = tally.get(meta.toolName) ?? { calls: 0, failures: 0 };
+    entry.calls += 1;
+    if (meta.isError === true) {
+      entry.failures += 1;
+    }
+    tally.set(meta.toolName, entry);
+  }
+  if (tally.size === 0) {
+    return undefined;
+  }
+  const rendered = [...tally.entries()]
+    .map(([toolName, { calls, failures }]) =>
+      failures > 0
+        ? `${toolName}: ${calls} call(s), ${failures} failed`
+        : `${toolName}: ${calls} call(s)`,
+    )
+    .join("; ");
+  return rendered.length > BUDGET_STOPPED_TOOL_TALLY_CHAR_LIMIT
+    ? `${rendered.slice(0, BUDGET_STOPPED_TOOL_TALLY_CHAR_LIMIT)}…`
+    : rendered;
+}
+
+/** Text of the LAST SUCCESSFUL tool result in the snapshot, truncated for the finalizer. */
+function findLastSuccessfulToolResultText(
+  messagesSnapshot: IncompleteTurnAttempt["messagesSnapshot"],
+): string | undefined {
+  for (let index = messagesSnapshot.length - 1; index >= 0; index--) {
+    const message = messagesSnapshot[index];
+    if (!message || (message as { role?: unknown }).role !== "toolResult") {
+      continue;
+    }
+    if ((message as { isError?: unknown }).isError === true) {
+      continue;
+    }
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) {
+      continue;
+    }
+    const text = content
+      .flatMap((block) => {
+        const typed = block as { type?: unknown; text?: unknown } | null;
+        return typed?.type === "text" && typeof typed.text === "string" ? [typed.text] : [];
+      })
+      .join("\n");
+    if (text.length > 0) {
+      return text.length > BUDGET_STOPPED_TOOL_RESULT_CHAR_LIMIT
+        ? `${text.slice(0, BUDGET_STOPPED_TOOL_RESULT_CHAR_LIMIT)}…`
+        : text;
+    }
+  }
+  return undefined;
+}
 
 /**
  * A budget-stopped run's finalizer executes instruction-only (no transcript
@@ -53,6 +120,8 @@ function buildBudgetStoppedFinalizationContext(attempt: IncompleteTurnAttempt): 
     toolMetas: attempt.toolMetas,
     fallbackHadFailure: Boolean(attempt.lastToolError),
   });
+  const perToolTally = buildPerToolOutcomeTally(attempt.toolMetas);
+  const lastSuccessfulToolResult = findLastSuccessfulToolResultText(attempt.messagesSnapshot);
   const contextLines = [
     "Context: the run stopped at its tool-call budget before it could produce a final answer. Summarize and report the outcome below instead of claiming missing access.",
     lastNarration
@@ -60,6 +129,10 @@ function buildBudgetStoppedFinalizationContext(attempt: IncompleteTurnAttempt): 
       : undefined,
     toolSummary
       ? `Tool activity this run: ${toolSummary.calls} call(s) via ${toolSummary.tools.join(", ")}, ${toolSummary.failures} failure(s).`
+      : undefined,
+    perToolTally ? `Per-tool outcomes: ${perToolTally}.` : undefined,
+    lastSuccessfulToolResult
+      ? `Last successful tool result (may be partial): "${lastSuccessfulToolResult}"`
       : undefined,
   ];
   return contextLines.filter((line) => line !== undefined).join(" ");

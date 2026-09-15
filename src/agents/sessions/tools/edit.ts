@@ -26,6 +26,7 @@ import {
   type Edit,
   type EditDiffError,
   type EditDiffResult,
+  findClosestMatchLine,
   generateDiffString,
   generateUnifiedPatch,
   splitNoOpEdits,
@@ -93,6 +94,8 @@ type LegacyEditToolInput = Record<string, unknown> & {
 
 const EDIT_MISMATCH_MESSAGE = "Could not find the exact text in";
 const EDIT_MISMATCH_HINT_LIMIT = 800;
+/** Context lines shown before/after the best-match line in a windowed mismatch dump. */
+const EDIT_MISMATCH_CONTEXT_LINES = 4;
 
 /**
  * Pluggable operations for the edit tool.
@@ -190,14 +193,47 @@ function validateEditInput(input: EditToolInput): {
   return { path: input.path, edits: input.edits };
 }
 
-function appendMismatchHint(error: Error, currentContent: string): Error {
-  const snippet =
-    currentContent.length <= EDIT_MISMATCH_HINT_LIMIT
-      ? currentContent
-      : `${truncateUtf16Safe(currentContent, EDIT_MISMATCH_HINT_LIMIT)}\n... (truncated)`;
-  const enhanced = new Error(`${error.message}\nCurrent file contents:\n${snippet}`, {
-    cause: error,
-  });
+/**
+ * Window the mismatch snippet around the best-match line for the failing
+ * oldText, so large files surface the failing region instead of only the file
+ * head (BUG-067: an 8.4KB file's failing line 42 was never reachable in the
+ * 800-char head dump). Falls back to the head-of-file behavior when no focus
+ * line is known.
+ */
+function buildMismatchSnippet(content: string, focusLine: number | undefined): string {
+  if (content.length <= EDIT_MISMATCH_HINT_LIMIT) {
+    return content;
+  }
+  if (focusLine === undefined) {
+    return `${truncateUtf16Safe(content, EDIT_MISMATCH_HINT_LIMIT)}\n... (truncated)`;
+  }
+  const lines = content.split("\n");
+  const focusIndex = Math.min(Math.max(focusLine - 1, 0), Math.max(lines.length - 1, 0));
+  const start = Math.max(0, focusIndex - EDIT_MISMATCH_CONTEXT_LINES);
+  const end = Math.min(lines.length, focusIndex + 1 + EDIT_MISMATCH_CONTEXT_LINES);
+  const prefix = start > 0 ? `... (lines 1-${start} omitted)\n` : "";
+  let snippetLines = lines.slice(start, end);
+  let snippet = prefix + snippetLines.join("\n") + (end < lines.length ? "\n... (truncated)" : "");
+  // Trim from the tail (farthest from the focus line) until within budget.
+  while (snippet.length > EDIT_MISMATCH_HINT_LIMIT && snippetLines.length > 1) {
+    snippetLines = snippetLines.slice(0, -1);
+    snippet = prefix + snippetLines.join("\n") + "\n... (truncated)";
+  }
+  if (snippet.length > EDIT_MISMATCH_HINT_LIMIT) {
+    snippet = `${truncateUtf16Safe(snippet, EDIT_MISMATCH_HINT_LIMIT)}\n... (truncated)`;
+  }
+  return snippet;
+}
+
+function appendMismatchHint(
+  error: Error,
+  currentContent: string,
+  focusLine: number | undefined,
+): Error {
+  const enhanced = new Error(
+    `${error.message}\nCurrent file contents:\n${buildMismatchSnippet(currentContent, focusLine)}`,
+    { cause: error },
+  );
   enhanced.stack = error.stack;
   return enhanced;
 }
@@ -511,7 +547,17 @@ export function createEditToolDefinition(
             };
           }
           if (normalizedError.message.includes(EDIT_MISMATCH_MESSAGE)) {
-            throw appendMismatchHint(normalizedError, currentContent);
+            // Locate the failing region for the dump window: prefer the first
+            // real edit whose oldText is absent from the current content.
+            const { text: retryContent } = stripBom(currentContent);
+            const retryNormalized = normalizeToLF(retryContent);
+            const failingOldText = realEdits.find(
+              (edit) => !retryNormalized.includes(normalizeToLF(edit.oldText)),
+            )?.oldText;
+            const focusLine = failingOldText
+              ? findClosestMatchLine(retryNormalized, normalizeToLF(failingOldText))
+              : undefined;
+            throw appendMismatchHint(normalizedError, currentContent, focusLine);
           }
           // No-op: the edit matched but produced identical content. Not
           // terminal — see the realEdits.length===0 case above.

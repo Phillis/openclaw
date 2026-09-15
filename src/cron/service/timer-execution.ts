@@ -214,10 +214,40 @@ export async function executeJobCore(
     );
     let heartbeatResult: HeartbeatRunResult;
     try {
-      heartbeatResult = await (state.deps.requestHeartbeatAndWait?.(
+      // BUG-070 F1: bound the settlement wait to one cadence + slack. A monitor
+      // beat whose wake never settles is definitionally wedged (observed live
+      // 2026-09-15: requestHeartbeatAndWait hung for the full 3600 s watchdog
+      // window, serially consuming one cadence per retry with zero runner-side
+      // side effects). Fail fast into the normal error/backoff path instead.
+      const settlementBoundMs =
+        effectiveJob.schedule.kind === "every" &&
+        typeof effectiveJob.schedule.everyMs === "number" &&
+        effectiveJob.schedule.everyMs > 0
+          ? effectiveJob.schedule.everyMs + 120_000
+          : undefined;
+      const pendingSettlement = state.deps.requestHeartbeatAndWait?.(
         heartbeatWake,
         abortSignal ? { abortSignal } : {},
-      ) ?? { status: "failed", reason: "heartbeat wake settlement unavailable" });
+      );
+      heartbeatResult = (await (settlementBoundMs
+        ? Promise.race([
+            pendingSettlement,
+            new Promise<HeartbeatRunResult>((resolve) => {
+              const boundTimer = setTimeout(
+                () =>
+                  resolve({
+                    status: "failed",
+                    reason: "heartbeat-wake-settlement-timeout",
+                  }),
+                settlementBoundMs,
+              );
+              boundTimer.unref?.();
+            }),
+          ])
+        : pendingSettlement)) ?? {
+        status: "failed",
+        reason: "heartbeat wake settlement unavailable",
+      };
     } finally {
       releaseHeartbeatWait();
     }

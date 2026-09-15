@@ -172,7 +172,7 @@ function resolveAppendedMessageSeq(params: {
 // session JSONL useful for debugging without letting metadata blobs dominate
 // disk, replay repair, transcript broadcasts, or future tooling that reads raw
 // sessions. Model-visible text belongs in tool result `content`.
-const MAX_PERSISTED_TOOL_RESULT_DETAILS_BYTES = 8_192;
+const MAX_PERSISTED_TOOL_RESULT_DETAILS_BYTES = 65_536;
 const MAX_PERSISTED_DETAIL_STRING_CHARS = 2_000;
 const MAX_PERSISTED_DETAIL_SESSION_COUNT = 10;
 const MAX_PERSISTED_DETAIL_FALLBACK_STRING_CHARS = 200;

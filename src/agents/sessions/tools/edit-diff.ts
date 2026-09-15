@@ -293,6 +293,7 @@ const EDIT_CANDIDATE_MIN_SCORE = 0.45;
 
 interface EditCandidate {
   lineNumber: number;
+  /** Full (untruncated-per-line) source line used for scoring and comparison. */
   line: string;
   score: number;
 }
@@ -310,10 +311,12 @@ function truncateCandidateText(text: string, maxChars: number): string {
   return text.slice(0, cut);
 }
 
+// Lines are NOT truncated per line here: scoring and difference description must
+// run on the full line, otherwise a divergence past the display cap is invisible
+// (BUG-067: a mismatch at char 157 rendered as "(100% match)"). Per-line
+// truncation is applied only for display, in getCandidateHint.
 function getBoundedLines(text: string, maxLines: number, maxScanChars: number): string[] {
-  return truncateCandidateText(text, maxScanChars)
-    .split("\n", maxLines)
-    .map((line) => truncateCandidateText(line, EDIT_CANDIDATE_MAX_LINE_CHARS));
+  return truncateCandidateText(text, maxScanChars).split("\n", maxLines);
 }
 
 function scoreCandidate(expected: string, candidate: string): number {
@@ -369,9 +372,44 @@ function describeCandidateDifference(expected: string, found: string): string {
   }
 
   const differenceIndex = firstDifferenceIndex(expected, found);
-  return differenceIndex === -1
-    ? "this line matches; surrounding lines differ"
-    : `first difference at column ${differenceIndex + 1}`;
+  if (differenceIndex === -1) {
+    return "this line matches; surrounding lines differ";
+  }
+  const column = differenceIndex + 1;
+  // When the compared line(s) exceed the display cap, say so explicitly instead
+  // of implying the shown prefix is the whole story.
+  const comparedRegionTruncated =
+    expected.length > EDIT_CANDIDATE_MAX_LINE_CHARS || found.length > EDIT_CANDIDATE_MAX_LINE_CHARS;
+  return comparedRegionTruncated && column > EDIT_CANDIDATE_MAX_LINE_CHARS
+    ? `first difference at column ${column} (line exceeds the ${EDIT_CANDIDATE_MAX_LINE_CHARS}-char display cap; compare the full line)`
+    : `first difference at column ${column}`;
+}
+
+function getCandidateMatches(content: string, oldText: string): EditCandidate[] {
+  const expected = getBoundedLines(oldText, 32, 4096).reduce(
+    (best, line) => (line.trim().length > best.trim().length ? line : best),
+    "",
+  );
+  if (!expected.trim()) {
+    return [];
+  }
+  return getBoundedLines(content, EDIT_CANDIDATE_MAX_LINES, EDIT_CANDIDATE_MAX_SCAN_CHARS)
+    .map((line, index): EditCandidate | undefined => {
+      const score = scoreCandidate(expected, line);
+      return score >= EDIT_CANDIDATE_MIN_SCORE ? { lineNumber: index + 1, line, score } : undefined;
+    })
+    .filter((candidate): candidate is EditCandidate => candidate !== undefined)
+    .toSorted((left, right) => right.score - left.score || left.lineNumber - right.lineNumber)
+    .slice(0, EDIT_CANDIDATE_LIMIT);
+}
+
+/**
+ * Line number (1-based) of the best fuzzy candidate for oldText in content,
+ * or undefined when no plausible candidate exists. Used to window the edit
+ * tool's mismatch dump around the actual failing region (BUG-067).
+ */
+export function findClosestMatchLine(content: string, oldText: string): number | undefined {
+  return getCandidateMatches(content, oldText)[0]?.lineNumber;
 }
 
 function getCandidateHint(content: string, oldText: string): string {
@@ -382,27 +420,20 @@ function getCandidateHint(content: string, oldText: string): string {
   if (!expected.trim()) {
     return "";
   }
-  const candidates = getBoundedLines(
-    content,
-    EDIT_CANDIDATE_MAX_LINES,
-    EDIT_CANDIDATE_MAX_SCAN_CHARS,
-  )
-    .map((line, index): EditCandidate | undefined => {
-      const score = scoreCandidate(expected, line);
-      return score >= EDIT_CANDIDATE_MIN_SCORE ? { lineNumber: index + 1, line, score } : undefined;
-    })
-    .filter((candidate): candidate is EditCandidate => candidate !== undefined)
-    .toSorted((left, right) => right.score - left.score || left.lineNumber - right.lineNumber)
-    .slice(0, EDIT_CANDIDATE_LIMIT);
+  const candidates = getCandidateMatches(content, oldText);
   if (candidates.length === 0) {
     return "";
   }
-  const expectedDisplay = JSON.stringify(expected);
+  const expectedDisplay = JSON.stringify(
+    truncateCandidateText(expected, EDIT_CANDIDATE_MAX_LINE_CHARS),
+  );
   return (
     "\nClosest matching lines:\n" +
     candidates
       .map((candidate) => {
-        const foundDisplay = JSON.stringify(candidate.line);
+        const foundDisplay = JSON.stringify(
+          truncateCandidateText(candidate.line, EDIT_CANDIDATE_MAX_LINE_CHARS),
+        );
         const differenceIndex = firstDifferenceIndex(expectedDisplay, foundDisplay);
         const markerIndex =
           differenceIndex === -1
