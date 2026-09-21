@@ -25,6 +25,7 @@ export const AgentDefaultsSchema = AgentDefaultsBaseSchema.safeExtend({
     .safeExtend({ agentId: z.string().trim().min(1).optional() })
     .optional(),
   heartbeatZeroTranscriptKillMs: z.number().int().min(0).optional(),
+  heartbeatTurnReceiptRequired: z.boolean().optional(),
   sandbox: AgentSandboxSchema,
 })
   .strict()

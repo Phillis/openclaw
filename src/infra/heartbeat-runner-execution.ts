@@ -97,6 +97,19 @@ export type HeartbeatDeps = OutboundSendDeps &
       sessionKey: string;
       sinceMs: number;
     }) => number;
+    /**
+     * W2 evidence seam: whether a persisted heartbeat outcome row exists for
+     * this run (run_session_key match, occurred_at >= sinceMs). Production
+     * resolves to the read-only agent-database probe; tests inject
+     * deterministic answers.
+     */
+    hasHeartbeatRunOutcome?: (scope: {
+      agentId: string;
+      storePath: string;
+      sessionKey: string;
+      runSessionKey: string;
+      sinceMs: number;
+    }) => boolean;
   };
 
 function hasActiveRunForAgent(agentId: string, listSessionKeys: () => readonly string[]): boolean {

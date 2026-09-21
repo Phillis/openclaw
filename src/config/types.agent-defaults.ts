@@ -98,6 +98,16 @@ export type AgentDefaultsConfig = SchemaAgentDefaultsConfig & {
    * the watchdog; unset resolves to the default-on 300_000 ms window.
    */
   heartbeatZeroTranscriptKillMs?: number;
+  /**
+   * W2 turn-receipt enforcement for beat lanes: when enabled, a completed
+   * beat must leave disk evidence of its work — a persisted heartbeat outcome
+   * row, at least one transcript event for the run session, or an explicit
+   * heartbeat tool response — before its `ran` result is authored. A beat
+   * with no evidence fails as `turn-receipt-missing` (failureKind
+   * local_kill, circuit-neutral) and the cron retry re-runs it. Default
+   * false: unset keeps today's behavior byte-identical.
+   */
+  heartbeatTurnReceiptRequired?: boolean;
   sandbox?: AgentSandboxConfig;
 };
 export type AgentCompactionMode = "default" | "safeguard";

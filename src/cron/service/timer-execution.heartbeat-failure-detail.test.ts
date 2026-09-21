@@ -185,3 +185,59 @@ describe("cron zero-transcript watchdog kill schedules the retry circuit-neutral
     );
   });
 });
+
+describe("cron turn-receipt-missing kill schedules the retry circuit-neutral (W2)", () => {
+  // W2: a receipt-enforced beat that completed with NO disk evidence of work
+  // fails as turn-receipt-missing with failureKind local_kill — the same
+  // definitive-local-observation semantics as the P0-2 watchdog kill: the
+  // ordinary recurring retry is scheduled (BUG-089 C machinery stays the only
+  // re-execution path) and no provider failover reason is persisted.
+  it("schedules the recurring retry and persists no provider failover reason", async () => {
+    const store = heartbeatFailureFixtures.makeStorePath();
+    const scheduledAt = Date.parse("2026-02-06T10:05:00.000Z");
+    const cronJob = makeMonitorJob("turn-receipt-missing-retry", scheduledAt);
+    await saveCronStore(store.storePath, { version: 1, jobs: [cronJob] });
+
+    const log = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      trace: vi.fn(),
+    };
+    const state = createCronRegressionState({
+      storePath: store.storePath,
+      defaultAgentId: "main",
+      log,
+      requestHeartbeatAndWait: vi.fn<NonNullable<CronServiceDeps["requestHeartbeatAndWait"]>>(
+        async () => ({
+          status: "failed" as const,
+          reason: "turn-receipt-missing",
+          failureKind: "local_kill" as const,
+        }),
+      ),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+
+    await onTimer(state);
+
+    const job = requireJob(state, cronJob.id);
+    expect(job.state.lastStatus).toBe("error");
+    // The receipt error_text carries the missing-receipt reason (P0-1
+    // composition; no failure text is attached to this local observation).
+    expect(job.state.lastError).toBe("heartbeat failed: turn-receipt-missing");
+    // Circuit-neutral: resolveCronRunErrorReason returns undefined for
+    // local_transient, so no classified provider reason is persisted.
+    expect(job.state.lastErrorReason).toBeUndefined();
+    expect(job.state.consecutiveErrors).toBe(1);
+    expect(job.state.lastRunAtMs).toBeDefined();
+    expect(job.state.nextRunAtMs).toBe(job.state.lastRunAtMs + 30_000);
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: cronJob.id,
+        retryCategory: undefined,
+      }),
+      "cron: scheduling recurring retry after transient error",
+    );
+  });
+});

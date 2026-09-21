@@ -85,6 +85,18 @@ export function resolveHeartbeatZeroTranscriptKillMs(cfg?: OpenClawConfig) {
   return DEFAULT_HEARTBEAT_ZERO_TRANSCRIPT_KILL_MS;
 }
 
+/**
+ * Resolves `agents.defaults.heartbeatTurnReceiptRequired` (W2): when true, a
+ * completed beat must leave disk evidence of work — a persisted heartbeat
+ * outcome row, at least one transcript event for its run session, or an
+ * explicit heartbeat tool response — before its `ran` result is authored;
+ * otherwise the beat fails as `turn-receipt-missing` and the cron retry
+ * re-runs it. Default OFF: unset keeps current behavior byte-identical.
+ */
+export function resolveHeartbeatTurnReceiptRequired(cfg?: OpenClawConfig) {
+  return cfg?.agents?.defaults?.heartbeatTurnReceiptRequired === true;
+}
+
 export function resolveHeartbeatChannelPlugin(channel: string): ChannelPlugin | undefined {
   const activePlugin = getActivePluginChannelRegistry()?.channels.find(
     (entry) => entry.plugin.id === channel,

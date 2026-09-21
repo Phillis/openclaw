@@ -6,6 +6,7 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
 import type { HeartbeatWakeSource } from "./heartbeat-wake.js";
@@ -181,6 +182,50 @@ export async function persistHeartbeatOutcome(params: {
     toDatabaseOptions(resolveSqliteScope(params)),
     { operationLabel: "heartbeat.outcome.persist" },
   );
+}
+
+/**
+ * W2 turn-receipt evidence probe (a): whether a persisted heartbeat outcome
+ * row exists for THIS run — the row the run wrote (run_session_key match)
+ * at or after the beat's start. Read-only over the exact agent database the
+ * outcome writer uses; never creates, registers, or migrates a database. A
+ * missing table counts as no row; unexpected read failures surface to the
+ * caller, which treats them as unknown evidence (fail-open).
+ */
+export function hasHeartbeatOutcomeForRun(params: {
+  agentId?: string;
+  defaultAgentId?: string;
+  env?: NodeJS.ProcessEnv;
+  storePath: string;
+  sessionKey: string;
+  runSessionKey: string;
+  minOccurredAt: number;
+}): boolean {
+  const sessionKey = params.sessionKey.trim();
+  if (!sessionKey) {
+    return false;
+  }
+  const resolved = resolveSqliteScope({
+    agentId: params.agentId,
+    defaultAgentId: params.defaultAgentId,
+    env: params.env,
+    storePath: params.storePath,
+    sessionKey,
+  });
+  const result = withOpenClawAgentDatabaseReadOnly((database) => {
+    const row = database.db
+      .prepare("SELECT run_session_key, occurred_at FROM heartbeat_outcomes WHERE session_key = ?")
+      // SAFETY: node:sqlite .get returns UnknownRecord; the query selects exactly
+      // the two columns checked below.
+      .get(sessionKey) as
+      | { run_session_key?: string | null; occurred_at?: number | null }
+      | undefined;
+    if (!row || row.run_session_key !== params.runSessionKey) {
+      return false;
+    }
+    return typeof row.occurred_at === "number" && row.occurred_at >= params.minOccurredAt;
+  }, toDatabaseOptions(resolved));
+  return result.found ? result.value : false;
 }
 
 /** Claims the latest outcome for one user run while allowing that run's retries. */

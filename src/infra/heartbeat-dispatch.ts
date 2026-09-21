@@ -41,7 +41,11 @@ import { classifyHeartbeatAgentOutcome } from "./heartbeat-delivery-normalizatio
 import { HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
 import { persistHeartbeatOutcome } from "./heartbeat-outcome-store.js";
-import { heartbeatLog as log, resolveHeartbeatChannelPlugin } from "./heartbeat-runner-config.js";
+import {
+  heartbeatLog as log,
+  resolveHeartbeatChannelPlugin,
+  resolveHeartbeatTurnReceiptRequired,
+} from "./heartbeat-runner-config.js";
 import type {
   HeartbeatRunOptions,
   PreparedHeartbeatRun,
@@ -76,6 +80,11 @@ type HeartbeatDispatch = {
   projectTarget?: boolean;
   /** Bounded real failure text captured at classification time (P0-1). */
   failureText?: string;
+  /**
+   * W2: set once the run's reply settled — true when the run produced an
+   * explicit heartbeat tool response, which is itself turn-receipt evidence.
+   */
+  sawHeartbeatToolResponse?: boolean;
   /**
    * Set once the P0-2 watchdog kill has authoritatively owned this beat's run
    * result; later cancelled/skipped settlements of the abandoned turn must not
@@ -256,6 +265,9 @@ async function prepareHeartbeatDispatchReply(
       policy.failureText = truncateUtf16Safe(trimmedFailureText, HEARTBEAT_FAILURE_TEXT_MAX_CHARS);
     }
   }
+  // W2: an explicit heartbeat tool response is itself turn-receipt evidence,
+  // independent of whether its outcome row reached the store.
+  policy.sawHeartbeatToolResponse = heartbeatResponse !== undefined;
   if (scratch !== undefined && response) {
     if (!preflight.scratchJobId) {
       log.warn("heartbeat: scratch update ignored because no monitor job exists");
@@ -350,6 +362,18 @@ async function prepareHeartbeatDispatchReply(
   if (outcome.kind === "ack") {
     if ("response" in outcome && outcome.response) {
       await record(outcome.response);
+    } else if (resolveHeartbeatTurnReceiptRequired(cfg)) {
+      // W2: quiet acks (empty final / SILENT_REPLY_TOKEN) are the DESIGNED
+      // quiet signal, but receipt enforcement requires disk evidence for
+      // every completed beat. Route the quiet ack through the outcome store
+      // so its receipt is provable on disk — outcome done + the stable
+      // enforcement marker as summary (mirrors the no_change → done mapping;
+      // the outcome CHECK forbids a quiet literal).
+      await record({
+        outcome: "done",
+        notify: false,
+        summary: "quiet beat (receipt enforced)",
+      });
     }
     await restoreActivity();
     await suppressSelected();

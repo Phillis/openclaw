@@ -13,12 +13,14 @@ import type { MsgContext } from "../auto-reply/templating.js";
 import { formatErrorMessage } from "./errors.js";
 import { createHeartbeatDispatch, deliverHeartbeatDispatch } from "./heartbeat-dispatch.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
+import { hasHeartbeatOutcomeForRun } from "./heartbeat-outcome-store.js";
 import {
   DEFAULT_HEARTBEAT_TOOL_LOOP_BUDGET,
   heartbeatLog,
   isHeartbeatTypingEnabled,
   resolveHeartbeatChannelPlugin,
   resolveHeartbeatTimeoutOverrideSeconds,
+  resolveHeartbeatTurnReceiptRequired,
   resolveHeartbeatTypingIntervalSeconds,
 } from "./heartbeat-runner-config.js";
 import {
@@ -35,6 +37,119 @@ import {
 } from "./heartbeat-zero-transcript-watchdog.js";
 import { markSessionEventWakeWorkStarted } from "./session-event-wake.js";
 
+/** W2: the definitive local reason for a completed beat with no disk evidence of work. */
+export const HEARTBEAT_TURN_RECEIPT_MISSING_REASON = "turn-receipt-missing";
+
+type HeartbeatTurnReceiptScope = {
+  receiptRequired: boolean;
+  agentId: string;
+  storePath: string;
+  /** Base/policy session key the heartbeat outcome store rows are keyed by. */
+  sessionKey: string;
+  runSessionKey: string;
+  startedAt: number;
+  sawHeartbeatToolResponse: boolean;
+  deps?: HeartbeatRunOptions["deps"];
+  channel?: string;
+  accountId?: string;
+  useIndicator: boolean;
+};
+
+/**
+ * W2 disk-evidence probe for one completed beat. Evidence is ANY of:
+ * (a) a persisted heartbeat outcome row for this run (run_session_key match,
+ * occurred_at >= run start), (b) at least one transcript event for the run
+ * session since run start (the P0-2 probe; the deps seam keeps tests
+ * deterministic), or (c) an explicit heartbeat tool response. Probe failures
+ * are UNKNOWN evidence — never a definitive miss (the P0-2 watchdog's
+ * probe-failure semantics): fail open and keep the beat's result rather than
+ * failing runs on observer breakage.
+ */
+async function hasHeartbeatTurnReceiptEvidence(scope: HeartbeatTurnReceiptScope): Promise<boolean> {
+  try {
+    if (scope.sawHeartbeatToolResponse) {
+      return true;
+    }
+    const injectedOutcomeProbe = scope.deps?.hasHeartbeatRunOutcome;
+    const hasOutcome = injectedOutcomeProbe
+      ? Boolean(
+          await Promise.resolve(
+            injectedOutcomeProbe({
+              agentId: scope.agentId,
+              storePath: scope.storePath,
+              sessionKey: scope.sessionKey,
+              runSessionKey: scope.runSessionKey,
+              sinceMs: scope.startedAt,
+            }),
+          ),
+        )
+      : hasHeartbeatOutcomeForRun({
+          agentId: scope.agentId,
+          storePath: scope.storePath,
+          sessionKey: scope.sessionKey,
+          runSessionKey: scope.runSessionKey,
+          minOccurredAt: scope.startedAt,
+        });
+    if (hasOutcome) {
+      return true;
+    }
+    const countTranscriptEvents = resolveHeartbeatZeroTranscriptProbeDefaults({
+      deps: scope.deps,
+    }).countTranscriptEvents;
+    const events = await Promise.resolve(
+      countTranscriptEvents({
+        agentId: scope.agentId,
+        storePath: scope.storePath,
+        sessionKey: scope.runSessionKey,
+        sinceMs: scope.startedAt,
+      }),
+    );
+    return events > 0;
+  } catch (error) {
+    heartbeatLog.warn("heartbeat: turn-receipt evidence probe failed", {
+      agentId: scope.agentId,
+      runSessionKey: scope.runSessionKey,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return true;
+  }
+}
+
+/**
+ * W2 turn-receipt enforcement: when enabled, a `ran` beat result requires
+ * disk evidence of the beat's work. A quiet beat with NO evidence is the
+ * 3x-confirmed dropped step: its result becomes a definitive LOCAL failure
+ * (circuit-neutral — failureKind local_kill, never a provider failover
+ * reason) so the cron retry re-runs the beat and the receipt error_text
+ * carries the missing-receipt reason (P0-1 composition). Non-ran results
+ * pass through untouched; enforcement off is a no-op.
+ */
+async function enforceHeartbeatTurnReceiptResult(
+  result: HeartbeatRunResult,
+  scope: HeartbeatTurnReceiptScope,
+): Promise<HeartbeatRunResult> {
+  if (result.status !== "ran" || !scope.receiptRequired) {
+    return result;
+  }
+  if (await hasHeartbeatTurnReceiptEvidence(scope)) {
+    return result;
+  }
+  const reason = HEARTBEAT_TURN_RECEIPT_MISSING_REASON;
+  emitHeartbeatEvent({
+    status: "failed",
+    reason,
+    durationMs: Date.now() - scope.startedAt,
+    channel: scope.channel,
+    accountId: scope.accountId,
+    indicatorType: scope.useIndicator ? resolveIndicatorType("failed") : undefined,
+  });
+  heartbeatLog.warn(`heartbeat failed: ${reason}`, {
+    agentId: scope.agentId,
+    runSessionKey: scope.runSessionKey,
+  });
+  return { status: "failed", reason, failureKind: "local_kill" };
+}
+
 export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<HeartbeatRunResult> {
   const wake = await resolveHeartbeatWakeStage(opts);
   if (wake.kind === "skipped") {
@@ -48,6 +163,7 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
   }
   const { cfg, agentId, heartbeat, startedAt } = wake;
   const { delivery, visibility, sender, runSessionKey, suppressOriginatingContext } = prepared;
+  const { storePath, sessionKey, outboundPolicySessionKey } = prepared;
   if (!visibility.showAlerts && !visibility.showOk && !visibility.useIndicator) {
     emitHeartbeatEvent({
       status: "skipped",
@@ -101,6 +217,22 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
     killSettleGraceMs: 0,
     log: heartbeatLog,
   });
+  const settleTurnReceiptEnforcedResult = async (
+    result: HeartbeatRunResult,
+  ): Promise<HeartbeatRunResult> =>
+    enforceHeartbeatTurnReceiptResult(result, {
+      receiptRequired: resolveHeartbeatTurnReceiptRequired(cfg),
+      agentId,
+      storePath,
+      sessionKey: outboundPolicySessionKey ?? sessionKey,
+      runSessionKey,
+      startedAt,
+      sawHeartbeatToolResponse: policy.sawHeartbeatToolResponse === true,
+      deps: opts.deps,
+      channel,
+      accountId: delivery.accountId,
+      useIndicator: visibility.useIndicator,
+    });
   try {
     const dispatchPromise = (async () => {
       const { dispatchInboundMessageWithRoutedChannelDispatcher } =
@@ -233,7 +365,7 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
     }
     await dispatchPromise;
     if (policy.result) {
-      return policy.result;
+      return await settleTurnReceiptEnforcedResult(policy.result);
     }
     const execution = resolveReplyOperationAgentTurn(state);
     const reason =
@@ -246,7 +378,7 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
     return { status: "skipped", reason };
   } catch (error) {
     if (policy.result) {
-      return policy.result;
+      return await settleTurnReceiptEnforcedResult(policy.result);
     }
     const reason = formatErrorMessage(error);
     emitHeartbeatEvent({
