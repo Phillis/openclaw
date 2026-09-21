@@ -157,6 +157,29 @@ export function resolveTransientCronRetryDecision(params: {
       reason: "permanent error",
     };
   }
+  if (params.errorClassification?.kind === "local_transient") {
+    // A definitive local observation (e.g. the heartbeat zero-transcript
+    // watchdog) is transient by construction: schedule the ordinary retry
+    // without consulting provider classifications or error-text patterns, and
+    // never attribute the observation to the provider lane.
+    const localConsecutiveErrors = params.consecutiveErrors ?? 0;
+    if (localConsecutiveErrors > DEFAULT_MAX_TRANSIENT_RETRIES) {
+      return {
+        retryable: false,
+        consecutiveErrors: localConsecutiveErrors,
+        reason: "max retries exhausted",
+      };
+    }
+    return {
+      retryable: true,
+      consecutiveErrors: localConsecutiveErrors,
+      backoffMs: errorBackoffMs(
+        localConsecutiveErrors,
+        DEFAULT_ERROR_BACKOFF_SCHEDULE_MS.slice(0, DEFAULT_MAX_TRANSIENT_RETRIES),
+      ),
+      reason: "transient retry",
+    };
+  }
   const retryHint = resolveCronExecutionRetryHint({
     error: params.error,
     retryOn: undefined,

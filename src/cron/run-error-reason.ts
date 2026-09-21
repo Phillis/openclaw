@@ -11,6 +11,13 @@ export function resolveCronRunErrorReason(
   if (classification?.kind === "permanent") {
     return undefined;
   }
+  if (classification?.kind === "local_transient") {
+    // A definitive LOCAL observation (e.g. the heartbeat zero-transcript
+    // watchdog) must stay circuit-neutral: persisting a provider failover
+    // reason would attribute a local wedge to the provider and pollute the
+    // classified-authoritative lane of every later retry decision.
+    return undefined;
+  }
   if (classification?.kind === "reason") {
     return classification.reason;
   }

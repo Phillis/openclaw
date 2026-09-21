@@ -152,7 +152,10 @@ export type CronRunDiagnostics = NonNullable<CronRunLogWireEntry["diagnostics"]>
 /** Explicit execution-error disposition used consistently by retry, history, and alerts. */
 export type CronRunErrorClassification =
   | { kind: "reason"; reason: FailoverReason }
-  | { kind: "permanent" };
+  | { kind: "permanent" }
+  | {
+      kind: "local_transient";
+    };
 
 /** Closed producer-authored facts allowed in operator-facing failure notifications. */
 export type CronFailureNotificationDetail =

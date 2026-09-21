@@ -86,6 +86,17 @@ export type HeartbeatDeps = OutboundSendDeps &
     listActiveReplyRunSessionKeys?: () => readonly string[];
     listActiveEmbeddedRunSessionKeys?: () => readonly string[];
     nowMs?: () => number;
+    /**
+     * P0-2 probe seam: count transcript events appended for the run session at
+     * or after `sinceMs`. Production resolves to the read-only agent-database
+     * count; tests inject deterministic counts.
+     */
+    countRunTranscriptEvents?: (scope: {
+      agentId: string;
+      storePath: string;
+      sessionKey: string;
+      sinceMs: number;
+    }) => number;
   };
 
 function hasActiveRunForAgent(agentId: string, listSessionKeys: () => readonly string[]): boolean {

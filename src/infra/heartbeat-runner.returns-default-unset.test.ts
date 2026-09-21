@@ -1244,7 +1244,8 @@ describe("runHeartbeatOnce", () => {
           OriginatingTo: "120363401234567890@g.us",
           ChatType: "group",
           InternalTurnSource: "heartbeat",
-          Provider: undefined,
+          // BUG-089 C: dispatch diagnostics carry the real channel.
+          Provider: "whatsapp",
         },
         { isHeartbeat: true },
         cfg,
@@ -1309,7 +1310,8 @@ describe("runHeartbeatOnce", () => {
           From: "120363401234567890@g.us",
           To: "120363401234567890@g.us",
           InternalTurnSource: "heartbeat",
-          Provider: undefined,
+          // BUG-089 C: dispatch diagnostics carry the real channel.
+          Provider: "whatsapp",
         },
         { isHeartbeat: true },
         cfg,
@@ -1389,7 +1391,8 @@ describe("runHeartbeatOnce", () => {
             From: peerId,
             To: peerId,
             InternalTurnSource: "heartbeat",
-            Provider: undefined,
+            // BUG-089 C: dispatch diagnostics carry the real channel.
+            Provider: "whatsapp",
           },
           { isHeartbeat: true },
           cfg,

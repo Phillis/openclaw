@@ -74,6 +74,14 @@ type HeartbeatDispatch = {
   deliveryReason?: string;
   deliverySilent?: boolean;
   projectTarget?: boolean;
+  /** Bounded real failure text captured at classification time (P0-1). */
+  failureText?: string;
+  /**
+   * Set once the P0-2 watchdog kill has authoritatively owned this beat's run
+   * result; later cancelled/skipped settlements of the abandoned turn must not
+   * emit a second beat outcome event after the kill's failed event.
+   */
+  watchdogKillAuthoritative?: boolean;
   prepareReply: NonNullable<ReplyOperationRunState["heartbeat"]>["prepareReply"];
 };
 
@@ -94,6 +102,9 @@ export function createHeartbeatDispatch(
 const FIRST_HEARTBEAT_ALERT_PREAMBLE =
   'First heartbeat alert: your bot runs periodic background checks and messages you only when something needs attention. Set agents.defaults.heartbeat.target: "none" to keep these internal.';
 const MAX_HEARTBEAT_TARGET_AWARENESS_CHARS = 1_000;
+
+/** Bounded real-failure-text suffix persisted into cron receipts (P0-1). */
+const HEARTBEAT_FAILURE_TEXT_MAX_CHARS = 500;
 
 function prepareHeartbeatTargetAwareness(params: {
   agentId: string;
@@ -187,7 +198,12 @@ async function prepareHeartbeatDispatchReply(
           ? "agent-runner-cancelled"
           : HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT;
     policy.result = { status: "skipped", reason };
-    emitHeartbeatEvent({ status: "skipped", reason, durationMs: Date.now() - startedAt });
+    // P0-2: a watchdog kill already authored this beat's failed outcome event;
+    // the abandoned turn's later cancelled settlement must not emit a second
+    // skipped event for the same beat.
+    if (!policy.watchdogKillAuthoritative) {
+      emitHeartbeatEvent({ status: "skipped", reason, durationMs: Date.now() - startedAt });
+    }
     return {};
   }
   const channel = delivery.channel !== "none" ? delivery.channel : undefined;
@@ -224,6 +240,22 @@ async function prepareHeartbeatDispatchReply(
     outcome.kind === "failure" || !heartbeatResponse
       ? undefined
       : getReplyPayloadMetadata(heartbeatResponse.payload)?.heartbeatScratchProposal;
+  // P0-1: the delivery-normalization classification consumes replyPayload.text
+  // and discards it — the persisted cron receipt error_text then carries only
+  // the generic "agent-runner-failure" string and the actual runner/provider
+  // failure message is lost (observed 2026-09-21 07:46 beat: "heartbeat failed:
+  // agent-runner-failure" with the real text unrecoverable from any store).
+  // Capture the bounded real text at classification time so the cron receipt
+  // composes "heartbeat failed: agent-runner-failure: <text>". The BUG-089 H
+  // silent-timeout ack path stays untouched — suppressed failures never reach
+  // this branch, and this only affects the FAILURE path's persisted text.
+  if (outcome.kind === "failure" && outcome.reason === "agent-runner-failure") {
+    const rawFailureText = typeof selected?.text === "string" ? selected.text : "";
+    const trimmedFailureText = rawFailureText.trim();
+    if (trimmedFailureText) {
+      policy.failureText = truncateUtf16Safe(trimmedFailureText, HEARTBEAT_FAILURE_TEXT_MAX_CHARS);
+    }
+  }
   if (scratch !== undefined && response) {
     if (!preflight.scratchJobId) {
       log.warn("heartbeat: scratch update ignored because no monitor job exists");
@@ -279,7 +311,11 @@ async function prepareHeartbeatDispatchReply(
     }
     policy.result =
       outcome.kind === "failure"
-        ? { status: "failed", reason: outcome.reason }
+        ? {
+            status: "failed",
+            reason: outcome.reason,
+            ...(policy.failureText ? { failureText: policy.failureText } : {}),
+          }
         : { status: "ran", durationMs: Date.now() - startedAt };
   };
   const stateKey = prepared.outboundPolicySessionKey ?? sessionKey;

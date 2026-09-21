@@ -91,6 +91,13 @@ export type AgentDefaultsConfig = SchemaAgentDefaultsConfig & {
   heartbeat?: NonNullable<z.input<typeof HeartbeatSchema>> & {
     agentId?: string;
   };
+  /**
+   * Kill window for the heartbeat zero-transcript watchdog (P0-2): a running
+   * beat with zero transcript events for its session within this window of run
+   * start is killed and the cron retry is scheduled immediately. 0 disables
+   * the watchdog; unset resolves to the default-on 300_000 ms window.
+   */
+  heartbeatZeroTranscriptKillMs?: number;
   sandbox?: AgentSandboxConfig;
 };
 export type AgentCompactionMode = "default" | "safeguard";

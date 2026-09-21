@@ -37,6 +37,23 @@ import {
   removeQueuedSystemEventHandle,
 } from "./timer-trigger.js";
 
+/** Bounded real-failure-text suffix persisted into cron receipts (P0-1). */
+const HEARTBEAT_FAILURE_DETAIL_MAX_CHARS = 500;
+
+/**
+ * Composes one bounded receipt error text from the cron heartbeat classification
+ * and the real runner-captured failure text (P0-1). Bounded again here so every
+ * path that reaches receipt authoring stays bounded even when a future caller
+ * forwards unbounded text.
+ */
+function appendHeartbeatRunFailureDetail(base: string, failureText?: string): string {
+  const trimmed = typeof failureText === "string" ? failureText.trim() : "";
+  if (!trimmed) {
+    return base;
+  }
+  return `${base}: ${trimmed.length > HEARTBEAT_FAILURE_DETAIL_MAX_CHARS ? trimmed.slice(0, HEARTBEAT_FAILURE_DETAIL_MAX_CHARS) : trimmed}`;
+}
+
 /** Executes a cron job without mutating persisted job state. */
 export async function executeJobCore(
   state: CronServiceState,
@@ -242,7 +259,28 @@ export async function executeJobCore(
             summary: heartbeatTask ? "heartbeat task completed" : "heartbeat completed",
           }
         : heartbeatResult.status === "failed"
-          ? { status: "error" as const, error: `heartbeat failed: ${heartbeatResult.reason}` }
+          ? {
+              status: "error" as const,
+              // P0-1: compose the REAL bounded failure text the runner captured
+              // (replyPayload.text at classification time) so the persisted
+              // receipt error_text — and job lastError — carries the actual
+              // failure string, e.g. "heartbeat failed: agent-runner-failure:
+              // <text>". The H suppression (silent timeout acks) is untouched:
+              // suppressed failures never become error outcomes.
+              error: appendHeartbeatRunFailureDetail(
+                `heartbeat failed: ${heartbeatResult.reason}`,
+                heartbeatResult.failureText,
+              ),
+              // P0-2: a definitive LOCAL watchdog kill is circuit-neutral —
+              // never a provider failover reason; resolveCronRunErrorReason
+              // returns undefined and resolveTransientCronRetryDecision
+              // schedules the ordinary retry without consulting provider
+              // classifications. The scheduled retry stays the only
+              // re-execution path.
+              ...(heartbeatResult.failureKind === "local_kill"
+                ? { errorClassification: { kind: "local_transient" as const } }
+                : {}),
+            }
           : { status: "skipped" as const, error: `heartbeat skipped: ${heartbeatResult.reason}` };
     return triggerEval ? { ...result, triggerEval } : result;
   }

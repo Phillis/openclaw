@@ -62,6 +62,29 @@ export function resolveHeartbeatMaxTranscriptTokens(heartbeat?: HeartbeatConfig)
   return DEFAULT_HEARTBEAT_MAX_TRANSCRIPT_TOKENS;
 }
 
+/**
+ * Default wedge window for the heartbeat zero-transcript watchdog (P0-2, RCA
+ * beat-wedge plan #17): if a RUNNING beat has written ZERO transcript events
+ * for its session within this window of run start, the run is killed and the
+ * ordinary cron retry is scheduled immediately instead of waiting out the full
+ * budget. Every observed beat-wedge failure waited 1685-1800 s for exactly the
+ * same zero-transcript observation.
+ */
+export const DEFAULT_HEARTBEAT_ZERO_TRANSCRIPT_KILL_MS = 300_000;
+
+/**
+ * Resolves the heartbeat zero-transcript watchdog window from
+ * `agents.defaults.heartbeatZeroTranscriptKillMs`; 0 disables the watchdog.
+ * Default ON (missing field resolves to the default window).
+ */
+export function resolveHeartbeatZeroTranscriptKillMs(cfg?: OpenClawConfig) {
+  const raw = cfg?.agents?.defaults?.heartbeatZeroTranscriptKillMs;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+    return Math.floor(raw);
+  }
+  return DEFAULT_HEARTBEAT_ZERO_TRANSCRIPT_KILL_MS;
+}
+
 export function resolveHeartbeatChannelPlugin(channel: string): ChannelPlugin | undefined {
   const activePlugin = getActivePluginChannelRegistry()?.channels.find(
     (entry) => entry.plugin.id === channel,

@@ -11,7 +11,7 @@ import {
 } from "../auto-reply/heartbeat-tool-response.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../auto-reply/reply-payload.js";
 import { normalizeReplyPayloadDirectives } from "../auto-reply/reply/reply-delivery.js";
-import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
+import { HEARTBEAT_TOKEN, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   deleteCronJobScratch,
@@ -352,7 +352,12 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
 
       const result = await runHeartbeat(cfg, replySpy, vi.fn(), { source: "manual" });
 
-      expect(result).toEqual({ status: "failed", reason: "agent-runner-failure" });
+      // P0-1: the failed result additively carries the real bounded failure text.
+      expect(result).toEqual({
+        status: "failed",
+        reason: "agent-runner-failure",
+        failureText: HEARTBEAT_TOKEN,
+      });
       expect(readCronJobScratchState(resolveCronJobsStorePath(), jobId)).toEqual(before);
     });
   });
@@ -695,7 +700,12 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
         lastHeartbeatSentAt?: number;
       }>(storePath);
 
-      expect(failedResult).toEqual({ status: "failed", reason: "agent-runner-failure" });
+      // P0-1: the failed result additively carries the real bounded failure text.
+      expect(failedResult).toEqual({
+        status: "failed",
+        reason: "agent-runner-failure",
+        failureText: GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
+      });
       expectTelegramSend(sendTelegram, { text: HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT, cfg });
       expect(HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT).not.toContain("/new");
       expect(peekSystemEventEntries(sessionKey)).toEqual(inspectedEvents);
@@ -757,7 +767,12 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
 
       const result = await runHeartbeat(cfg, replySpy, sendTelegram);
 
-      expect(result).toEqual({ status: "failed", reason: "agent-runner-failure" });
+      // P0-1: the failed result additively carries the real bounded failure text.
+      expect(result).toEqual({
+        status: "failed",
+        reason: "agent-runner-failure",
+        failureText: "Private heartbeat reasoning.",
+      });
       expect(sendTelegram).not.toHaveBeenCalled();
       expect(peekSystemEventEntries(sessionKey)).toEqual(inspectedEvents);
       expect(getLastHeartbeatEvent()).toMatchObject({
@@ -787,7 +802,12 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
 
       const result = await runHeartbeat(cfg, replySpy, sendTelegram);
 
-      expect(result).toEqual({ status: "failed", reason: "agent-runner-failure" });
+      // P0-1: the failed result additively carries the real bounded failure text.
+      expect(result).toEqual({
+        status: "failed",
+        reason: "agent-runner-failure",
+        failureText: GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
+      });
       expectTelegramSend(sendTelegram, { text: HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT, cfg });
       expect(HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT).not.toContain("/new");
     });
@@ -807,7 +827,12 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
 
       const result = await runHeartbeat(cfg, replySpy, sendTelegram);
 
-      expect(result).toEqual({ status: "failed", reason: "agent-runner-failure" });
+      // P0-1: the failed result additively carries the real bounded failure text.
+      expect(result).toEqual({
+        status: "failed",
+        reason: "agent-runner-failure",
+        failureText: SILENT_REPLY_TOKEN,
+      });
       expect(sendTelegram).not.toHaveBeenCalled();
       expect(peekSystemEventEntries(sessionKey)).toEqual(inspectedEvents);
     });

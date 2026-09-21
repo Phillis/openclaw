@@ -370,9 +370,14 @@ describe("runHeartbeatOnce failure delivery", () => {
           );
         });
         const sendTelegram = vi.fn();
+        // P0-1: the failed result additively carries the real bounded failure text
+        // (the agent-runner-failure branch only; agent-tool-failure keeps no text).
         expect(await runHeartbeat(cfg, replySpy, sendTelegram)).toEqual({
           status: "failed",
           reason,
+          ...(reason === "agent-runner-failure"
+            ? { failureText: GENERIC_EXTERNAL_RUN_FAILURE_TEXT }
+            : {}),
         });
         expect(sendTelegram).not.toHaveBeenCalled();
         expect(getLastHeartbeatEvent()).toMatchObject({ status: "failed", reason, silent: true });

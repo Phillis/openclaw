@@ -75,7 +75,16 @@ export type InternalGetReplyOptions = GetReplyOptions &
   PluginCommandReplyOptions &
   InternalReplySessionOptions &
   ReplyOptionsWithOperationRunState &
-  ReplyOptionsWithAdmissionTicket;
+  ReplyOptionsWithAdmissionTicket & {
+    /**
+     * Hard, non-refundable model-turn budget for background wake dispatches
+     * (heartbeat/tool-loop budget ownership, committed 3f50f6bc2fa). The write
+     * sides (heartbeat runner + embedded candidate) reference this field; the
+     * optional contract was missing from this options type, leaving every
+     * consumer type-red since the budget landed.
+     */
+    maxToolLoopAttempts?: number;
+  };
 
 export function shouldBridgeCliPreambleEvents(opts: InternalGetReplyOptions | undefined): boolean {
   return opts?.commentaryProgressEnabled === true || opts?.progressPreambleEnabled === true;

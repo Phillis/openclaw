@@ -818,6 +818,23 @@ export interface GithubRepositoryPublicationRequests {
   workspace_tree: string | null;
 }
 
+export interface LoopGovernorKindTurnCounts {
+  agent_id: string;
+  alerted: Generated<number>;
+  hour_bucket: number;
+  kind: string;
+  turn_count: Generated<number>;
+  updated_at_ms: number;
+}
+
+export interface LoopGovernorTurnCounts {
+  agent_id: string;
+  alerted: Generated<number>;
+  hour_bucket: number;
+  turn_count: Generated<number>;
+  updated_at_ms: number;
+}
+
 export interface MacosPortGuardianRecords {
   command: string;
   mode: string;
@@ -1791,6 +1808,8 @@ export interface DB {
   github_publication_requests: GithubPublicationRequests;
   github_publication_session_lifecycles: GithubPublicationSessionLifecycles;
   github_repository_publication_requests: GithubRepositoryPublicationRequests;
+  loop_governor_kind_turn_counts: LoopGovernorKindTurnCounts;
+  loop_governor_turn_counts: LoopGovernorTurnCounts;
   macos_port_guardian_records: MacosPortGuardianRecords;
   managed_outgoing_image_records: ManagedOutgoingImageRecords;
   mcp_oauth_pending_authorizations: McpOauthPendingAuthorizations;
