@@ -1,12 +1,12 @@
 import type { AssistantMessage } from "@openclaw/llm-core";
 import { parseStrictFiniteNumber } from "@openclaw/normalization-core/number-coercion";
-import { sleepWithAbort } from "../internal/retry-sleep.js";
+import { sleepWithAbort } from "../../../retry/src/index.js";
+import { usesNativeOpenAICodexResponsesBackend } from "./openai-completions-compat.js";
 import {
   logResponsesFailedNoDetails,
   ResponsesStreamFailure,
   summarizeOpenAITransportError,
 } from "./openai-responses-debug.js";
-import { isOpenAICodexResponsesModel } from "./openai-transport-params.js";
 import { log } from "./openai-transport-shared.js";
 import { failTransportStream } from "./transport-stream-shared.js";
 import { parseRetryAfterSeconds } from "./transport-utils.js";
@@ -581,10 +581,11 @@ export function createOpenAIResponsesTransportHealthFetch(
  *  transports keep their existing behavior. */
 export function resolveHealthWrappedModelFetch(
   guardedFetch: FetchLike,
-  model: Parameters<typeof isOpenAICodexResponsesModel>[0],
+  model: Parameters<typeof usesNativeOpenAICodexResponsesBackend>[0],
 ): { fetch: FetchLike; healthEnabled: boolean } {
   const healthEnabled =
-    isOpenAICodexResponsesModel(model) && !OPENCLAW_OPENAI_RESPONSES_TRANSPORT_HEALTH_DISABLED;
+    usesNativeOpenAICodexResponsesBackend(model) &&
+    !OPENCLAW_OPENAI_RESPONSES_TRANSPORT_HEALTH_DISABLED;
   const healthKey = resolveOpenAIResponsesTransportKey({
     provider: model.provider,
     api: model.api,

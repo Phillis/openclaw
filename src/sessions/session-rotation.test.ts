@@ -171,7 +171,7 @@ describe("rotation mid-queue re-resolve", () => {
     expect(isRotationArchivedEntry(scope, BASE_KEY)).toBe(true);
 
     // Bounded re-resolve to the newest active epoch; no drop, exactly-once target.
-    const retry = resolveSessionRotationRetryTarget(scope, BASE_KEY);
+    const retry = await resolveSessionRotationRetryTarget(scope, BASE_KEY);
     expect(retry.targetKey).toBe(`${BASE_KEY}:r1`);
   });
 });

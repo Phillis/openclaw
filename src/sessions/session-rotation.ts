@@ -5,7 +5,6 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { SessionAccessScope } from "../config/sessions/session-accessor.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
-import type { SessionRotationConfig } from "../config/types.base.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 // Core admission-path session rotation + context ceiling.
 //
@@ -22,6 +21,17 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { isCronSessionKey, isSubagentSessionKey } from "./session-key-utils.js";
 import { runExclusiveSessionLifecycleMutation } from "./session-lifecycle-admission.js";
+
+/**
+ * Rotation settings shape. The config owner is the `session.rotation` object in
+ * src/config/zod-schema.session-config.ts; this structural subset covers the
+ * fields the rotation machinery reads (triggers + admission ceiling).
+ */
+export type SessionRotationConfig = {
+  maxTurns?: number;
+  maxAgeHours?: number;
+  ceilingTokens?: number;
+};
 
 const MILLIS_PER_HOUR = 3_600_000;
 
@@ -159,11 +169,11 @@ function loadRotationEntry(
  * non-archived `base:rK` entry (base itself is epoch 0). If no persisted
  * non-archived row exists, falls back to epoch 0 / the base key.
  */
-export function resolveCurrentRotationEpoch(
+export async function resolveCurrentRotationEpoch(
   scope: RotationStoreScope,
   baseKey: string,
-): { epoch: number; key: string } {
-  const keys = listSessionEntryKeysReadOnly({
+): Promise<{ epoch: number; key: string }> {
+  const keys = await listSessionEntryKeysReadOnly({
     agentId: scope.agentId,
     env: scope.env,
     storePath: scope.storePath,
@@ -233,7 +243,7 @@ export async function runSessionRotationAdmission(params: {
     scope: params.scope.storePath ?? `rotation:${params.baseKey}`,
     identities: [params.baseKey],
     run: async () => {
-      const current = resolveCurrentRotationEpoch(params.scope, params.baseKey);
+      const current = await resolveCurrentRotationEpoch(params.scope, params.baseKey);
       const currentEntry = loadRotationEntry(params.scope, current.key);
       const baseEntry = loadRotationEntry(params.scope, params.baseKey);
       const trigger = resolveRotationTrigger({
@@ -290,11 +300,11 @@ export async function runSessionRotationAdmission(params: {
  * after an admission on a stale rotated key fails with the archived error, the
  * gateway re-resolves the current epoch once and re-admits. No mutation.
  */
-export function resolveSessionRotationRetryTarget(
+export async function resolveSessionRotationRetryTarget(
   scope: RotationStoreScope,
   baseKey: string,
-): { targetKey: string; baseKey: string } {
-  return { baseKey, targetKey: resolveCurrentRotationEpoch(scope, baseKey).key };
+): Promise<{ targetKey: string; baseKey: string }> {
+  return { baseKey, targetKey: (await resolveCurrentRotationEpoch(scope, baseKey)).key };
 }
 
 /**

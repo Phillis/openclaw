@@ -82,6 +82,18 @@ function channelAvatarRevision(reference: string): string {
   return createHash("sha256").update(reference).digest("base64url").slice(0, 12);
 }
 
+/** The row surface never carries a rotation archive actor: rotation archives
+ *  project archivedBy as absent (contract in session-utils.types.ts). */
+function resolveRowArchivedBy(
+  entry: SessionEntry | undefined,
+): Exclude<SessionEntry["archivedBy"], { type: "rotation" }> | undefined {
+  const archivedBy = entry?.archivedBy;
+  if (archivedBy?.type === "rotation") {
+    return undefined;
+  }
+  return archivedBy;
+}
+
 export function buildGatewaySessionRow(params: {
   cfg: OpenClawConfig;
   storePath: string;
@@ -411,7 +423,11 @@ export function buildGatewaySessionRow(params: {
     updatedAt,
     archived: entry?.archivedAt !== undefined,
     archivedAt: entry?.archivedAt,
-    archivedBy: projectSessionActor(entry?.archivedBy, rowContext.userProfileIdentityById, cfg),
+    archivedBy: projectSessionActor(
+      resolveRowArchivedBy(entry),
+      rowContext.userProfileIdentityById,
+      cfg,
+    ),
     archiveReason: entry?.archiveReason,
     pinned: pinnedAt !== undefined,
     pinnedAt,
