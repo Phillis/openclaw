@@ -79,6 +79,44 @@ describe("gateway ws log helpers", () => {
     },
   );
 
+  test("optimized mode stays quiet for successful long-poll responses", () => {
+    setVerbose(false);
+    setGatewayWsLogStyle("auto");
+    setLoggerOverride({ level: "silent", consoleLevel: "info" });
+    const output = vi.fn();
+    loggingState.rawConsole = { log: output, info: output, warn: output, error: output };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    // Deliberate long-poll methods hold requests open past the slow threshold
+    // by design; a slow success is not notable.
+    const longPollMethods = [
+      "agent.wait",
+      "agent.waitDecision",
+      "agent.waitAnswer",
+      "agent.waitUpgrade",
+    ];
+    for (const method of longPollMethods) {
+      clock.mockReturnValue(1_000);
+      logWs("in", "req", { connId: `conn-${method}`, id: "wait", method });
+      clock.mockReturnValue(3_000);
+      logWs("out", "res", { connId: `conn-${method}`, id: "wait", method, ok: true });
+    }
+    expect(output).not.toHaveBeenCalled();
+
+    // Failures must stay visible so external log monitors keep working.
+    logWs("in", "req", { connId: "conn-fail", id: "wait", method: "agent.wait" });
+    clock.mockReturnValue(5_000);
+    logWs("out", "res", { connId: "conn-fail", id: "wait", method: "agent.wait", ok: false });
+    expect(output).toHaveBeenCalledTimes(1);
+    expect(output).toHaveBeenLastCalledWith(expect.stringContaining("agent.wait"));
+
+    // Non-wait methods keep the DEFAULT_WS_SLOW_MS threshold.
+    logWs("in", "req", { connId: "conn-list", id: "list", method: "sessions.list" });
+    clock.mockReturnValue(5_100);
+    logWs("out", "res", { connId: "conn-list", id: "list", method: "sessions.list", ok: true });
+    expect(output).toHaveBeenCalledTimes(2);
+    expect(output).toHaveBeenLastCalledWith(expect.stringContaining("100ms"));
+  });
+
   test("admits only useful optimized-mode frames and honors console info enablement", () => {
     setVerbose(false);
     setLoggerOverride({ level: "silent", consoleLevel: "info" });

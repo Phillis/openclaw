@@ -28,6 +28,11 @@ const wsLog = createSubsystemLogger("gateway/ws");
 
 const WS_META_SKIP_KEYS = new Set(["connId", "id", "method", "ok", "event"]);
 
+// Deliberate long-poll methods (agent.wait, agent.waitDecision, ...) hold the
+// request open well past DEFAULT_WS_SLOW_MS by design, so their response
+// duration is expected rather than a slow-response signal.
+const WS_LONG_POLL_METHOD_RE = /\.wait(?:Decision|Answer|Upgrade)?$/;
+
 function collectWsRestMeta(meta?: Record<string, unknown>): string[] {
   const restMeta: string[] = [];
   if (!meta) {
@@ -384,8 +389,14 @@ function logWsOptimized(
     return;
   }
 
+  // Successful long-poll responses always exceed the slow threshold by design,
+  // so they skip the duration-threshold log; failures still always log.
+  const isLongPoll = method !== undefined && WS_LONG_POLL_METHOD_RE.test(method);
   const shouldLog =
-    ok === false || (typeof durationMs === "number" && durationMs >= DEFAULT_WS_SLOW_MS);
+    ok === false ||
+    (typeof durationMs === "number" &&
+      durationMs >= DEFAULT_WS_SLOW_MS &&
+      !(isLongPoll && ok === true));
   if (!shouldLog) {
     return;
   }
