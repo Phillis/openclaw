@@ -128,6 +128,7 @@ function readErrorCandidate(value: unknown): string | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
   }
+  // SAFETY: narrowed by the typeof guard above; the record view only adds an index signature for the field reads below.
   const record = value as Record<string, unknown>;
   if (typeof record.message === "string") {
     return normalizeToolErrorText(record.message);

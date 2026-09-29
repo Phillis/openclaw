@@ -91,6 +91,7 @@ function rowToOutcome(row: HeartbeatOutcomeRow): PersistedHeartbeatOutcome | und
       : {}),
     ...(row.next_check ? { nextCheck: row.next_check } : {}),
     taskNames: parseTaskNames(row.task_names_json),
+    // SAFETY: the only writer (persistHeartbeatOutcome) stores the typed HeartbeatWakeSource union; the guard above excludes null.
     ...(row.wake_source ? { wakeSource: row.wake_source as HeartbeatWakeSource } : {}),
     ...(row.wake_reason ? { wakeReason: row.wake_reason } : {}),
     occurredAt: row.occurred_at,

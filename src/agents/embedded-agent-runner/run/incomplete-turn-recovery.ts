@@ -92,12 +92,14 @@ function findLastSuccessfulToolResultText(
     if ((message as { isError?: unknown }).isError === true) {
       continue;
     }
+    // SAFETY: fields are typed unknown in this probe view; the Array.isArray guard below skips any non-array content shape.
     const content = (message as { content?: unknown }).content;
     if (!Array.isArray(content)) {
       continue;
     }
     const text = content
       .flatMap((block) => {
+        // SAFETY: probe view with unknown-typed fields; both reads are typeof-guarded, so non-text blocks map to nothing.
         const typed = block as { type?: unknown; text?: unknown } | null;
         return typed?.type === "text" && typeof typed.text === "string" ? [typed.text] : [];
       })
@@ -176,6 +178,7 @@ export function shouldRetrySilentErrorAssistantTurn(params: {
     return false;
   }
 
+  // SAFETY: AssistantMessage always carries a content block array; the unknown view feeds the Array.isArray guard below.
   const content = (assistant as { content?: unknown }).content;
   if (!Array.isArray(content)) {
     return false;
@@ -339,6 +342,7 @@ export function resolveSettledToolBatchEvidence(attempt: IncompleteTurnAttempt) 
   // Results must follow their owning assistant; session-wide reused ids cannot settle a new turn.
   const settledToolResults = new Map(
     (assistantIndex >= 0 ? snapshot.slice(assistantIndex + 1) : []).flatMap((message) => {
+      // SAFETY: destructure reads only probe fields; the role check and typeof guards below discard non-toolResult rows.
       const { toolCallId, toolName, isError } = message as SettledToolResult;
       return message.role === "toolResult" &&
         typeof toolCallId === "string" &&
