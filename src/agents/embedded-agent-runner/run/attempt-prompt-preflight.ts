@@ -61,7 +61,7 @@ function buildPreflightRecoveryBudgetSnapshot(snapshot: PreflightRecoveryBudgetS
   };
 }
 
-export function handleEmbeddedAttemptMidTurnPrecheck(input: {
+export async function handleEmbeddedAttemptMidTurnPrecheck(input: {
   attempt: AttemptPromptPreflightParams & Pick<EmbeddedRunAttemptParams, "contextTokenBudget">;
   request: MidTurnPrecheckRequest;
   sessionAgentId: string;
@@ -69,10 +69,10 @@ export function handleEmbeddedAttemptMidTurnPrecheck(input: {
   toolResultPromptProjectionState: ToolResultPromptProjectionState;
   prePromptMessageCount: number;
   replaceSessionMessages: (messages: AgentMessage[]) => void;
-}): {
+}): Promise<{
   preflightRecovery: NonNullable<EmbeddedRunAttemptResult["preflightRecovery"]>;
   promptError?: Error;
-} {
+}> {
   const { attempt, request } = input;
   const logMidTurnPrecheck = (route: string, extra?: string) => {
     log.warn(
@@ -94,7 +94,7 @@ export function handleEmbeddedAttemptMidTurnPrecheck(input: {
     const toolResultMaxChars = resolveLiveToolResultMaxChars({
       contextWindowTokens: contextTokenBudget,
     });
-    const truncationResult = truncateOversizedToolResultsInSessionManager({
+    const truncationResult = await truncateOversizedToolResultsInSessionManager({
       sessionManager: input.sessionManager,
       projectionState: input.toolResultPromptProjectionState,
       contextWindowTokens: contextTokenBudget,

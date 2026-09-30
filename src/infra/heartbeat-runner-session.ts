@@ -27,7 +27,7 @@ import {
   toAgentStoreSessionKey,
 } from "../routing/session-key.js";
 import { resolveMainScopedEventSessionKey } from "./event-session-routing.js";
-import type { HeartbeatConfig } from "./heartbeat-runner-config.js";
+import type { HeartbeatConfig } from "./heartbeat-config.js";
 import { heartbeatLog } from "./heartbeat-runner-config.js";
 
 /** Reason recorded on isolated heartbeat rows a previous gateway lifecycle killed. */

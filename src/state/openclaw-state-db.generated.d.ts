@@ -372,6 +372,9 @@ export interface CronJobs {
   declaration_key: string | null;
   description: string | null;
   enabled: number;
+  grant_definition_generation: number | null;
+  grant_definition_revision: string | null;
+  grant_definition_updated_at: number | null;
   job_id: string;
   job_json: string;
   name: string;
@@ -769,6 +772,7 @@ export interface GithubPublicationSessionLifecycles {
   lifecycle_revision: string | null;
   publication_kind: string;
   request_id: string;
+  requester_authority_json: string | null;
 }
 
 export interface GithubRepositoryPublicationRequests {
@@ -805,6 +809,7 @@ export interface GithubRepositoryPublicationRequests {
   repository: string | null;
   request_digest: string;
   request_id: string;
+  requester_authority_json: string | null;
   run_id: string | null;
   session_id: string;
   session_key: string;
@@ -833,6 +838,24 @@ export interface LoopGovernorTurnCounts {
   hour_bucket: number;
   turn_count: Generated<number>;
   updated_at_ms: number;
+export interface LocalWorkspaceProjections {
+  agent_id: string;
+  base_commit: string;
+  baseline_json: string | null;
+  baseline_ref: string | null;
+  created_at_ms: number;
+  journal_json: string | null;
+  journal_pack: Uint8Array | null;
+  lifecycle_revision: string | null;
+  paused_runtimes_json: string | null;
+  pending_ref: string | null;
+  pending_target: string | null;
+  projection_path: string;
+  revision: Generated<number>;
+  session_id: string;
+  session_key: string;
+  source_paths_json: string;
+  worktree_id: string;
 }
 
 export interface MacosPortGuardianRecords {
@@ -951,6 +974,12 @@ export interface NativeHookRelayBridges {
   updated_at_ms: number;
 }
 
+export interface NodeWorkerLaunchCleanup {
+  cleanup_mode: string;
+  launch_id: string;
+  lineage_settled: number | null;
+}
+
 export interface NodeWorkerLaunchContainers {
   container_json: string | null;
   launch_id: string;
@@ -1028,6 +1057,11 @@ export interface OperatorApprovalExecutionIdentities {
   approval_id: string;
   source_context_id: string;
   source_execution_id: string;
+}
+
+export interface OperatorApprovalStandingGrantGenerations {
+  grant_id: string;
+  job_definition_generation: number;
 }
 
 export interface OperatorApprovalStandingGrants {
@@ -1262,6 +1296,7 @@ export interface SessionWatchCursors {
   target_session_key: string;
   updated_at: number;
   watcher_session_key: string;
+  watcher_store_path: string | null;
 }
 
 export interface SkillLibraryEntries {
@@ -1407,9 +1442,11 @@ export interface StateLeases {
 export interface SubagentRuns {
   child_session_key: string;
   controller_session_key: string | null;
+  controller_store_path: string | null;
   created_at: number;
   payload_json: Generated<string>;
   requester_session_key: string;
+  requester_store_path: string | null;
   run_id: string;
 }
 
@@ -1810,6 +1847,7 @@ export interface DB {
   github_repository_publication_requests: GithubRepositoryPublicationRequests;
   loop_governor_kind_turn_counts: LoopGovernorKindTurnCounts;
   loop_governor_turn_counts: LoopGovernorTurnCounts;
+  local_workspace_projections: LocalWorkspaceProjections;
   macos_port_guardian_records: MacosPortGuardianRecords;
   managed_outgoing_image_records: ManagedOutgoingImageRecords;
   mcp_oauth_pending_authorizations: McpOauthPendingAuthorizations;
@@ -1820,12 +1858,14 @@ export interface DB {
   migration_runs: MigrationRuns;
   migration_sources: MigrationSources;
   native_hook_relay_bridges: NativeHookRelayBridges;
+  node_worker_launch_cleanup: NodeWorkerLaunchCleanup;
   node_worker_launch_containers: NodeWorkerLaunchContainers;
   node_worker_launches: NodeWorkerLaunches;
   node_worker_prepared_workspaces: NodeWorkerPreparedWorkspaces;
   node_worker_turns: NodeWorkerTurns;
   official_external_plugin_catalog_snapshots: OfficialExternalPluginCatalogSnapshots;
   operator_approval_execution_identities: OperatorApprovalExecutionIdentities;
+  operator_approval_standing_grant_generations: OperatorApprovalStandingGrantGenerations;
   operator_approval_standing_grants: OperatorApprovalStandingGrants;
   operator_approvals: OperatorApprovals;
   outbound_media_provenance: OutboundMediaProvenance;

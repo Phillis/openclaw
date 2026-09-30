@@ -120,7 +120,7 @@ describe("session event wake private poll disposition", () => {
     { label: "global alias", sessionKey: "global" },
     { label: "whitespace target", sessionKey: "   " },
   ])("never lets one branch terminally defer a broadcast ($label)", async ({ sessionKey }) => {
-    const handler = vi.fn<WakeHandler>(async () => {
+    const handler = vi.fn<WakeHandler>(async (): ReturnType<WakeHandler> => {
       expect(deferSessionEventWakePoll()).toBe(false);
       expect(isSessionEventWakePollDeferred()).toBe(false);
       return handler.mock.calls.length === 1
@@ -148,8 +148,12 @@ describe("session event wake private poll disposition", () => {
     const handler = vi.fn<WakeHandler>(async (request, signal) => {
       expect(getSessionEventWakeAbortSignal()).toBe(signal);
       const admitted = request.agentId === "admitted";
-      if (admitted) markSessionEventWakeWorkStarted();
-      if (++starts === 2) bothStarted.resolve();
+      if (admitted) {
+        markSessionEventWakeWorkStarted();
+      }
+      if (++starts === 2) {
+        bothStarted.resolve();
+      }
       await bothStarted.promise;
       expect(getSessionEventWakeAbortSignal()).toBe(signal);
       if (!admitted) {
@@ -198,8 +202,8 @@ describe("session event wake private poll disposition", () => {
   ];
 
   it.each(
-    ineligibleCases.flatMap((entry) =>
-      ["alone", "ineligible-first", "native-first"].map((order) => ({ ...entry, order })),
+    ineligibleCases.flatMap(({ name, overrides }) =>
+      ["alone", "ineligible-first", "native-first"].map((order) => ({ name, overrides, order })),
     ),
   )("never grants poll eligibility to $name ($order)", async ({ name, overrides, order }) => {
     const dispositions: boolean[][] = [];
@@ -431,7 +435,7 @@ describe("session event wake private poll disposition", () => {
 
   it("does not carry a tentative poll disposition across a thrown attempt", async () => {
     const dispositions: boolean[] = [];
-    const handler = vi.fn<WakeHandler>(async () => {
+    const handler = vi.fn<WakeHandler>(async (): ReturnType<WakeHandler> => {
       dispositions.push(isSessionEventWakePollDeferred());
       if (handler.mock.calls.length === 1) {
         dispositions.push(deferSessionEventWakePoll());
