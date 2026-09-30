@@ -3,58 +3,6 @@ name: Plugin Prerelease
 run-name: ${{ inputs.dispatch_id != '' && format('Plugin Prerelease {0}', inputs.dispatch_id) || 'Plugin Prerelease' }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      target_ref:
-        description: Branch, tag, or full commit SHA to validate
-        required: false
-        default: main
-        type: string
-      expected_sha:
-        description: Optional full commit SHA that target_ref must resolve to
-        required: false
-        default: ""
-        type: string
-      target_context_ref:
-        description: Canonical release context for an exact-SHA frozen-target validation
-        required: false
-        default: ""
-        type: string
-      allow_frozen_target_scenario_omissions:
-        description: Trusted opt-in to accept documented harness differences in a frozen target
-        required: false
-        default: false
-        type: boolean
-      full_release_validation:
-        description: Enable release-only Docker prerelease lanes from Full Release Validation
-        required: false
-        default: false
-        type: boolean
-      phase:
-        description: Plugin prerelease phase to run
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - independent
-          - candidate
-      node_test_exclude_patterns_json:
-        description: Full Release Validation-only exact plugin test paths omitted for a frozen target
-        required: false
-        default: "[]"
-        type: string
-      dispatch_id:
-        description: Optional parent workflow dispatch identifier
-        required: false
-        default: ""
-        type: string
-      candidate_artifact_json:
-        description: Immutable package and Docker image artifact tuple from Full Release Validation
-        required: false
-        default: ""
-        type: string
-
 permissions:
   contents: read
 

@@ -14,7 +14,6 @@ import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-
 import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
 import {
-  readSessionStoreForTest,
   seedMainSessionStore,
   withTempTelegramHeartbeatSandbox,
 } from "./heartbeat-runner.test-utils.js";

@@ -2,22 +2,6 @@ name: Mantis Web UI Chat Proof
 run-name: ${{ inputs.request_id != '' && format('Mantis request [{0}]', inputs.request_id) || 'Mantis Web UI Chat Proof' }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      candidate_ref:
-        description: Ref, tag, or SHA expected to prove Control UI web chat behavior
-        required: true
-        default: main
-        type: string
-      request_id:
-        description: Optional consumer-issued SHA256 request id for isolated request-bound proof
-        required: false
-        type: string
-      pr_number:
-        description: Optional PR number to receive the QA evidence comment
-        required: false
-        type: string
-
 permissions:
   actions: read
   contents: read

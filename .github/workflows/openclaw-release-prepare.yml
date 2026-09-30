@@ -1,17 +1,6 @@
 name: OpenClaw Release Prepare
 
 on:
-  workflow_dispatch:
-    inputs:
-      publish_inputs:
-        description: Frozen publication inputs JSON from the release candidate checklist
-        required: true
-        type: string
-      preparation_request:
-        description: Recovery only — retained request JSON with both explicitly identified child run IDs
-        required: false
-        type: string
-
 permissions:
   actions: read
   contents: read

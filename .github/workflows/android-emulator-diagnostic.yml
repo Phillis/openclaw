@@ -3,13 +3,6 @@ name: Android Emulator Diagnostic
 run-name: Android emulator diagnostic instrumented (${{ inputs.target_sha }})
 
 on:
-  workflow_dispatch:
-    inputs:
-      target_sha:
-        description: Exact lowercase 40-character commit SHA to diagnose
-        required: true
-        type: string
-
 permissions:
   contents: read
 

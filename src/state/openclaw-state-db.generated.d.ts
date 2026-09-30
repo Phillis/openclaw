@@ -838,6 +838,8 @@ export interface LoopGovernorTurnCounts {
   hour_bucket: number;
   turn_count: Generated<number>;
   updated_at_ms: number;
+}
+
 export interface LocalWorkspaceProjections {
   agent_id: string;
   base_commit: string;

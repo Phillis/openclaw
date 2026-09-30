@@ -6,11 +6,8 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
-import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
-import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
-import type { HeartbeatWakeSource } from "./heartbeat-wake.js";
 import { resolveStateDir } from "../config/state-dir.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import {
   runOpenClawAgentWriteTransaction,
   withOpenClawAgentDatabaseAsync,

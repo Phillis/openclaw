@@ -1,28 +1,6 @@
 name: Linux App Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Published core tag to reconcile (mirror only; no native build)"
-        required: true
-        type: string
-      source_sha:
-        description: "Exact published core source SHA"
-        required: true
-        type: string
-      tooling_sha:
-        description: "Exact protected parent workflow SHA"
-        required: true
-        type: string
-      release_publish_run_id:
-        description: "Original core publication run"
-        required: true
-        type: string
-      release_publish_run_attempt:
-        description: "Exact original core publication attempt"
-        required: true
-        type: string
   workflow_run: # zizmor: ignore[dangerous-triggers] main-only release builder; exact successful request/main identity is validated before selected-tag execution, while signing and publication stay in fresh jobs
     workflows: ["Linux App Release Request"]
     branches: [main]

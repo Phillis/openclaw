@@ -32,19 +32,6 @@ on:
   release:
     types:
       - published
-  workflow_dispatch:
-    inputs:
-      full_refresh:
-        description: Retranslate every source string, including existing translations.
-        required: false
-        default: false
-        type: boolean
-      token_preflight_only:
-        description: Verify generated PR App permissions without running locale generation.
-        required: false
-        default: false
-        type: boolean
-
 permissions:
   contents: read
 

@@ -33,14 +33,6 @@ on:
       - .github/actions/create-generated-pr-tokens/action.yml
       - .github/actions/publish-generated-pr/action.yml
       - .github/workflows/native-app-locale-refresh.yml
-  workflow_dispatch:
-    inputs:
-      full_refresh:
-        description: Retranslate every source string, including existing translations.
-        required: false
-        default: false
-        type: boolean
-
 permissions:
   contents: read
 

@@ -266,7 +266,11 @@ export function main(root = process.cwd(), argv: string[] = process.argv.slice(2
       throw new Error("--prune cannot be combined with --staged");
     }
 
-    const baseRef = resolveRatchetBase(root, { base: args.base, staged: args.staged });
+    const baseRef = resolveRatchetBase(root, {
+      base: args.base,
+      staged: args.staged,
+      baseDisabled: args.baseDisabled,
+    });
     const baseBaseline = baseRef
       ? loadRatchetReference(root, baseRef, BASELINE_PATH, parseAssertionBaseline)
       : null;

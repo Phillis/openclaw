@@ -1,34 +1,6 @@
 name: Stale
 
 on:
-  workflow_dispatch:
-    inputs:
-      backfill_stale_closures:
-        description: "Close currently stale-eligible issues and PRs with the Barnacle app"
-        required: false
-        type: boolean
-        default: false
-      dry_run:
-        description: "List matching stale-eligible items without closing them"
-        required: false
-        type: boolean
-        default: true
-      include_issues:
-        description: "Include stale-eligible issues in the backfill"
-        required: false
-        type: boolean
-        default: true
-      include_prs:
-        description: "Include stale-eligible pull requests in the backfill"
-        required: false
-        type: boolean
-        default: true
-      max_closures:
-        description: "Maximum items to close when dry_run is false"
-        required: false
-        type: number
-        default: 50
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 

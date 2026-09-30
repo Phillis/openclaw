@@ -5,16 +5,6 @@ name: PR CI Sweeper
 # authorizes reruns; GITHUB_TOKEN close/reopen events would not trigger CI.
 
 on:
-  schedule:
-    - cron: "7 * * * *"
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Log intended repairs without closing/reopening or rerunning workflows.
-        required: false
-        default: false
-        type: boolean
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 

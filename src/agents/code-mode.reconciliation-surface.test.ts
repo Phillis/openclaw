@@ -50,7 +50,7 @@ function reconciliationCandidateAttempt(): EmbeddedRunAttemptResult {
 
 describe("Code Mode reconciliation read-only surface (mid-session tool flap)", () => {
   afterEach(() => {
-    resetCodeModeTestState();
+    void resetCodeModeTestState();
   });
 
   it("forceDirectTools=true from reconciliation strips BOTH control surfaces (exec/catalog) leaving only direct tools", () => {

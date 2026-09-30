@@ -2,37 +2,6 @@ name: Requested Telegram Behavior Proof
 run-name: ${{ format('Mantis Telegram request [{0}]', inputs.request_id) }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      candidate_ref:
-        description: Exact same-repository PR head SHA
-        required: true
-        type: string
-      request_id:
-        description: Consumer-issued SHA256 request ID
-        required: true
-        type: string
-      pr_number:
-        description: Open pull request whose exact head is under test
-        required: true
-        type: string
-      proof_plan:
-        description: Strict data-only scenario JSON selected by the original reviewer
-        required: false
-        type: string
-      plan_sha256:
-        description: SHA256 of canonical data-only proof plan
-        required: false
-        type: string
-      scenario:
-        description: Trusted behavior recipe; Crabline is transport-emulated, not live Telegram
-        required: true
-        default: telegram-markdown-parser-fidelity
-        type: choice
-        options:
-          - telegram-markdown-parser-fidelity
-          - telegram-bot-e2e-proof
-
 permissions:
   actions: read
   contents: read

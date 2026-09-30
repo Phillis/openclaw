@@ -2,16 +2,6 @@ name: FRV Proof Broker
 run-name: FRV Proof Broker PR #${{ inputs.pr_number }} run ${{ github.run_id }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Merged OpenClaw pull request containing the FRV recovery controller
-        required: true
-        type: string
-      landed_sha:
-        description: Exact lowercase 40-character commit landed on main
-        required: true
-        type: string
 permissions: {}
 
 concurrency:

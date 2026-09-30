@@ -22,21 +22,6 @@ on:
     secrets:
       VERCEL_TOKEN:
         required: true
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Docker release version without the v prefix
-        required: true
-        type: string
-      source_digests:
-        description: Newline-delimited alias=sha256:<64 lowercase hex> entries
-        required: true
-        type: string
-      include_browser:
-        description: Whether the tagged Docker release includes browser images
-        required: true
-        type: boolean
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NODE_VERSION: "24.19.0"

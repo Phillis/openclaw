@@ -2,20 +2,6 @@ name: FRV Proof Fixture
 run-name: FRV Proof Fixture [${{ inputs.operation }}] ${{ inputs.correlation }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      operation:
-        description: Fixed harmless operation used by the FRV recovery proof
-        required: true
-        default: noop
-        type: choice
-        options:
-          - noop
-      correlation:
-        description: Broker-generated correlation identifier
-        required: true
-        type: string
-
 permissions: {}
 
 jobs:

@@ -1,67 +1,11 @@
 name: CI
 
 on:
-  workflow_dispatch:
-    inputs:
-      target_ref:
-        description: Optional branch, tag, or full commit SHA to validate instead of the workflow ref
-        required: false
-        default: ""
-        type: string
-      capture_ui_proof:
-        description: Capture and upload sanitized Control UI screenshots from real-Gateway tests.
-        required: false
-        default: false
-        type: boolean
-      include_android:
-        description: Run Android lanes for this manual CI dispatch.
-        required: false
-        default: false
-        type: boolean
-      release_scope:
-        description: Release qualification scope; npm-beta and npm-stable defer native apps for a validated exact release target.
-        required: false
-        default: full
-        type: choice
-        options: [full, npm-beta, npm-stable]
-      release_gate:
-        description: Run an exact-SHA maintainer release-gate fallback when PR CI is capacity-stalled.
-        required: false
-        default: false
-        type: boolean
-      pull_request_number:
-        description: Pull request number required by the exact-SHA release gate.
-        required: false
-        default: ""
-        type: string
-      dispatch_id:
-        description: Optional parent workflow dispatch identifier
-        required: false
-        default: ""
-        type: string
-      historical_target_tag:
-        description: Semver release tag authorizing compatibility fallbacks for its exact commit
-        required: false
-        default: ""
-        type: string
-      release_candidate_ref:
-        description: Canonical release branch authorizing compatibility fallbacks for its exact head
-        required: false
-        default: ""
-        type: string
-      target_context_ref:
-        description: Canonical release branch context authorizing compatibility fallbacks for an exact-SHA target
-        required: false
-        default: ""
-        type: string
   push:
     branches: [main]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
-  pull_request:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
-
 permissions:
   contents: read
 
@@ -253,21 +197,17 @@ jobs:
           git = shutil.which("git")
           checkout_environment = {}
 
-
           def cancel(signum, _frame):
               global cancelled
               cancelled = signum
-
 
           for signame in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
               if hasattr(signal, signame):
                   signal.signal(getattr(signal, signame), cancel)
 
-
           def check_cancelled():
               if cancelled:
                   raise SystemExit(128 + cancelled)
-
 
           # The bootstrap inherits only this Job handle and stdio, joins before spawning Git,
           # then closes its copy. Even owner death before assignment kills it on that close.
@@ -377,7 +317,6 @@ jobs:
           sys.exit(subprocess.call(sys.argv[2:], stdin=subprocess.DEVNULL))
           '\'''\'''\''
 
-
           def group_signal(pgid, signum, deadline):
               try:
                   os.killpg(pgid, signum)
@@ -393,10 +332,8 @@ jobs:
                   return any(not state.startswith("Z") for state in states)
               return True
 
-
           def group_alive(pgid, deadline):
               return any(not state.startswith("Z") for state in group_states(pgid, deadline))
-
 
           def group_states(pgid, deadline):
               try:
@@ -439,7 +376,6 @@ jobs:
               except ProcessLookupError:
                   return []
               raise RuntimeError("Process group census missed a present group")
-
 
           def drain(child, job):
               deadline = time.monotonic() + cleanup_seconds
@@ -506,15 +442,12 @@ jobs:
                       child.wait(timeout=max(0.001, deadline - time.monotonic()))
                       raise
 
-
           class FetchTimeout(Exception):
               pass
-
 
           class GitFailure(Exception):
               def __init__(self, code):
                   self.code = code
-
 
           def git_lock_files(directory):
               git_dir = os.path.join(os.path.realpath(directory), ".git")
@@ -531,7 +464,6 @@ jobs:
                   locks.update(os.path.join(root, name) for name in files if name.endswith(".lock"))
               return locks
 
-
           def git_auth_environment(remote, token):
               # Git'\''s promisor fetch inherits this process-only config from checkout.
               # Reject redirects: http.<url> matching does not re-scope redirected requests.
@@ -547,7 +479,6 @@ jobs:
                   environment[f"GIT_CONFIG_KEY_{index}"] = key
                   environment[f"GIT_CONFIG_VALUE_{index}"] = value
               return environment
-
 
           def run_git(directory, *arguments, timeout=None, stdout=None, stderr=None, env=None,
                       reclaim_locks=False):
@@ -615,13 +546,11 @@ jobs:
               if child.returncode:
                   raise GitFailure(child.returncode if child.returncode > 0 else 128 - child.returncode)
 
-
           def backoff(seconds):
               retry_at = time.monotonic() + seconds
               while time.monotonic() < retry_at:
                   check_cancelled()
                   time.sleep(0.05)
-
 
           def fetch(directory, *refs, prune=False, max_attempts=3, depth=1,
                     blobless=False, retry_failures=False, retry_codes=()):
@@ -640,17 +569,14 @@ jobs:
                       print(f"::warning::checkout fetch failed on attempt {attempt}; retrying", flush=True)
                       backoff(5)
 
-
           def git_output(directory, *arguments, timeout=None, env=None):
               with tempfile.TemporaryFile() as output:
                   run_git(directory, *arguments, timeout=timeout, env=env, stdout=output)
                   output.seek(0)
                   return output.read().decode("utf-8", errors="surrogateescape")
 
-
           def resolve_ref(ref):
               return git_output(workspace, "rev-parse", ref).strip()
-
 
           def checkout_selected_ref():
               ref = os.environ["CHECKOUT_REF"]
@@ -689,7 +615,6 @@ jobs:
                   except (FetchTimeout, GitFailure):
                       raise GitFailure(1)
               run_git(workspace, "checkout", "--detach", "refs/remotes/origin/checkout")
-
 
           def checkout_harness(sha):
               action = ".github/actions/setup-node-env/action.yml"
@@ -746,7 +671,6 @@ jobs:
                   raise GitFailure(1)
               check_cancelled()
 
-
           def checkout():
               check_cancelled()
               prerequisites = json.loads(os.environ.get("CHECKOUT_GIT_COMMITS_JSON", "null")) if kind == "linux-node" else None
@@ -792,7 +716,6 @@ jobs:
               if kind in ("clawhub", "skills"):
                   return
               checkout_harness(sha)
-
 
           def main():
               global kind, workspace, remote, reset
@@ -855,7 +778,6 @@ jobs:
               finally:
                   checkout_environment.clear()
 
-
           def terminal_diagnostic(error, owner_code):
               # Code identity, not a filename supplied by policy, proves source provenance.
               codes = {id(owner_code): owner_code}
@@ -895,7 +817,6 @@ jobs:
                   cause = error.__cause__
                   error, via = (cause, "cause") if cause is not None else (error.__context__, "context")
               return records
-
 
           if __name__ == "__main__":
               exit_code, terminal_error = 0, None

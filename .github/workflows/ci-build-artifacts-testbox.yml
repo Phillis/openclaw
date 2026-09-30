@@ -1,12 +1,6 @@
 name: Blacksmith Build Artifacts Testbox
 
 on:
-  workflow_dispatch:
-    inputs:
-      testbox_id:
-        type: string
-        description: "Testbox session ID"
-        required: true
 permissions:
   contents: read
 

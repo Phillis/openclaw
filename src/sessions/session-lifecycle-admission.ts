@@ -15,6 +15,7 @@ import {
 } from "../process/gateway-work-admission.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { StoreWriterQueue } from "../shared/store-writer-queue.js";
+import { checkLoopGovernorAdmissionForAdmissionScope } from "./loop-governor.js";
 import { createLifecycleDiagnosticOperation } from "./session-lifecycle-diagnostics.js";
 import {
   collectSessionIdentityTargets,
@@ -643,6 +644,9 @@ export async function beginSessionWorkAdmission(params: {
       signal,
       run: async () => {
         const current = new Set(CURRENT_SESSION_WORK_ADMISSIONS.getStore());
+        // Fork (agents.loopGovernor, default off): hourly non-interactive turn
+        // budget admission at the outermost session work admission.
+        checkLoopGovernorAdmissionForAdmissionScope(current.size === 0, identities);
         current.add(admission);
         await CURRENT_SESSION_WORK_ADMISSIONS.run(current, params.assertAllowed);
         if (isGatewaySubordinateWorkAdmissionClosed()) {

@@ -50,7 +50,6 @@ import { getProviderTransportDispatcherPool } from "./provider-transport-dispatc
 import { swapSecretSentinelsForEgress } from "./provider-transport-secret-egress.js";
 
 const DEFAULT_MAX_SDK_RETRY_WAIT_SECONDS = 60;
-const SLOW_MODEL_FETCH_MS = 1_000;
 const OPENAI_SDK_STREAM_CONTENT_SNIFF_BYTES = 2 * 1024;
 const log = createSubsystemLogger("provider-transport-fetch");
 
@@ -824,7 +823,7 @@ export function buildGuardedModelFetch(
       `status=${response.status} elapsedMs=${elapsedMs} ` +
       `dispatcher=${result.dispatcherReused ? "reused" : "new"} ` +
       `contentType=${response.headers.get("content-type") ?? ""}`;
-    );
+    log.info(responseMessage);
     // PHIL-FORK (BUG-018, 2026-09-04): transient pre-stream 5xx responses from
     // provider transports can terminate embedded agent runs outright — the
     // failover policy defers to plugin/harness-owned transports for

@@ -3,29 +3,6 @@ name: Android Beta Release
 run-name: Android Beta ${{ inputs.operation }} ${{ inputs.target_ref }}@${{ inputs.target_sha }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      operation:
-        description: Upload and record, or recover recording after a terminal upload run failure
-        required: true
-        default: upload-and-record
-        type: choice
-        options:
-          - upload-and-record
-          - record-only
-      target_ref:
-        description: Canonical mobile release branch (release/YYYY.M.PATCH-mobile)
-        required: true
-        type: string
-      target_sha:
-        description: Exact lowercase commit SHA at the release branch head
-        required: true
-        type: string
-      source_run_id:
-        description: Original failed upload run ID; required only for record-only recovery
-        required: false
-        type: string
-
 permissions: {}
 
 env:

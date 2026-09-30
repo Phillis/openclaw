@@ -12,7 +12,10 @@ const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 const compareEntries = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
 
 export function parseRatchetArgs(argv: string[]) {
-  const args: { base?: string; prune: boolean; staged: boolean } = { prune: false, staged: false };
+  const args: { base?: string; prune: boolean; staged: boolean; baseDisabled?: boolean } = {
+    prune: false,
+    staged: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--prune") {
@@ -24,7 +27,12 @@ export function parseRatchetArgs(argv: string[]) {
       continue;
     }
     if (arg === "--base" && argv[index + 1]) {
-      args.base = argv[index + 1];
+      args.base = argv[index + 1] === "none" ? undefined : argv[index + 1];
+      // "none": explicit tree-only ratchet (fork parallel-line merges). The
+      // base-ref comparison assumes base is an ancestor trunk of the branch;
+      // a fork merging a parallel upstream release line carries both sides'
+      // grandfathered debt, which no single base ref can cover.
+      args.baseDisabled = argv[index + 1] === "none";
       index += 1;
       continue;
     }
@@ -53,7 +61,13 @@ function resolvesCommit(root: string, ref: string) {
   }
 }
 
-export function resolveRatchetBase(root: string, options: { base?: string; staged: boolean }) {
+export function resolveRatchetBase(
+  root: string,
+  options: { base?: string; staged: boolean; baseDisabled?: boolean },
+): string | null {
+  if (options.baseDisabled) {
+    return null;
+  }
   const resolved =
     options.base ??
     (options.staged ? ["HEAD"] : ["origin/main", "HEAD"]).find((ref) => resolvesCommit(root, ref));

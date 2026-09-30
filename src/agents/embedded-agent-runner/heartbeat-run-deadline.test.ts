@@ -46,8 +46,10 @@ function mockFirstPermissionAttempt(recorder: { timeoutMs?: number; sleepMs?: nu
     if (recorder.sleepMs !== undefined) {
       await delay(recorder.sleepMs);
     }
-    withAuthorizedPermissionChange(attempt.permissionChange!.owner, "full", () =>
-      attempt.permissionChange!.request("full"),
+    withAuthorizedPermissionChange(
+      attempt.permissionChange!.owner,
+      "full",
+      () => void attempt.permissionChange!.request("full"),
     );
     return makeAttemptResult({
       aborted: true,

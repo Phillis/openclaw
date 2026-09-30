@@ -119,7 +119,7 @@ function buildBudgetStoppedFinalizationContext(attempt: IncompleteTurnAttempt): 
   const lastNarration = joinAssistantTexts(attempt.assistantTexts);
   const toolSummary = buildTraceToolSummary({
     toolMetas: attempt.toolMetas,
-    fallbackHadFailure: Boolean(attempt.lastToolError),
+    lastToolError: attempt.lastToolError,
   });
   const perToolTally = buildPerToolOutcomeTally(attempt.toolMetas);
   const lastSuccessfulToolResult = findLastSuccessfulToolResultText(attempt.messagesSnapshot);
@@ -454,7 +454,10 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
   );
   if (
     (params.payloadCount !== 0 && !params.toolLoopBudgetStopped) ||
-    (!params.allowEmptyStopContinuation && hasOnlySilentAssistantReply(attempt.assistantTexts)) ||
+    // Fork (empty-stop continuation): classifyAssistantTurn's `silent`
+    // (output.isSilent) is the 9.6 shape of the removed
+    // hasOnlySilentAssistantReply(attempt.assistantTexts) helper.
+    (!params.allowEmptyStopContinuation && classifyAssistantTurn(params).silent) ||
     params.hasTerminalToolPresentation ||
     params.aborted ||
     ((params.timedOut || terminal.kind === "timeout") && !idlePromptTimeout) ||

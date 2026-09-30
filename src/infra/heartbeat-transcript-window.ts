@@ -4,11 +4,9 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../process/gateway-work-admission.js";
 import { formatErrorMessage } from "./errors.js";
-import {
-  heartbeatLog,
-  resolveHeartbeatMaxTranscriptTokens,
-  type HeartbeatConfig,
-} from "./heartbeat-runner-config.js";
+import type { HeartbeatConfig } from "./heartbeat-config.js";
+import { heartbeatLog } from "./heartbeat-log.js";
+import { resolveHeartbeatMaxTranscriptTokens } from "./heartbeat-runner-config.js";
 
 const log = heartbeatLog;
 

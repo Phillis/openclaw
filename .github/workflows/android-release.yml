@@ -1,42 +1,6 @@
 name: Android Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing stable OpenClaw release tag to receive the signed Android APK
-        required: true
-        type: string
-      release_publish_run_id:
-        description: OpenClaw Release Publish run that approved this release
-        required: true
-        type: string
-      release_publish_branch:
-        description: Branch or protected tag used by the approving OpenClaw Release Publish run
-        required: true
-        type: string
-      release_publish_run_attempt:
-        description: Exact approving OpenClaw Release Publish run attempt
-        required: true
-        type: string
-      release_publish_full_ref:
-        description: Exact approving workflow full ref, including refs/heads/ or refs/tags/
-        required: true
-        type: string
-      release_publish_workflow_sha:
-        description: Frozen approving workflow commit SHA
-        required: true
-        type: string
-      release_target_sha:
-        description: Exact release tag commit resolved by OpenClaw Release Publish
-        required: true
-        type: string
-      direct_release_recovery:
-        description: Allow a failed completed parent run for explicit backfill or recovery
-        required: true
-        default: false
-        type: boolean
-
 permissions:
   actions: read
   attestations: write

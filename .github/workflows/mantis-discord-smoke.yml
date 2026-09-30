@@ -1,19 +1,6 @@
 name: Mantis Discord Smoke
 
 on:
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: Ref, tag, or SHA to run
-        required: true
-        default: main
-        type: string
-      post_message:
-        description: Post a smoke message and reaction to the configured Discord channel
-        required: true
-        default: true
-        type: boolean
-
 permissions:
   contents: read
   pull-requests: read

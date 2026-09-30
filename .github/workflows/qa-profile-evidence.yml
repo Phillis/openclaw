@@ -3,33 +3,6 @@ name: QA Profile Evidence
 run-name: ${{ format('QA Profile Evidence {0} {1}', inputs.qa_profile, inputs.ref) }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: OpenClaw branch, tag, or SHA to run
-        required: true
-        default: main
-        type: string
-      trusted_ref:
-        description: Optional trusted branch, tag, or SHA identity for an immutable ref
-        required: false
-        default: ""
-        type: string
-      expected_sha:
-        description: Optional full SHA that ref must resolve to
-        required: false
-        default: ""
-        type: string
-      qa_profile:
-        description: Taxonomy QA profile id to run (for example release or all)
-        required: true
-        default: all
-        type: string
-      allow_failures:
-        description: Continue after validated QA result failures
-        required: false
-        default: false
-        type: boolean
   workflow_call:
     inputs:
       ref:

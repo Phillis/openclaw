@@ -1,21 +1,6 @@
 name: Windows Node Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing OpenClaw release tag to receive Windows Hub installers, for example v2026.6.1
-        required: true
-        type: string
-      windows_node_tag:
-        description: Exact openclaw-windows-node release tag to promote, for example v0.6.3
-        required: true
-        type: string
-      expected_installer_digests:
-        description: Compact JSON map of installer asset names to pinned source sha256 digests
-        required: true
-        type: string
-
 permissions:
   contents: write
 

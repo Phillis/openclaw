@@ -1,16 +1,6 @@
 name: Dated TODO sweep
 
 on:
-  schedule:
-    - cron: "23 6 * * 1"
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Log the fresh report without creating or updating the tracking issue.
-        required: false
-        default: false
-        type: boolean
-
 permissions:
   contents: read
 

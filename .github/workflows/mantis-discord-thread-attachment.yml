@@ -1,23 +1,6 @@
 name: Mantis Discord Thread Attachment
 
 on:
-  workflow_dispatch:
-    inputs:
-      candidate_ref:
-        description: Ref, tag, or SHA expected to preserve filePath attachments
-        required: true
-        default: main
-        type: string
-      baseline_ref:
-        description: Display label for the synthetic baseline; the workflow reverts only the thread attachment fix
-        required: false
-        default: synthetic-reverted-thread-filepath-fix
-        type: string
-      pr_number:
-        description: Optional bug or fix PR number to receive the QA evidence comment
-        required: false
-        type: string
-
 permissions:
   contents: read
   pull-requests: read

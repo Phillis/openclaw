@@ -1,18 +1,6 @@
 name: Windows Blacksmith Testbox
 
 on:
-  workflow_dispatch:
-    inputs:
-      testbox_id:
-        type: string
-        description: "Testbox session ID"
-        required: true
-      runner_label:
-        type: string
-        description: "Windows runner label"
-        required: false
-        default: "blacksmith-16vcpu-windows-2025"
-
 permissions:
   contents: read
 

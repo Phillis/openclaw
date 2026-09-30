@@ -2348,7 +2348,7 @@ describe("tool-loop-detection identicalCallLimit + resetOnError (WP-4)", () => {
     recordSuccessfulCall(state, genericTool, genericParams, genericResult, 2);
     const at = detectToolCallLoop(state, genericTool, genericParams, config);
     expect(at).toMatchObject({ stuck: true, level: "critical" });
-    expect(at.stuck === true && at.count >= 3).toBe(true);
+    expect(at.stuck && at.count >= 3).toBe(true);
   });
 
   it("identicalCallLimit raises the block threshold above the built-in 20 and follows the breaker", () => {

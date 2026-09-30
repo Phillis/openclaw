@@ -409,7 +409,13 @@ function projectSessionRowProfiles(input: ReturnType<typeof readSessionRowInputs
       ? participants.slice(0, MAX_SESSION_PARTICIPANTS)
       : undefined,
     participantCount: participants.length || undefined,
-    archivedBy: projectSessionActor(entry?.archivedBy, userProfileIdentityById, cfg),
+    // Fork (session-rotation ceiling): a rotation actor is internal routing
+    // state, never a user-facing archive actor — project it absent so rows
+    // match the GatewaySessionRow type's Exclude<…, { type: "rotation" }>.
+    archivedBy:
+      entry?.archivedBy?.type === "rotation"
+        ? undefined
+        : projectSessionActor(entry?.archivedBy, userProfileIdentityById, cfg),
   };
 }
 

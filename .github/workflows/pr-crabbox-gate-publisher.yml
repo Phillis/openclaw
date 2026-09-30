@@ -2,21 +2,6 @@ name: PR Crabbox Gate Publisher
 run-name: "PR Crabbox gate #${{ inputs.pr_number }} / ${{ inputs.head_sha }}"
 
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Open same-repository pull request number
-        required: true
-        type: string
-      head_sha:
-        description: Exact lowercase 40-character pull request head SHA
-        required: true
-        type: string
-      base_sha:
-        description: Exact lowercase 40-character pull request base SHA
-        required: true
-        type: string
-
 permissions: {}
 
 concurrency:

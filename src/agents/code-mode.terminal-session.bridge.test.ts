@@ -88,7 +88,7 @@ function registerTerminalToolInCodeModeCatalog(params: {
 
 describe("code-mode nested terminal read surfaces the terminal tool's sessionId contract", () => {
   afterEach(() => {
-    resetCodeModeTestState();
+    void resetCodeModeTestState();
   });
 
   it("reproduces the live failure: nested terminal read without sessionId fails with phase=guest and replaySafe=false", async () => {

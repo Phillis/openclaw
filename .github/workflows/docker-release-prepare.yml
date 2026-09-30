@@ -1,21 +1,6 @@
 name: Prepare Docker Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Intended immutable stable, extended-stable, or beta release tag
-        required: true
-        type: string
-      release_sha:
-        description: Final immutable Release SHA, including its changelog
-        required: true
-        type: string
-      image_tag_suffix:
-        description: Optional dated rebuild suffix for version-identified image tags
-        required: false
-        default: ""
-        type: string
   workflow_call:
     inputs:
       tag:

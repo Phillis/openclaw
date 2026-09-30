@@ -307,7 +307,7 @@ export function removeExpiredRuns(now = Date.now()): void {
   }
 }
 
-function disposeCodeModeRun(runId: string): void {
+export function disposeCodeModeRun(runId: string): void {
   const state = activeRuns.get(runId);
   activeRuns.delete(runId);
   void state?.owner.close();

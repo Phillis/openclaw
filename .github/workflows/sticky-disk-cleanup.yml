@@ -1,29 +1,6 @@
 name: Sticky Disk Cleanup
 
 on:
-  workflow_dispatch:
-    inputs:
-      retired_key:
-        description: Exact key listed in .github/retired-sticky-disks.json
-        required: true
-        type: string
-      architecture:
-        description: Blacksmith disk architecture
-        required: true
-        type: choice
-        options:
-          - amd64
-          - arm64
-      region:
-        description: Exact Blacksmith disk region listed in the retirement manifest
-        required: true
-        type: string
-      confirm:
-        description: Delete this retired sticky-disk key
-        required: true
-        default: false
-        type: boolean
-
 permissions:
   contents: read
 

@@ -3,26 +3,6 @@ name: OpenClaw Stable Main Closeout
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Stable OpenClaw tag to replay or repair, for example v2026.6.8 or v2026.6.8-2
-        required: false
-        type: string
-      rollback_drill_id:
-        description: Opaque identifier for the current private rollback drill record
-        required: false
-        type: string
-      rollback_drill_date:
-        description: UTC date of the private rollback drill in YYYY-MM-DD form; must be within 90 days
-        required: false
-        type: string
-      allow_failed_publish_recovery:
-        description: Accept a failed Release Publish parent only after npm and Docker publication succeeded
-        required: false
-        default: false
-        type: boolean
-
 permissions:
   actions: read
   contents: write

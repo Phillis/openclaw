@@ -14,11 +14,7 @@ import {
   startHeartbeatRunner,
 } from "./heartbeat-runner.js";
 import { seedSessionStore, withTempHeartbeatSandbox } from "./heartbeat-runner.test-utils.js";
-import {
-  HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
-  requestHeartbeat,
-  type HeartbeatRunResult,
-} from "./heartbeat-wake.js";
+import { requestHeartbeat, type HeartbeatRunResult } from "./heartbeat-wake.js";
 
 describe("startHeartbeatRunner targeted unscheduled wake dispatch", () => {
   type RunOnce = Parameters<typeof startHeartbeatRunner>[0]["runOnce"];

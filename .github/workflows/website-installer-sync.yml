@@ -1,12 +1,6 @@
 name: Website Installer Sync
 
 on:
-  pull_request:
-    paths:
-      - scripts/install.sh
-      - scripts/install-cli.sh
-      - scripts/install.ps1
-      - .github/workflows/website-installer-sync.yml
   push:
     branches: [main]
     paths:
@@ -14,14 +8,6 @@ on:
       - scripts/install-cli.sh
       - scripts/install.ps1
       - .github/workflows/website-installer-sync.yml
-  workflow_dispatch:
-    inputs:
-      sync_website:
-        description: Sync openclaw.ai after verification
-        required: false
-        default: false
-        type: boolean
-
 permissions:
   contents: read
 

@@ -1,13 +1,6 @@
 name: Docker Channel Promotion
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing stable or extended-stable release tag
-        required: true
-        type: string
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   REGISTRY: ghcr.io

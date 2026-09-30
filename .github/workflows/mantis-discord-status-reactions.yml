@@ -1,23 +1,6 @@
 name: Mantis Discord Status Reactions
 
 on:
-  workflow_dispatch:
-    inputs:
-      baseline_ref:
-        description: Ref, tag, or SHA expected to reproduce queued-only behavior
-        required: true
-        default: 0bf06e953fdda290799fc9fb9244a8f67fdae593
-        type: string
-      candidate_ref:
-        description: Ref, tag, or SHA expected to show queued -> thinking -> done
-        required: true
-        default: main
-        type: string
-      pr_number:
-        description: Optional bug or fix PR number to receive the QA evidence comment
-        required: false
-        type: string
-
 permissions:
   contents: read
   pull-requests: read

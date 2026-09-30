@@ -29,30 +29,6 @@ on:
       OPENCLAW_QA_CONVEX_SITE_URL:
         description: Credential-lease coordinator URL supplied by qa-live-shared
         required: false
-  workflow_dispatch:
-    inputs:
-      dispatch_id:
-        description: Unique parent release-check dispatch identifier
-        required: true
-        type: string
-      expected_trusted_workflow_sha:
-        description: Exact trusted tooling SHA authorized for this workflow
-        required: true
-        type: string
-      target_ref:
-        description: Trusted release ref whose exact candidate SHA should be validated
-        required: true
-        type: string
-      target_context_ref:
-        description: Optional canonical release branch or tag context for an exact-SHA candidate
-        required: false
-        default: ""
-        type: string
-      target_sha:
-        description: Exact full candidate commit SHA
-        required: true
-        type: string
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   GH_TRANSIENT_SERVER_OR_NETWORK_PATTERN: "HTTP 5[0-9][0-9]|Server Error|invalid character .* looking for beginning of value|error connecting to|context deadline exceeded|connection reset by peer|connection refused|TLS handshake timeout|i/o timeout|network is unreachable|ETIMEDOUT|ECONNRESET|EAI_AGAIN"

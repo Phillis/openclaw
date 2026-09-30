@@ -1,32 +1,6 @@
 name: Maturity scorecard
 
 on:
-  workflow_dispatch:
-    inputs:
-      qa_evidence_run_id:
-        description: Optional workflow run id containing qa-evidence.json
-        required: false
-        type: string
-      ref:
-        description: OpenClaw branch, tag, or SHA containing the maturity score source
-        required: true
-        default: main
-        type: string
-      expected_sha:
-        description: Optional full SHA that ref must resolve to
-        required: false
-        default: ""
-        type: string
-      publish_pull_request:
-        description: Open or update a pull request for generated maturity files
-        required: false
-        default: true
-        type: boolean
-      allow_failures:
-        description: Allow rendering from valid incomplete QA evidence
-        required: false
-        default: true
-        type: boolean
   workflow_call:
     inputs:
       qa_evidence_run_id:

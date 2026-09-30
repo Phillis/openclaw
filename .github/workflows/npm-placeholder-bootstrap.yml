@@ -2,22 +2,6 @@ name: NPM Placeholder Bootstrap
 run-name: NPM Placeholder Bootstrap ${{ inputs.ref }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: Exact main-ancestry commit SHA containing the release-enabled plugin manifests
-        required: true
-        type: string
-      packages:
-        description: Ordered comma-separated @openclaw package names to reserve at 0.0.0
-        required: true
-        type: string
-      dry_run:
-        description: Build and verify the immutable publication plan without entering npm-release
-        required: true
-        default: true
-        type: boolean
-
 concurrency:
   group: npm-placeholder-release
   cancel-in-progress: false

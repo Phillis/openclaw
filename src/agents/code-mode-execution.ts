@@ -42,6 +42,7 @@ import {
   type PendingBridgeState,
   type CodeModeBridgeDispatchState,
   type CodeModeRunOwner,
+  disposeCodeModeRun,
 } from "./code-mode-state.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import type { ToolResultBudget } from "./tool-result-limits.js";

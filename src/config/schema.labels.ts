@@ -855,8 +855,3 @@ export const FIELD_LABELS: Record<string, string> = {
   "plugins.entries.*.config": "Plugin Config",
 };
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
-  "session.rotation": "Session Rotation",
-  "session.rotation.maxTurns": "Rotation Max Turns",
-  "session.rotation.maxAgeHours": "Rotation Max Age (hours)",
-  "session.rotation.ceilingTokens": "Session Ceiling Tokens",
-  "session.rotation.progressFloorTokens": "Session Ceiling Floor Tokens",

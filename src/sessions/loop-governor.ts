@@ -32,7 +32,6 @@ import {
   isSubagentSessionKey,
   parseAgentSessionKey,
 } from "./session-key-utils.js";
-import { decodeSessionIdentity } from "./session-lifecycle-identity.js";
 
 const log = createSubsystemLogger("loop-governor");
 
@@ -303,7 +302,17 @@ export function checkLoopGovernorAdmissionForAdmissionScope(
   }
   let agentSessionKey: string | undefined;
   for (const identity of identities) {
-    const raw = decodeSessionIdentity(identity)?.identity ?? identity;
+    // 9.6: decodeSessionIdentity became module-private upstream; the identity
+    // wire shape is JSON [scope, identity] — decode inline (same tolerance).
+    let raw: string = identity;
+    try {
+      const decoded: unknown = JSON.parse(identity);
+      if (Array.isArray(decoded) && decoded.length === 2 && typeof decoded[1] === "string") {
+        raw = decoded[1];
+      }
+    } catch {
+      // non-JSON identity: use verbatim
+    }
     if (raw && agentIdFromSessionKey(raw)) {
       agentSessionKey = raw;
       break;

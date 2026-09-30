@@ -1,8 +1,6 @@
 name: OpenClaw Scheduled Live And E2E Checks
 
 on:
-  workflow_dispatch:
-
 permissions:
   actions: read
   contents: read

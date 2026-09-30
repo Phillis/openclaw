@@ -5,8 +5,6 @@ name: OpenGrep — Full
 # not block unrelated pull requests.
 
 on:
-  workflow_dispatch:
-
 concurrency:
   group: opengrep-full-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false

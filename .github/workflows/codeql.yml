@@ -1,16 +1,6 @@
 name: CodeQL
 
 on:
-  workflow_dispatch:
-    inputs:
-      profile:
-        description: CodeQL security profile to run
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - security
   push:
     branches:
       - main

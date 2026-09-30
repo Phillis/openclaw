@@ -1,17 +1,6 @@
 name: OpenClaw Release Button
 
 on:
-  workflow_dispatch:
-    inputs:
-      prepared_artifact:
-        description: Exact readiness artifact JSON from a successful OpenClaw Release Prepare run
-        required: true
-        type: string
-      openclaw_npm_resume_run_id:
-        description: Recovery only — successful original core npm run, validated by the existing publisher
-        required: false
-        type: string
-
 permissions:
   contents: read
 

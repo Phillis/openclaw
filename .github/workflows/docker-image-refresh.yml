@@ -1,25 +1,6 @@
 name: Docker Image Refresh
 
 on:
-  workflow_dispatch:
-    inputs:
-      channel:
-        description: Release channel to rebuild
-        required: false
-        default: both
-        type: choice
-        options:
-          - stable
-          - extended-stable
-          - both
-      dry_run:
-        description: Resolve and summarize without publishing
-        required: false
-        default: false
-        type: boolean
-  schedule:
-    - cron: "17 3 * * 1"
-
 permissions:
   contents: read
 

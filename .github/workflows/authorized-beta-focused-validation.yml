@@ -1,8 +1,6 @@
 name: Authorized Beta Focused Validation
 
 on:
-  workflow_dispatch:
-
 permissions:
   actions: read
   attestations: write

@@ -2,52 +2,6 @@ name: Plugin ClawHub New
 run-name: "plugin-clawhub-new.yml [${{ inputs.release_tag || inputs.ref }}] ${{ inputs.dry_run && 'validation' || 'publish' }} parent=${{ inputs.release_publish_run_id || 'manual' }}/${{ inputs.release_publish_run_attempt || '1' }}"
 
 on:
-  workflow_dispatch:
-    inputs:
-      plugins:
-        description: Comma-separated plugin package names to bootstrap on ClawHub
-        required: true
-        type: string
-      ref:
-        description: Exact 40-character target commit SHA approved by the parent release workflow
-        required: true
-        type: string
-      bootstrap_workflow_sha:
-        description: Exact trusted-main workflow SHA approved by the parent release workflow
-        required: false
-        default: ""
-        type: string
-      release_tag:
-        description: Exact release tag that must peel to ref; omit only for pre-tag validation
-        required: false
-        default: ""
-        type: string
-      release_publish_run_id:
-        description: Approved OpenClaw Release Publish workflow run id
-        required: false
-        default: ""
-        type: string
-      release_publish_run_attempt:
-        description: Exact approving OpenClaw Release Publish workflow run attempt
-        required: false
-        default: ""
-        type: string
-      release_publish_branch:
-        description: Branch name of the approving OpenClaw Release Publish workflow run
-        required: false
-        default: ""
-        type: string
-      pretag_validation:
-        description: Validate an exact main/release target before its release tag exists; requires dry_run=true
-        required: false
-        default: false
-        type: boolean
-      dry_run:
-        description: Validate the token-gated ClawHub bootstrap handoff without publishing.
-        required: false
-        default: false
-        type: boolean
-
 concurrency:
   # Validation gets its own slot; real publication remains serialized by target.
   group: plugin-clawhub-new-${{ inputs.dry_run && format('dry-run-{0}', github.run_id) || github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}

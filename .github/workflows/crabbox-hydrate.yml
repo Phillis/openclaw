@@ -1,31 +1,6 @@
 name: Crabbox Hydrate
 
 on:
-  workflow_dispatch:
-    inputs:
-      crabbox_id:
-        description: "Crabbox lease ID"
-        required: true
-        type: string
-      ref:
-        description: "Git ref to hydrate"
-        required: false
-        type: string
-      crabbox_runner_label:
-        description: "Dynamic Crabbox runner label"
-        required: true
-        type: string
-      crabbox_job:
-        description: "Hydration job identifier expected by Crabbox"
-        required: false
-        default: "hydrate"
-        type: string
-      crabbox_keep_alive_minutes:
-        description: "Minutes to keep the hydrated job alive"
-        required: false
-        default: "90"
-        type: string
-
 permissions:
   contents: read
 

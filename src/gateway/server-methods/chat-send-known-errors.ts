@@ -4,10 +4,8 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { SESSION_ROUTING_CHANGED_ERROR_REASON } from "../../config/sessions/main-session.js";
 import { SESSION_ROTATION_CHANGED_ERROR_REASON } from "../../sessions/session-rotation.js";
-import {
-  ACTIVE_LEAF_CHANGED_ERROR_REASON,
-  respondChatSessionRoutingChanged,
-} from "./chat-send-pre-admission.js";
+import { ACTIVE_LEAF_CHANGED_ERROR_REASON } from "./chat-send-active-leaf.js";
+import { respondChatSessionRoutingChanged } from "./chat-send-pre-admission.js";
 import { SESSION_SETTINGS_CHANGED_ERROR_REASON } from "./chat-send-session-settings.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 

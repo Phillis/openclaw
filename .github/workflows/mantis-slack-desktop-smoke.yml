@@ -1,61 +1,6 @@
 name: Mantis Slack Desktop Smoke
 
 on:
-  workflow_dispatch:
-    inputs:
-      candidate_ref:
-        description: Ref, tag, or SHA to run inside the VNC desktop
-        required: true
-        default: main
-        type: string
-      pr_number:
-        description: Optional PR number to receive the QA evidence comment
-        required: false
-        type: string
-      scenario_id:
-        description: Slack QA scenario id
-        required: true
-        default: slack-canary
-        type: string
-      approval_checkpoints:
-        description: Run native Slack approval checkpoint mode instead of gateway setup
-        required: false
-        default: false
-        type: boolean
-      keep_vm:
-        description: Keep the desktop lease open after a passing run
-        required: false
-        default: false
-        type: boolean
-      crabbox_provider:
-        description: Crabbox provider for the desktop lease
-        required: false
-        default: aws
-        type: choice
-        options:
-          - aws
-          - hetzner
-      crabbox_market:
-        description: Crabbox capacity market for AWS leases
-        required: false
-        default: on-demand
-        type: choice
-        options:
-          - on-demand
-          - spot
-      crabbox_lease_id:
-        description: Optional existing Crabbox desktop/browser lease id or slug to reuse
-        required: false
-        type: string
-      hydrate_mode:
-        description: Remote workspace hydrate mode
-        required: false
-        default: source
-        type: choice
-        options:
-          - source
-          - prehydrated
-
 permissions:
   contents: read
   issues: write

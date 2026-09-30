@@ -2,39 +2,6 @@ name: Full Release Artifacts
 run-name: Full Release Artifacts ${{ inputs.dispatch_id }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      stage:
-        type: choice
-        required: true
-        options: [npm, candidate, docker]
-      dispatch_id:
-        description: Exact calling Full Release Validation run and attempt
-        type: string
-        required: true
-      source_sha:
-        type: string
-        required: true
-      release_tag:
-        type: string
-        required: true
-      npm_dist_tag:
-        type: string
-        default: latest
-      preflight_phase:
-        type: choice
-        default: all
-        options: [all, prepare]
-      release_candidate_branch:
-        type: string
-        default: ""
-      request_json:
-        type: string
-        default: ""
-      prepared_npm_bundle_json:
-        type: string
-        default: ""
-
 # Separate runs own immutable publication bytes. Retrying the FRV collectors
 # cannot hide their producer artifacts or require a rebuild of successful work.
 permissions:

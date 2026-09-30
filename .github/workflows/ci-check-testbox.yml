@@ -1,15 +1,5 @@
 name: Blacksmith Testbox
 on:
-  workflow_dispatch:
-    inputs:
-      testbox_id:
-        type: string
-        description: "Testbox session ID"
-        required: true
-      timeout_minutes:
-        type: number
-        description: "Maximum GitHub job runtime for long Testbox commands"
-        default: 120
 permissions:
   contents: read
 

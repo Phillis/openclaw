@@ -81,50 +81,6 @@ on:
       OPENCLAW_QA_CONVEX_SECRET_CI:
         description: Convex CI credential
         required: false
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: Ref, tag, or SHA to run
-        required: true
-        default: main
-        type: string
-      run_buzz:
-        description: Run the Buzz live lane (requires a pooled Buzz credential)
-        required: false
-        default: false
-        type: boolean
-      buzz_scenario:
-        description: Optional comma-separated Buzz scenario ids
-        required: false
-        type: string
-      scenario:
-        description: Optional comma-separated Telegram scenario ids
-        required: false
-        type: string
-      matrix_scenario:
-        description: Optional comma-separated Matrix scenario ids
-        required: false
-        type: string
-      discord_scenario:
-        description: Optional comma-separated Discord scenario ids
-        required: false
-        type: string
-      discord_provider_mode:
-        description: Provider mode for the Discord live transport lane
-        required: false
-        default: live-frontier
-        type: choice
-        options:
-          - live-frontier
-          - mock-openai
-      whatsapp_scenario:
-        description: Optional comma-separated WhatsApp scenario ids
-        required: false
-        type: string
-      slack_scenario:
-        description: Optional comma-separated Slack scenario ids
-        required: false
-        type: string
 permissions:
   contents: read
   pull-requests: read

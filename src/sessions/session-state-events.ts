@@ -276,14 +276,15 @@ export function acknowledgeSessionStateNotices(
         if (material > notified) {
           followups.push({
             watcherSessionKey,
-            watcherStorePath: row.watcher_store_path ?? null,
+            watcherStorePath: null,
             targetSessionKey,
             lastSeenSequence: notified,
             // Non-main watcher lanes never wake from the sweep: their cursors stay
             // stale while idle, so a restart would re-fire an immediate heartbeat run
             // per stale lane. queueOnly keeps the event durable (replace-deduped) for
             // the lane's next real turn; main-lane watchers keep today's wake.
-            queueOnly: isAmbientGroupWatchCursor(row) || !shouldWakeWatcherLane(row.watcher_session_key),
+            queueOnly:
+              isAmbientGroupWatchCursor(row) || !shouldWakeWatcherLane(row.watcher_session_key),
           });
         }
       }
@@ -393,7 +394,6 @@ export function sweepSessionStateWatchNotices(
     for (const row of pendingRows) {
       enqueueSessionStateNotice({
         watcherSessionKey: row.watcher_session_key,
-        watcherStorePath: row.watcher_store_path ?? null,
         targetSessionKey: row.target_session_key,
         lastSeenSequence: normalizeSqliteNumber(row.last_seen_sequence) ?? 0,
         // Non-main watcher lanes never wake from the sweep: their cursors stay

@@ -1,28 +1,6 @@
 name: CodeQL Critical Quality
 
 on:
-  workflow_dispatch:
-    inputs:
-      profile:
-        description: CodeQL quality profile to run
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - agent-runtime-boundary
-          - config-boundary
-          - core-auth-secrets
-          - channel-runtime-boundary
-          - gateway-runtime-boundary
-          - memory-runtime-boundary
-          - mcp-process-runtime-boundary
-          - plugin-boundary
-          - plugin-sdk-package-contract
-          - plugin-sdk-reply-runtime
-          - provider-runtime-boundary
-          - network-runtime-boundary
-          - session-diagnostics-boundary
 concurrency:
   group: codeql-critical-quality-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && format('manual-{0}', github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
