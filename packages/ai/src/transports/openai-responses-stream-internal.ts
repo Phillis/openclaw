@@ -52,7 +52,7 @@ import type {
   ResponsesStreamOutputMessage,
 } from "./openai-responses-stream-types-internal.js";
 import { IncompleteToolCallError, transportAbortError } from "./transport-stream-shared.js";
-/* oxlint-disable max-lines -- upstream v2026.9.7 (701 lines; fork merge) */
+/* oxlint-disable max-lines -- upstream v2026.9.7 content, fork merge growth */
 
 export type { OpenAIResponsesStreamEvent } from "./openai-responses-stream-types-internal.js";
 

@@ -209,7 +209,11 @@ export function main(
       envVarNames,
     });
     const { added, removed: stale } = compareRatchetSets(current, baseline, compareStrings);
-    const baseRef = resolveRatchetBase(root, { base: args.base, staged: args.staged });
+    const baseRef = resolveRatchetBase(root, {
+      base: args.base,
+      staged: args.staged,
+      baseDisabled: args.baseDisabled,
+    });
     const baseBaseline = baseRef
       ? loadRatchetReference(root, baseRef, BASELINE_PATH, parseRatchetPaths)
       : null;

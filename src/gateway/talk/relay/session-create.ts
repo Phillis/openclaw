@@ -60,7 +60,7 @@ import {
   RelayToolCallLedger,
 } from "./tool-call-ledger.js";
 import { enqueueRelayVoiceTranscript } from "./voice.js";
-/* oxlint-disable max-lines -- upstream v2026.9.7 (702 lines; fork merge) */
+/* oxlint-disable max-lines -- upstream v2026.9.7 content, fork merge growth */
 
 // The relay contract is 20 ms of 24 kHz mono PCM16 per browser event.
 const RELAY_OUTPUT_AUDIO_FRAME_BYTES = 960;

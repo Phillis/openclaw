@@ -128,7 +128,7 @@ export function main(root = process.cwd(), argv = process.argv.slice(2)) {
     if (args.prune) {
       throw new Error("Line caps have no baseline to prune; extract a coherent sibling module.");
     }
-    const base = resolveRatchetBase(root, args);
+    const base = resolveRatchetBase(root, { ...args, baseDisabled: args.baseDisabled });
     if (!base) {
       throw new Error("Line-cap ratchet requires a Git base commit.");
     }

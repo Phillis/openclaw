@@ -716,3 +716,8 @@ ui/src/pages/sessions/view.ts
 ui/src/pages/usage/view-overview.ts
 ui/src/pages/usage/view.ts
 ui/src/test-helpers/control-ui-e2e.ts
+ui/src/pages/new-session/draft-submission-flow.test.ts
+src/gateway/server-methods/sessions.dispatch.device.test.ts
+src/gateway/talk/relay/session-create.ts
+src/node-host/node-worker-supervisor.ts
+packages/ai/src/transports/openai-responses-stream-internal.ts

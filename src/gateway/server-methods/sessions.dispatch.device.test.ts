@@ -47,7 +47,7 @@ import {
   makeFailedPlacement,
   makeSessionTarget,
 } from "./sessions-dispatch.test-support.js";
-/* oxlint-disable max-lines -- upstream v2026.9.7 (1002 lines; fork merge) */
+/* oxlint-disable max-lines -- upstream v2026.9.7 content, fork merge growth */
 
 // Install session-store fixtures before environment handlers load their session accessors.
 const environmentMethods = await import("./environments.js");
