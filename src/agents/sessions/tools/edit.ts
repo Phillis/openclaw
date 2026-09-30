@@ -14,37 +14,25 @@ import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { repairJson } from "@openclaw/ai/internal/runtime";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import { Type } from "typebox";
+import { hasErrnoCode } from "../../../infra/errno.js";
 import { captureAgentToolSourceExecutionGuard } from "../../agent-tool-source-execution-guard.js";
-import { normalizeToLF } from "../../line-endings.js";
 import { renderDiff } from "../../modes/interactive/components/diff.js";
 import type { AgentTool } from "../../runtime/index.js";
-import { textResult } from "../../tools/common.js";
+import { textResult } from "../../tools/tool-results.js";
 import { decodeUtf8File } from "../../utf8-file.js";
 import type { ToolDefinition } from "../extensions/types.js";
-import {
-  applyEditsPreservingLineEndings,
-  computeEditsDiff,
-  EditNoChangeError,
-  type Edit,
-  type EditDiffError,
-  type EditDiffResult,
-  findClosestMatchLine,
-  generateDiffString,
-  generateUnifiedPatch,
-  splitNoOpEdits,
-  stripBom,
-  validateNoOpEditTargets,
-} from "./edit-diff.js";
+import type { Edit, EditDiffError, EditDiffResult } from "./edit-diff.js";
 import {
   resolveFileMutationQueueKey,
   withFileMutationQueueKeyResolution,
 } from "./file-mutation-queue.js";
+import { computeEditsDiff, planFileEdit } from "./file-tool-planning.js";
 import { type PersistedFileStat, verifyPersistedUtf8File } from "./file-write-verification.js";
 import { resolveLocalPathToCwd, resolveToCwd } from "./path-utils.js";
 import { invalidArgText, shortenPath, str } from "./render-utils.js";
 import type { EditToolDetails, EditToolInput } from "./tool-contracts.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
+import { editSchema, EditToolOutputSchema } from "./tool-schemas.js";
 
 type EditPreview = EditDiffResult | EditDiffError;
 
@@ -52,81 +40,8 @@ type EditRenderState = {
   callComponent?: EditCallRenderComponent;
 };
 
-const replaceEditSchema = Type.Object(
-  {
-    oldText: Type.String({
-      description: "Exact original text; unique and non-overlapping in this call.",
-    }),
-    newText: Type.String({
-      description: "Replacement text.",
-    }),
-  },
-  {},
-);
-
-const editSchema = Type.Object(
-  {
-    path: Type.String({
-      description: "File path; relative/absolute.",
-    }),
-    edits: Type.Array(replaceEditSchema, {
-      description:
-        "Targeted replacements against original file; no overlap/nesting. Merge nearby changes.",
-    }),
-  },
-  {},
-);
-
-const EditToolOutputSchema = Type.Union([
-  Type.Object({ changed: Type.Literal(false) }, { additionalProperties: false }),
-  Type.Object(
-    {
-      changed: Type.Literal(true),
-      diff: Type.String(),
-      patch: Type.String(),
-      firstChangedLine: Type.Optional(Type.Integer({ minimum: 1 })),
-    },
-    { additionalProperties: false },
-  ),
-]);
-
 const EDIT_MISMATCH_MESSAGE = "Could not find the exact text in";
 const EDIT_MISMATCH_HINT_LIMIT = 800;
-
-/**
- * BUG-072 (F3): pollution sink guard.
- *
- * These sentinels are host-generated read-cap/truncation markers; a write or
- * edit payload that contains one is synthetic read-path output, not file data.
- * Persisting them amplified BUG-072 (read-all + write-back round trips), so
- * file-writing sinks reject payloads carrying them with a named error. Edit
- * `oldText` is NOT checked: already-polluted files must remain repairable by
- * targeted edits.
- */
-export const POLLUTION_GUARD_MARKER_IN_PAYLOAD = "POLLUTION_GUARD_MARKER_IN_PAYLOAD";
-
-const POLLUTION_MARKER_RE =
-  /\[Read output capped at |…\(truncated\)…|\.\.\.\(live output truncated\)\.\.\.|\[\d+ more lines? in file\. |\[Showing (?:lines|part of line) /;
-
-/** Reject a single write/edit payload that carries a host-generated truncation marker. */
-export function assertNoPollutionMarkersInText(text: string, path: string): void {
-  if (POLLUTION_MARKER_RE.test(text)) {
-    throw new Error(
-      `${POLLUTION_GUARD_MARKER_IN_PAYLOAD}: refusing to write read-cap/truncation markers into ${path}. ` +
-        "The payload contains a host-generated truncation notice ([Read output capped at …], …(truncated)…, or ...(live output truncated)...), which is not file content. " +
-        "Re-read the file (windows are content-pure) and write only verified content.",
-    );
-  }
-}
-
-/** Reject replacement texts carrying pollution markers; oldText stays exempt. */
-export function assertNoPollutionMarkers(edits: readonly Edit[], path: string): void {
-  for (const edit of edits) {
-    assertNoPollutionMarkersInText(edit.newText, path);
-  }
-}
-/** Context lines shown before/after the best-match line in a windowed mismatch dump. */
-const EDIT_MISMATCH_CONTEXT_LINES = 4;
 
 /**
  * Pluggable operations for the edit tool.
@@ -157,12 +72,7 @@ const defaultEditOperations: EditOperations = {
         mtimeMs: stat.mtimeMs,
       } as const;
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        (error as { code?: unknown }).code === "ENOENT"
-      ) {
+      if (hasErrnoCode(error, "ENOENT")) {
         return null;
       }
       throw error;
@@ -230,47 +140,14 @@ function validateEditInput(input: EditToolInput): {
   return { path: input.path, edits: input.edits };
 }
 
-/**
- * Window the mismatch snippet around the best-match line for the failing
- * oldText, so large files surface the failing region instead of only the file
- * head (BUG-067: an 8.4KB file's failing line 42 was never reachable in the
- * 800-char head dump). Falls back to the head-of-file behavior when no focus
- * line is known.
- */
-function buildMismatchSnippet(content: string, focusLine: number | undefined): string {
-  if (content.length <= EDIT_MISMATCH_HINT_LIMIT) {
-    return content;
-  }
-  if (focusLine === undefined) {
-    return `${truncateUtf16Safe(content, EDIT_MISMATCH_HINT_LIMIT)}\n... (truncated)`;
-  }
-  const lines = content.split("\n");
-  const focusIndex = Math.min(Math.max(focusLine - 1, 0), Math.max(lines.length - 1, 0));
-  const start = Math.max(0, focusIndex - EDIT_MISMATCH_CONTEXT_LINES);
-  const end = Math.min(lines.length, focusIndex + 1 + EDIT_MISMATCH_CONTEXT_LINES);
-  const prefix = start > 0 ? `... (lines 1-${start} omitted)\n` : "";
-  let snippetLines = lines.slice(start, end);
-  let snippet = prefix + snippetLines.join("\n") + (end < lines.length ? "\n... (truncated)" : "");
-  // Trim from the tail (farthest from the focus line) until within budget.
-  while (snippet.length > EDIT_MISMATCH_HINT_LIMIT && snippetLines.length > 1) {
-    snippetLines = snippetLines.slice(0, -1);
-    snippet = prefix + snippetLines.join("\n") + "\n... (truncated)";
-  }
-  if (snippet.length > EDIT_MISMATCH_HINT_LIMIT) {
-    snippet = `${truncateUtf16Safe(snippet, EDIT_MISMATCH_HINT_LIMIT)}\n... (truncated)`;
-  }
-  return snippet;
-}
-
-function appendMismatchHint(
-  error: Error,
-  currentContent: string,
-  focusLine: number | undefined,
-): Error {
-  const enhanced = new Error(
-    `${error.message}\nCurrent file contents:\n${buildMismatchSnippet(currentContent, focusLine)}`,
-    { cause: error },
-  );
+function appendMismatchHint(error: Error, currentContent: string): Error {
+  const snippet =
+    currentContent.length <= EDIT_MISMATCH_HINT_LIMIT
+      ? currentContent
+      : `${truncateUtf16Safe(currentContent, EDIT_MISMATCH_HINT_LIMIT)}\n... (truncated)`;
+  const enhanced = new Error(`${error.message}\nCurrent file contents:\n${snippet}`, {
+    cause: error,
+  });
   enhanced.stack = error.stack;
   return enhanced;
 }
@@ -314,16 +191,9 @@ function getEditCallRenderComponent(
   lastComponent: unknown,
 ): EditCallRenderComponent {
   if (lastComponent instanceof Box) {
-    const component = lastComponent as EditCallRenderComponent;
-    state.callComponent = component;
-    return component;
+    state.callComponent = lastComponent as EditCallRenderComponent;
   }
-  if (state.callComponent) {
-    return state.callComponent;
-  }
-  const component = createEditCallRenderComponent();
-  state.callComponent = component;
-  return component;
+  return (state.callComponent ??= createEditCallRenderComponent());
 }
 
 function getRenderablePreviewInput(
@@ -404,16 +274,14 @@ function getEditHeaderBg(
   settledError: boolean | undefined,
   theme: typeof import("../../modes/interactive/theme/theme.js").interactiveAgentTheme,
 ): (text: string) => string {
-  if (preview) {
-    if ("error" in preview) {
-      return (text: string) => theme.bg("toolErrorBg", text);
-    }
-    return (text: string) => theme.bg("toolSuccessBg", text);
-  }
-  if (settledError) {
-    return (text: string) => theme.bg("toolErrorBg", text);
-  }
-  return (text: string) => theme.bg("toolPendingBg", text);
+  const color = preview
+    ? "error" in preview
+      ? "toolErrorBg"
+      : "toolSuccessBg"
+    : settledError
+      ? "toolErrorBg"
+      : "toolPendingBg";
+  return (text) => theme.bg(color, text);
 }
 
 function buildEditCallComponent(
@@ -480,10 +348,7 @@ export function createEditToolDefinition(
     outputSchema: EditToolOutputSchema,
     renderShell: "self",
     prepareArguments: prepareEditArguments,
-    async execute(toolCallId, input: EditToolInput, signal?: AbortSignal, onUpdate?, ctx?) {
-      void toolCallId;
-      void onUpdate;
-      void ctx;
+    async execute(_toolCallId, input, signal, _onUpdate, _ctx) {
       const assertCurrent = captureAgentToolSourceExecutionGuard();
       const { path, edits: originalEdits } = validateEditInput(input);
       const absolutePath = resolvePath(path, cwd);
@@ -495,7 +360,7 @@ export function createEditToolDefinition(
         }
         assertCurrent();
 
-        let realEdits: Edit[] = [];
+        let editCount = 0;
         let expectedContent: string | undefined;
 
         try {
@@ -518,29 +383,19 @@ export function createEditToolDefinition(
           }
           assertCurrent();
 
-          const { bom, text: content } = stripBom(rawContent);
-          const normalizedContent = normalizeToLF(content);
-          const editSets = splitNoOpEdits(normalizedContent, originalEdits, path);
-          const noOpEdits = editSets.noOpEdits;
-          realEdits = editSets.realEdits;
-          validateNoOpEditTargets(normalizedContent, noOpEdits, realEdits, path);
-          // BUG-072 (F3): reject polluted replacement payloads before anything
-          // is written. oldText is exempt so polluted files stay repairable.
-          assertNoPollutionMarkers(realEdits, path);
-          // No-op: not terminal — the model may still be mid-task and needs a
-          // continuation, not an ended turn.
-          if (realEdits.length === 0) {
-            return textResult(
-              `No changes made to ${path}. The replacement text is identical to the original.`,
-              { changed: false } satisfies EditToolDetails,
-            );
-          }
-          const { baseContent, newContent, finalContent } = applyEditsPreservingLineEndings(
-            content,
-            realEdits,
-            path,
+          const plan = await planFileEdit(
+            { path, content: rawContent, edits: originalEdits },
+            signal,
           );
-          expectedContent = bom + finalContent;
+          if (signal?.aborted) {
+            throw new Error("Operation aborted");
+          }
+          assertCurrent();
+          if (!plan.changed) {
+            return textResult(plan.message, { changed: false } satisfies EditToolDetails);
+          }
+          editCount = plan.editCount;
+          expectedContent = plan.content;
           await ops.writeFile(absolutePath, expectedContent);
           if (signal?.aborted) {
             throw new Error("Operation aborted");
@@ -553,24 +408,10 @@ export function createEditToolDefinition(
           }
 
           assertCurrent();
-          const diffResult = generateDiffString(baseContent, newContent);
-          const patch = generateUnifiedPatch(path, baseContent, newContent);
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Successfully replaced ${realEdits.length} block(s) in ${path}.`,
-              },
-            ],
-            details: {
-              changed: true,
-              diff: diffResult.diff,
-              patch,
-              ...(diffResult.firstChangedLine === undefined
-                ? {}
-                : { firstChangedLine: diffResult.firstChangedLine }),
-            },
-          };
+          return textResult<EditToolDetails>(
+            `Successfully replaced ${editCount} block(s) in ${path}.`,
+            { changed: true, ...plan.receipt },
+          );
         } catch (error: unknown) {
           assertCurrent();
           const normalizedError = error instanceof Error ? error : new Error(String(error));
@@ -583,36 +424,13 @@ export function createEditToolDefinition(
             (await verifyPersistedUtf8File(absolutePath, expectedContent, ops))
           ) {
             assertCurrent();
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Successfully replaced ${realEdits.length} block(s) in ${path}.`,
-                },
-              ],
-              details: { changed: true, diff: "", patch: "" },
-            };
+            return textResult<EditToolDetails>(
+              `Successfully replaced ${editCount} block(s) in ${path}.`,
+              { changed: true, diff: "", patch: "" },
+            );
           }
           if (normalizedError.message.includes(EDIT_MISMATCH_MESSAGE)) {
-            // Locate the failing region for the dump window: prefer the first
-            // real edit whose oldText is absent from the current content.
-            const { text: retryContent } = stripBom(currentContent);
-            const retryNormalized = normalizeToLF(retryContent);
-            const failingOldText = realEdits.find(
-              (edit) => !retryNormalized.includes(normalizeToLF(edit.oldText)),
-            )?.oldText;
-            const focusLine = failingOldText
-              ? findClosestMatchLine(retryNormalized, normalizeToLF(failingOldText))
-              : undefined;
-            throw appendMismatchHint(normalizedError, currentContent, focusLine);
-          }
-          // No-op: the edit matched but produced identical content. Not
-          // terminal — see the realEdits.length===0 case above.
-          if (normalizedError instanceof EditNoChangeError) {
-            return textResult(
-              `No changes made to ${path}. The replacement produced identical content.`,
-              { changed: false } satisfies EditToolDetails,
-            );
+            throw appendMismatchHint(normalizedError, currentContent);
           }
           throw normalizedError;
         }

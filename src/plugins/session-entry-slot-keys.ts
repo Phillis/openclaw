@@ -52,6 +52,7 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "parentSessionId",
   "createdVia",
   "createdActor",
+  "inheritedGitContributorProfileIds",
   "sandbox",
   "sandboxMode",
   "nativeRuntimeConsent",

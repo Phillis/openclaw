@@ -1,13 +1,123 @@
 name: OpenClaw Cross-OS Release Checks (Reusable)
 
 on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Public OpenClaw ref to validate (tag, branch, or full commit SHA)
+        required: true
+        default: main
+        type: string
+      target_context_ref:
+        description: Optional canonical release branch or tag context for an exact-SHA target
+        required: false
+        default: ""
+        type: string
+      workflow_ref:
+        description: Optional openclaw/openclaw ref that provides the reusable workflow harness
+        required: false
+        default: ""
+        type: string
+      provider:
+        description: Provider lane to use for onboarding and the end-to-end turn
+        required: true
+        default: openai
+        type: choice
+        options:
+          - openai
+          - anthropic
+          - minimax
+      mode:
+        description: Which release-check lanes to run
+        required: true
+        default: both
+        type: choice
+        options:
+          - fresh
+          - upgrade
+          - both
+      suite_filter:
+        description: Optional focused cross-OS suite filter, e.g. windows/packaged-upgrade or packaged-fresh
+        required: false
+        default: ""
+        type: string
+      previous_version:
+        description: Optional exact older baseline version for installer/dev-update and packaged upgrade
+        required: false
+        default: ""
+        type: string
+      ubuntu_runner:
+        description: Optional Linux runner label override
+        required: false
+        default: ""
+        type: string
+      windows_runner:
+        description: Optional Windows runner label override
+        required: false
+        default: ""
+        type: string
+      macos_runner:
+        description: Optional macOS runner label override
+        required: false
+        default: ""
+        type: string
+      candidate_artifact_name:
+        description: Optional artifact name containing the candidate OpenClaw tarball
+        required: false
+        default: ""
+        type: string
+      candidate_artifact_id:
+        description: Immutable GitHub artifact id for candidate_artifact_name
+        required: false
+        default: ""
+        type: string
+      candidate_artifact_digest:
+        description: Exact upload-artifact SHA-256 digest for candidate_artifact_id
+        required: false
+        default: ""
+        type: string
+      candidate_artifact_run_id:
+        description: Exact workflow run id that produced candidate_artifact_id
+        required: false
+        default: ""
+        type: string
+      candidate_artifact_run_attempt:
+        description: Exact workflow run attempt that produced candidate_artifact_id
+        required: false
+        default: ""
+        type: string
+      candidate_file_name:
+        description: Optional candidate tarball file name inside candidate_artifact_name
+        required: false
+        default: ""
+        type: string
+      candidate_version:
+        description: Optional candidate OpenClaw package version
+        required: false
+        default: ""
+        type: string
+      candidate_source_sha:
+        description: Optional source SHA used to build the candidate tarball
+        required: false
+        default: ""
+        type: string
+      candidate_sha256:
+        description: Exact candidate tarball SHA-256
+        required: false
+        default: ""
+        type: string
+      prepublish_plugin_registry_json:
+        description: Optional immutable prerelease plugin registry tuple for manual dispatch
+        required: false
+        default: ""
+        type: string
+      openai_model:
+        description: OpenAI model for release cross-OS agent-turn smoke
+        required: false
+        default: ""
+        type: string
   workflow_call:
     inputs:
-      advisory:
-        description: Also treat preparation and Linux failures as advisory for the caller
-        required: false
-        default: false
-        type: boolean
       ref:
         description: Public OpenClaw ref to validate (tag, branch, or full commit SHA)
         required: true
@@ -132,15 +242,14 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  NODE_VERSION: "24.19.0"
+  NODE_VERSION: "24.21.0"
   OPENCLAW_REPOSITORY: openclaw/openclaw
   OPENCLAW_CROSS_OS_OPENAI_MODEL: ${{ inputs.openai_model || vars.OPENCLAW_CROSS_OS_OPENAI_MODEL || 'openai/gpt-5.6-luna' }}
 
 jobs:
   prepare:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 90
-    continue-on-error: ${{ inputs.advisory }}
     outputs:
       baseline_artifact_digest: ${{ steps.upload_baseline.outputs.artifact-digest }}
       baseline_artifact_id: ${{ steps.upload_baseline.outputs.artifact-id }}
@@ -776,11 +885,10 @@ jobs:
   cross_os_release_checks:
     name: "${{ matrix.display_name }} / ${{ matrix.suite_label }}"
     needs: prepare
-    continue-on-error: ${{ inputs.advisory || matrix.os_id != 'ubuntu' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON(matrix.runner))) || (matrix.runner) }}
     timeout-minutes: 60
     steps:
       - name: Checkout workflow repo
@@ -820,6 +928,8 @@ jobs:
             openclaw-cross-os-npm-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-${{ matrix.suite }}-
             openclaw-cross-os-npm-v1-seed-
 
+      # These bounded fallbacks repeat only artifact-service acquisition, before
+      # any test executes. Each retry preserves the prepared immutable inputs.
       - name: Download candidate artifact
         id: download_candidate
         continue-on-error: true
@@ -829,6 +939,11 @@ jobs:
           path: ${{ runner.temp }}/openclaw-cross-os-release-checks/candidate
           run-id: ${{ needs.prepare.outputs.candidate_artifact_run_id }}
           github-token: ${{ github.token }}
+
+      - name: Warn about candidate artifact acquisition retry
+        if: ${{ steps.download_candidate.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Candidate artifact download failed; retrying infrastructure acquisition once before tests."
 
       - name: Retry candidate artifact download
         if: ${{ steps.download_candidate.outcome == 'failure' }}
@@ -850,8 +965,13 @@ jobs:
           run-id: ${{ needs.prepare.outputs.baseline_artifact_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Warn about baseline artifact acquisition retry
+        if: ${{ steps.download_baseline.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Baseline artifact download failed; retrying infrastructure acquisition once before tests."
+
       - name: Retry baseline artifact download
-        if: ${{ matrix.suite == 'packaged-upgrade' && steps.download_baseline.outcome == 'failure' }}
+        if: ${{ steps.download_baseline.outcome == 'failure' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.prepare.outputs.baseline_artifact_id }}
@@ -870,8 +990,13 @@ jobs:
           run-id: ${{ fromJSON(needs.prepare.outputs.prepublish_plugin_registry_json || '{}').prepublishPluginRegistryArtifactRunId || '' }}
           github-token: ${{ github.token }}
 
+      - name: Warn about prerelease plugin registry artifact acquisition retry
+        if: ${{ steps.download_prepublish_plugin_registry.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Prerelease plugin registry artifact download failed; retrying infrastructure acquisition once before tests."
+
       - name: Retry prerelease plugin registry artifact download
-        if: needs.prepare.outputs.prepublish_plugin_registry_json != '' && steps.download_prepublish_plugin_registry.outcome == 'failure'
+        if: ${{ steps.download_prepublish_plugin_registry.outcome == 'failure' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ fromJSON(needs.prepare.outputs.prepublish_plugin_registry_json || '{}').prepublishPluginRegistryArtifactId || '' }}
@@ -967,40 +1092,20 @@ jobs:
           if [[ -n "${OPENCLAW_DISCORD_SMOKE_BOT_TOKEN}" ]] && [[ -n "${OPENCLAW_DISCORD_SMOKE_GUILD_ID}" ]] && [[ -n "${OPENCLAW_DISCORD_SMOKE_CHANNEL_ID}" ]]; then
             DISCORD_ARGS+=(--run-discord-roundtrip true)
           fi
-          run_cross_os_release_checks() {
-            bash workflow/scripts/github/run-openclaw-cross-os-release-checks.sh \
-              --candidate-tgz "${CANDIDATE_TGZ}" \
-              --candidate-version "${CANDIDATE_VERSION}" \
-              --source-sha "${SOURCE_SHA}" \
-              --baseline-spec "${BASELINE_SPEC}" \
-              --previous-version "${PREVIOUS_VERSION}" \
-              --baseline-tgz "${BASELINE_TGZ}" \
-              --provider "${PROVIDER}" \
-              --mode "${MODE}" \
-              --suite "${SUITE}" \
-              --ref "${REF}" \
-              "${PLUGIN_ARGS[@]}" \
-              "${DISCORD_ARGS[@]}" \
-              --output-dir "${OUTPUT_DIR}"
-          }
-
-          if run_cross_os_release_checks; then
-            exit 0
-          else
-            status=$?
-          fi
-
-          dashboard_log="${OUTPUT_DIR}/logs/${MODE}-dashboard.log"
-          if [[ "${OPENCLAW_RELEASE_CHECK_OS}" != "windows" ||
-                "$status" -ne 127 ||
-                ! -f "${dashboard_log}" ||
-                -f "${OUTPUT_DIR}/summary.json" ]] ||
-            ! grep -q 'attempt=.*url=http://127.0.0.1:' "${dashboard_log}"; then
-            exit "$status"
-          fi
-
-          echo "::warning::retrying Windows release checks after the outer process exited 127 after the dashboard probe and before summary generation"
-          run_cross_os_release_checks
+          bash workflow/scripts/github/run-openclaw-cross-os-release-checks.sh \
+            --candidate-tgz "${CANDIDATE_TGZ}" \
+            --candidate-version "${CANDIDATE_VERSION}" \
+            --source-sha "${SOURCE_SHA}" \
+            --baseline-spec "${BASELINE_SPEC}" \
+            --previous-version "${PREVIOUS_VERSION}" \
+            --baseline-tgz "${BASELINE_TGZ}" \
+            --provider "${PROVIDER}" \
+            --mode "${MODE}" \
+            --suite "${SUITE}" \
+            --ref "${REF}" \
+            "${PLUGIN_ARGS[@]}" \
+            "${DISCORD_ARGS[@]}" \
+            --output-dir "${OUTPUT_DIR}"
 
       - name: Save npm downloads
         if: github.repository == 'openclaw/openclaw' && github.event_name == 'workflow_dispatch' && steps.npm_downloads.outputs.cache-hit != 'true'

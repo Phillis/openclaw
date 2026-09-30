@@ -1,6 +1,9 @@
 /** Sanitizes, extracts, and classifies embedded-agent tool execution results. */
 import { estimateBase64DecodedBytes } from "@openclaw/media-core/base64";
-import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  asOptionalObjectRecord,
+  asOptionalRecord as readRecord,
+} from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
@@ -22,12 +25,7 @@ import {
   readToolResultStatus,
 } from "./tool-result-error.js";
 
-// BUG-072 (F2): the old 8000-char hard cut was what turned every >8KB read
-// bridged into a nested/exec context into a content-losing partial view (the
-// BUG-072 undercounts). Read pages already self-cap at 50KB via read-page, and
-// the transcript display path separately elides >32KB nested results
-// (createNestedToolActivity), so 32KB bounds disk without losing page content.
-const TOOL_RESULT_MAX_CHARS = 32 * 1024;
+const TOOL_RESULT_MAX_CHARS = 8000;
 const TOOL_ERROR_MAX_CHARS = 400;
 const LIVE_EXEC_OUTPUT_MAX_CHARS = 8000;
 const TOOL_DENIAL_ERROR_CODES = ["SYSTEM_RUN_DENIED", "INVALID_REQUEST"] as const;
@@ -41,30 +39,35 @@ const SENSITIVE_STRUCTURED_HEADER_FIELDS = new Set([
   "x-auth-token",
 ]);
 
-/**
- * BUG-072 (F2): budget-aware, content-safe truncation. Never appends an
- * in-band marker (`…(truncated)…`) to the text — that marker is ordinary
- * string data to any downstream consumer and was persisted into files by
- * read-all+write-back lanes. Truncation is reported as structured metadata
- * instead (see `truncateToolTextWithMeta`).
- */
-export type ToolTextTruncation = { truncated: true; originalChars: number };
+/** Recognize work accepted by a tool whose background task owns completion. */
+export function isAsyncStartedToolResult(result: unknown): boolean {
+  const details = readToolResultDetails(result);
+  return details?.async === true && details.status === "started";
+}
 
-export function truncateToolTextWithMeta(text: string): {
-  text: string;
-  truncation?: ToolTextTruncation;
+/** Preserve the accepted task's identity independently of result presentation. */
+export function readAsyncStartedTaskIds(result: unknown): {
+  asyncTaskRunId?: string;
+  asyncTaskId?: string;
 } {
-  if (text.length <= TOOL_RESULT_MAX_CHARS) {
-    return { text };
+  const details = readToolResultDetails(result);
+  if (!details) {
+    return {};
   }
+  const nestedTask = readRecord(details.task);
+  const asyncTaskRunId = readStringValue(details.runId) ?? readStringValue(nestedTask?.runId);
+  const asyncTaskId = readStringValue(details.taskId) ?? readStringValue(nestedTask?.taskId);
   return {
-    text: truncateUtf16Safe(text, TOOL_RESULT_MAX_CHARS),
-    truncation: { truncated: true, originalChars: text.length },
+    ...(asyncTaskRunId ? { asyncTaskRunId } : {}),
+    ...(asyncTaskId ? { asyncTaskId } : {}),
   };
 }
 
 function truncateToolText(text: string): string {
-  return truncateToolTextWithMeta(text).text;
+  if (text.length <= TOOL_RESULT_MAX_CHARS) {
+    return text;
+  }
+  return `${truncateUtf16Safe(text, TOOL_RESULT_MAX_CHARS)}\n…(truncated)…`;
 }
 
 export function truncateLiveExecOutput(text: string): string {
@@ -126,25 +129,21 @@ function readErrorCandidate(value: unknown): string | undefined {
   if (typeof value === "string") {
     return normalizeToolErrorText(value);
   }
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  // SAFETY: narrowed by the typeof guard above; the record view only adds an index signature for the field reads below.
-  const record = value as Record<string, unknown>;
-  if (typeof record.message === "string") {
+  const record = asOptionalObjectRecord(value);
+  if (typeof record?.message === "string") {
     return normalizeToolErrorText(record.message);
   }
-  if (typeof record.error === "string") {
+  if (typeof record?.error === "string") {
     return normalizeToolErrorText(record.error);
   }
   return undefined;
 }
 
 function extractErrorField(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") {
+  const record = asOptionalObjectRecord(value);
+  if (!record) {
     return undefined;
   }
-  const record = value as Record<string, unknown>;
   const direct = extractDirectErrorField(record);
   if (direct) {
     return direct;
@@ -157,23 +156,16 @@ function extractErrorField(value: unknown): string | undefined {
 }
 
 function extractDirectErrorField(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
+  const record = asOptionalObjectRecord(value);
   return (
-    readErrorCandidate(record.error) ??
-    readErrorCandidate(record.message) ??
-    readErrorCandidate(record.reason)
+    readErrorCandidate(record?.error) ??
+    readErrorCandidate(record?.message) ??
+    readErrorCandidate(record?.reason)
   );
 }
 
-function readErrorCodeField(value: unknown): string | undefined {
-  return typeof value === "string" ? normalizeOptionalString(value) : undefined;
-}
-
 function readDenialErrorCodeFromMessage(value: unknown): string | undefined {
-  const message = typeof value === "string" ? normalizeOptionalString(value) : undefined;
+  const message = normalizeOptionalString(value);
   if (!message) {
     return undefined;
   }
@@ -186,28 +178,22 @@ function readDenialErrorCodeFromMessage(value: unknown): string | undefined {
 }
 
 function readNestedErrorCodeField(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
+  const record = asOptionalObjectRecord(value);
   return (
-    readDenialErrorCodeFromMessage(record.message) ??
-    readDenialErrorCodeFromMessage(record.error) ??
-    readErrorCodeField(record.code) ??
-    readErrorCodeField(record.gatewayCode)
+    readDenialErrorCodeFromMessage(record?.message) ??
+    readDenialErrorCodeFromMessage(record?.error) ??
+    normalizeOptionalString(record?.code) ??
+    normalizeOptionalString(record?.gatewayCode)
   );
 }
 
 function extractDirectErrorCodeField(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
+  const record = asOptionalObjectRecord(value);
   return (
-    readNestedErrorCodeField(record.error) ??
-    readNestedErrorCodeField(record.nodeError) ??
-    readErrorCodeField(record.code) ??
-    readErrorCodeField(record.gatewayCode)
+    readNestedErrorCodeField(record?.error) ??
+    readNestedErrorCodeField(record?.nodeError) ??
+    normalizeOptionalString(record?.code) ??
+    normalizeOptionalString(record?.gatewayCode)
   );
 }
 
@@ -219,7 +205,7 @@ export function buildToolLifecycleErrorResult(error: unknown): {
   const rawDetails = readRecord(errorRecord?.details);
   const nodeError = readRecord(rawDetails?.nodeError);
   const gatewayCode =
-    readErrorCodeField(errorRecord?.gatewayCode) ?? readErrorCodeField(errorRecord?.code);
+    normalizeOptionalString(errorRecord?.gatewayCode) ?? normalizeOptionalString(errorRecord?.code);
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: [{ type: "text", text: message }],
@@ -232,30 +218,18 @@ export function buildToolLifecycleErrorResult(error: unknown): {
   };
 }
 
-function extractAggregatedErrorField(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  return readErrorCandidate(record.aggregated);
-}
-
 function redactStringsDeep(value: unknown, seen = new WeakSet<object>()): unknown {
   if (typeof value === "string") {
     return redactToolPayloadText(value);
-  }
-  if (Array.isArray(value)) {
-    if (seen.has(value)) {
-      return "[Circular]";
-    }
-    seen.add(value);
-    return value.map((item) => redactStringsDeep(item, seen));
   }
   if (value && typeof value === "object") {
     if (seen.has(value)) {
       return "[Circular]";
     }
     seen.add(value);
+    if (Array.isArray(value)) {
+      return value.map((item) => redactStringsDeep(item, seen));
+    }
     const entries = Object.entries(value as Record<string, unknown>);
     for (const entry of entries) {
       entry[1] =
@@ -314,8 +288,6 @@ function sanitizeStructuredToolResult(result: object): object {
   // Deep-redact the entire result so any top-level or nested string is
   // protected, not just `details` and text content blocks.
   const out = redactModelVisibleSecrets(preCleaned);
-  let truncatedChars = 0;
-  let anyTextTruncated = false;
   const content = Array.isArray(out.content) ? out.content : null;
   if (content) {
     out.content = content.map((item) => {
@@ -324,24 +296,12 @@ function sanitizeStructuredToolResult(result: object): object {
       }
       const entry = item as Record<string, unknown>;
       if (readStringValue(entry.type) === "text" && typeof entry.text === "string") {
-        const { text, truncation } = truncateToolTextWithMeta(entry.text);
-        if (truncation) {
-          anyTextTruncated = true;
-          truncatedChars = Math.max(truncatedChars, truncation.originalChars);
-        }
+        const text = truncateToolText(entry.text);
         // Nonplain blocks can still be caller-owned; spread keeps JSON keys as own data.
         return Object.assign({ ...entry }, { text });
       }
       return entry;
     });
-  }
-  if (anyTextTruncated && out && typeof out === "object" && !Array.isArray(out)) {
-    // BUG-072 (F2): structured truncation metadata on the bridged result —
-    // never an in-band marker inside the payload text.
-    (out as Record<string, unknown>).textTruncation = {
-      truncated: true,
-      originalChars: truncatedChars,
-    };
   }
   return out;
 }
@@ -454,33 +414,20 @@ function resolveToolResultContentBlocks(result: object): unknown[] {
   return [record];
 }
 
-/**
- * Extract model-visible text from a tool result plus structured truncation
- * metadata (BUG-072 F2). The text itself never carries a truncation marker.
- */
-export function extractToolResultTextWithMeta(result: unknown): {
-  text?: string;
-  truncation?: ToolTextTruncation;
-} {
+export function extractToolResultText(result: unknown): string | undefined {
   if (typeof result === "string") {
     const trimmed = redactModelVisibleToolPayloadText(redactInlineDataUriValue(result)).trim();
-    if (!trimmed) {
-      return {};
-    }
-    return truncateToolTextWithMeta(trimmed);
+    return trimmed ? truncateToolText(trimmed) : undefined;
   }
   if (!result || typeof result !== "object") {
-    return {};
+    return undefined;
   }
   const content = resolveToolResultContentBlocks(result);
   const texts = collectTextContentBlocks(content)
-    .map((item) => {
-      const trimmed = item.trim();
-      return trimmed ? trimmed : undefined;
-    })
-    .filter((value): value is string => Boolean(value));
+    .map((item) => item.trim())
+    .filter(Boolean);
   if (texts.length > 0) {
-    return truncateToolTextWithMeta(texts.join("\n"));
+    return truncateToolText(texts.join("\n"));
   }
   const structuredTexts: string[] = [];
   for (const item of content) {
@@ -490,21 +437,14 @@ export function extractToolResultTextWithMeta(result: unknown): {
     }
   }
   if (structuredTexts.length === 0) {
-    return {};
+    return undefined;
   }
-  return truncateToolTextWithMeta(structuredTexts.join("\n"));
-}
-
-export function extractToolResultText(result: unknown): string | undefined {
-  return extractToolResultTextWithMeta(result).text;
+  return truncateToolText(structuredTexts.join("\n"));
 }
 
 export function extractToolErrorCode(result: unknown): string | undefined {
-  if (!result || typeof result !== "object") {
-    return undefined;
-  }
-  const record = result as Record<string, unknown>;
-  return extractDirectErrorCodeField(record.details) ?? extractDirectErrorCodeField(record);
+  const record = asOptionalObjectRecord(result);
+  return extractDirectErrorCodeField(record?.details) ?? extractDirectErrorCodeField(record);
 }
 
 export function isToolResultTimedOut(result: unknown): boolean {
@@ -524,7 +464,9 @@ export function extractToolErrorMessage(result: unknown): string | undefined {
   if (fromDetails) {
     return fromDetails;
   }
-  const fromDetailsAggregated = extractAggregatedErrorField(record.details);
+  const fromDetailsAggregated = readErrorCandidate(
+    asOptionalObjectRecord(record.details)?.aggregated,
+  );
   if (fromDetailsAggregated) {
     return fromDetailsAggregated;
   }

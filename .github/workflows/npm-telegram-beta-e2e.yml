@@ -3,13 +3,137 @@ name: NPM Telegram Beta E2E
 run-name: ${{ inputs.dispatch_id != '' && format('NPM Telegram Beta E2E {0}', inputs.dispatch_id) || 'NPM Telegram Beta E2E' }}
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
-      advisory:
-        description: Treat package Telegram failures as advisory for the caller
+      package_spec:
+        description: Published OpenClaw package spec to test when no artifact is supplied
+        required: true
+        default: openclaw@beta
+        type: string
+      package_label:
+        description: Optional display label for an artifact-backed package candidate
+        required: false
+        default: ""
+        type: string
+      package_artifact_name:
+        description: Advanced package-under-test artifact name; leave blank for registry install
+        required: false
+        default: ""
+        type: string
+      package_artifact_id:
+        description: Immutable GitHub artifact id for package_artifact_name
+        required: false
+        default: ""
+        type: string
+      package_artifact_digest:
+        description: GitHub artifact service SHA-256 digest without the sha256 prefix
+        required: false
+        default: ""
+        type: string
+      package_sha256:
+        description: Expected SHA-256 for the OpenClaw package tarball
+        required: false
+        default: ""
+        type: string
+      package_artifact_run_id:
+        description: Producer run id containing package_artifact_name
+        required: false
+        default: ""
+        type: string
+      package_artifact_run_attempt:
+        description: Producer run attempt containing package_artifact_name
+        required: false
+        default: ""
+        type: string
+      package_file_name:
+        description: Exact OpenClaw tarball filename inside package_artifact_name
+        required: false
+        default: ""
+        type: string
+      package_source_sha:
+        description: Exact source commit recorded in the package tarball
+        required: false
+        default: ""
+        type: string
+      package_version:
+        description: Exact OpenClaw package version
+        required: false
+        default: ""
+        type: string
+      prepublish_plugin_registry_artifact_name:
+        description: Immutable prerelease plugin registry artifact name
+        required: false
+        default: ""
+        type: string
+      prepublish_plugin_registry_artifact_id:
+        description: Immutable prerelease plugin registry artifact id
+        required: false
+        default: ""
+        type: string
+      prepublish_plugin_registry_artifact_digest:
+        description: Prerelease plugin registry artifact service digest
+        required: false
+        default: ""
+        type: string
+      prepublish_plugin_registry_artifact_run_id:
+        description: Prerelease plugin registry artifact producer run id
+        required: false
+        default: ""
+        type: string
+      prepublish_plugin_registry_artifact_run_attempt:
+        description: Prerelease plugin registry artifact producer run attempt
+        required: false
+        default: ""
+        type: string
+      prepublish_plugin_registry_manifest_sha256:
+        description: Prerelease plugin registry manifest SHA-256
+        required: false
+        default: ""
+        type: string
+      harness_ref:
+        description: Source ref for the private QA harness; defaults to the dispatched workflow ref
+        required: false
+        default: ""
+        type: string
+      provider_mode:
+        description: QA provider mode
+        required: true
+        default: mock-openai
+        type: choice
+        options:
+          - mock-openai
+          - live-frontier
+      scenario:
+        description: Optional comma-separated Telegram scenario ids
+        required: false
+        type: string
+      rtt_scenario:
+        description: Optional Telegram QA scenario id for repeated RTT sampling
+        required: false
+        default: ""
+        type: string
+      allow_older_binary_destructive_actions:
+        description: Allow destructive actions for intentional historical downgrade or recovery proof
         required: false
         default: false
         type: boolean
+      allow_frozen_target_scenario_omissions:
+        description: Allow source-qualified omission of current-only default scenarios
+        required: false
+        default: false
+        type: boolean
+      dispatch_id:
+        description: Optional parent workflow dispatch identifier
+        required: false
+        default: ""
+        type: string
+  workflow_call:
+    inputs:
+      runner_group:
+        description: Optional dedicated release runner group; empty retains the current labels
+        required: false
+        default: ""
+        type: string
       allow_frozen_target_scenario_omissions:
         description: Allow source-qualified omission of current-only default scenarios
         required: false
@@ -146,13 +270,12 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  NODE_VERSION: "24.19.0"
+  NODE_VERSION: "24.21.0"
 
 jobs:
   run_package_telegram_e2e:
     name: Run package Telegram E2E
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404' }}
-    continue-on-error: ${{ inputs.advisory }}
+    runs-on: ${{ (inputs.runner_group || (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP) || '') != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON((inputs.runner_group || (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP) || '')), toJSON(vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404'))) || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404') }}
     timeout-minutes: 60
     environment: qa-live-shared
     permissions:
@@ -206,7 +329,7 @@ jobs:
 
       - name: Checkout frozen package source capabilities
         if: inputs.allow_frozen_target_scenario_omissions && inputs.package_source_sha != '' && inputs.scenario == ''
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.package_source_sha }}
           path: .artifacts/frozen-telegram-target
@@ -216,6 +339,7 @@ jobs:
             extensions/telegram/src/bot-message-dispatch.ts
             extensions/telegram/src/draft-stream.ts
             qa/scenarios/channels/telegram-empty-response-after-write-recovery.yaml
+            qa/scenarios/channels/telegram-prepared-delivery-recovery.yaml
             qa/scenarios/channels/telegram-progress-tool-visibility.yaml
             qa/scenarios/channels/telegram-queue-invalid-mode.yaml
             qa/scenarios/channels/telegram-rich-inline-composition.yaml
@@ -290,8 +414,12 @@ jobs:
               echo "Prerelease plugin registry inputs require an artifact-backed OpenClaw package." >&2
               exit 1
             fi
-            if [[ ! "${PACKAGE_SPEC}" =~ ^openclaw@(alpha|beta|latest|[0-9]{4}\.[1-9][0-9]*\.[1-9][0-9]*(-[1-9][0-9]*|-(alpha|beta)\.[1-9][0-9]*)?)$ ]]; then
-              echo "package_spec must be openclaw@alpha, openclaw@beta, openclaw@latest, or an exact OpenClaw release version; got: ${PACKAGE_SPEC}" >&2
+            if [[ "${PACKAGE_SPEC}" == "openclaw@alpha" ]]; then
+              echo "Alpha releases are retired; use openclaw@beta or an exact historical version." >&2
+              exit 1
+            fi
+            if [[ ! "${PACKAGE_SPEC}" =~ ^openclaw@(beta|latest|[0-9]{4}\.[1-9][0-9]*\.[1-9][0-9]*(-[1-9][0-9]*|-(alpha|beta)\.[1-9][0-9]*)?)$ ]]; then
+              echo "package_spec must be openclaw@beta, openclaw@latest, or an exact OpenClaw release version; got: ${PACKAGE_SPEC}" >&2
               exit 1
             fi
           elif [[ ! "$PACKAGE_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ||
@@ -391,14 +519,52 @@ jobs:
           }
           attempt_started_at="$(jq -er '.run_started_at | fromdateiso8601' <<< "$attempt_json")"
           if [[ "$ARTIFACT_RUN_ID" == "$GITHUB_RUN_ID" ]]; then
-            jq -e '(.status == "pending" or .status == "queued" or .status == "requested" or .status == "waiting" or .status == "in_progress") and .conclusion == null' \
-              <<< "$attempt_json" >/dev/null || {
-              echo "Current-run Package Telegram artifact is not from the active workflow attempt." >&2
+            [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
+              echo "Current Package Telegram workflow attempt is invalid." >&2
               exit 1
             }
-            if (( artifact_created_at <= attempt_started_at )); then
-              echo "Package Telegram artifact predates the active producer run attempt." >&2
+            if (( ARTIFACT_RUN_ATTEMPT > GITHUB_RUN_ATTEMPT )); then
+              echo "Package Telegram artifact declares a future producer run attempt." >&2
               exit 1
+            fi
+            if (( ARTIFACT_RUN_ATTEMPT == GITHUB_RUN_ATTEMPT )); then
+              jq -e '(.status == "pending" or .status == "queued" or .status == "requested" or .status == "waiting" or .status == "in_progress") and .conclusion == null' \
+                <<< "$attempt_json" >/dev/null || {
+                echo "Current-run Package Telegram artifact is not from the active workflow attempt." >&2
+                exit 1
+              }
+              if (( artifact_created_at <= attempt_started_at )); then
+                echo "Package Telegram artifact predates the active producer run attempt." >&2
+                exit 1
+              fi
+            else
+              producer_jobs_json="$(
+                gh api --paginate \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${ARTIFACT_RUN_ID}/attempts/${ARTIFACT_RUN_ATTEMPT}/jobs?per_page=100" |
+                  jq -s '[.[].jobs[]]'
+              )"
+              producer_matches="$(
+                jq -c \
+                  --arg attempt "$ARTIFACT_RUN_ATTEMPT" \
+                  --arg run_id "$ARTIFACT_RUN_ID" \
+                  '[.[] | select(
+                    ((.name == "Resolve package candidate") or (.name | endswith(" / Resolve package candidate"))) and
+                    (.run_id | tostring) == $run_id and
+                    (.run_attempt | tostring) == $attempt and
+                    .status == "completed" and
+                    .conclusion == "success"
+                  )]' <<< "$producer_jobs_json"
+              )"
+              [[ "$(jq 'length' <<< "$producer_matches")" == "1" ]] || {
+                echo "Prior-attempt Package Telegram artifact lacks one exact successful producer job." >&2
+                exit 1
+              }
+              producer_started_at="$(jq -er '.[0].started_at | fromdateiso8601' <<< "$producer_matches")"
+              producer_completed_at="$(jq -er '.[0].completed_at | fromdateiso8601' <<< "$producer_matches")"
+              if (( artifact_created_at <= producer_started_at || artifact_created_at > producer_completed_at )); then
+                echo "Package Telegram artifact creation time is outside the successful producer job." >&2
+                exit 1
+              fi
             fi
           else
             jq -e '.status == "completed" and .conclusion == "success"' \
@@ -690,7 +856,6 @@ jobs:
       - name: Summarize Telegram attempt
         if: always()
         env:
-          ADVISORY: ${{ inputs.advisory }}
           LANE_OUTCOME: ${{ steps.run_lane.outcome }}
         shell: bash
         run: |
@@ -699,10 +864,9 @@ jobs:
             echo "## Package Telegram attempt"
             echo
             echo "- Telegram attempt: ${LANE_OUTCOME}"
-            echo "- Advisory: ${ADVISORY}"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$ADVISORY" == "true" && "$LANE_OUTCOME" != "success" ]]; then
-            echo "::warning::Package Telegram attempt: ${LANE_OUTCOME}; release testing is best effort."
+          if [[ "$LANE_OUTCOME" != "success" ]]; then
+            echo "::error::Package Telegram attempt: ${LANE_OUTCOME}"
           fi
 
       - name: Upload npm Telegram E2E artifacts
@@ -713,3 +877,16 @@ jobs:
           path: .artifacts/qa-e2e/
           retention-days: 14
           if-no-files-found: error
+
+  seal_release_child_evidence:
+    name: Seal full release child evidence
+    needs:
+      - run_package_telegram_e2e
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/full-release-child-evidence.yml
+    with:
+      role: npmTelegram
+      target_sha: ${{ inputs.harness_ref }}
