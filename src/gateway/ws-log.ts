@@ -325,6 +325,7 @@ export function logWs(
   const verbose = isVerbose();
   const compact = verbose && (style === "compact" || style === "auto");
   const ok = typeof meta?.ok === "boolean" ? meta.ok : undefined;
+  const method = typeof meta?.method === "string" ? meta.method : undefined;
   if (!verbose) {
     if (kind === "parse-error") {
       const errorMsg = typeof meta?.error === "string" ? formatForLog(meta.error) : undefined;

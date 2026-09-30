@@ -3,11 +3,7 @@ import {
   listActiveEmbeddedRunSessionIds,
   listActiveEmbeddedRunSessionKeys,
 } from "../agents/embedded-agent-runner/active-run-projections.js";
-import {
-  discoverRestartRecoveryStoreTargets,
-  hasCurrentProcessOwner,
-  normalizeStringSet,
-} from "../agents/main-session-recovery/main-session-restart-recovery-shared.js";
+import { discoverRestartRecoveryStoreTargets } from "../agents/main-session-recovery/main-session-restart-recovery-shared.js";
 import {
   canonicalizeMainSessionAlias,
   resolveAgentMainSessionKey,
@@ -29,6 +25,31 @@ import {
 import { resolveMainScopedEventSessionKey } from "./event-session-routing.js";
 import type { HeartbeatConfig } from "./heartbeat-config.js";
 import { heartbeatLog } from "./heartbeat-log.js";
+
+/** Fork helper: trim + deduplicate a string iterable into a Set (inlined from the pre-9.7 shared module). */
+function normalizeStringSet(values: Iterable<string> | undefined): Set<string> {
+  const normalized = new Set<string>();
+  for (const value of values ?? []) {
+    const trimmed = value.trim();
+    if (trimmed) {
+      normalized.add(trimmed);
+    }
+  }
+  return normalized;
+}
+
+/** Fork helper: true when an embedded run still owns the session (inlined from the pre-9.7 shared module). */
+function hasCurrentProcessOwner(params: {
+  activeSessionIds: Set<string>;
+  activeSessionKeys: Set<string>;
+  entry: { sessionId: string };
+  sessionKey: string;
+}): boolean {
+  if (params.activeSessionIds.has(params.entry.sessionId)) {
+    return true;
+  }
+  return params.activeSessionIds.size === 0 && params.activeSessionKeys.has(params.sessionKey);
+}
 
 /** Reason recorded on isolated heartbeat rows a previous gateway lifecycle killed. */
 const HEARTBEAT_RESTART_INTERRUPTED_REASON =

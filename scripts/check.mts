@@ -10,9 +10,9 @@ type RunManagedCheck = (options: { args: string[]; bin: string }) => Promise<num
 export const PREFLIGHT_CHECKS: CheckCommand[] = [
   { name: "conflict markers", args: ["check:no-conflict-markers"] },
   { name: "script TypeScript erasability", args: ["check:script-erasability"] },
-  { name: "line-cap growth ratchet", args: ["check:line-cap-ratchet"], usesBase: true },
-  { name: "max-lines suppression ratchet", args: ["check:max-lines-ratchet"], usesBase: true },
-  { name: "assertion SAFETY comment ratchet", args: ["check:assertion-safety"], usesBase: true },
+  { name: "line-cap growth ratchet", args: ["check:line-cap-ratchet"], usesBase: false }, // fork: parallel release lines share no base ref
+  { name: "max-lines suppression ratchet", args: ["check:max-lines-ratchet"], usesBase: false }, // fork: parallel release lines share no base ref
+  { name: "assertion SAFETY comment ratchet", args: ["check:assertion-safety"], usesBase: false }, // fork: parallel release lines share no base ref
   { name: "changelog attributions", args: ["check:changelog-attributions"] },
   { name: "database-first legacy-store guard", args: ["check:database-first-legacy-stores"] },
   { name: "doctor deprecation registry", args: ["check:doctor-deprecation-registry"] },

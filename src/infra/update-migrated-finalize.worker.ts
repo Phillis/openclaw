@@ -37,10 +37,6 @@ import {
 } from "./update-candidate-predecessor-stop.js";
 import { UPDATE_RUN_ID_ENV } from "./update-control-plane-sentinel.js";
 import {
-  adoptCandidateManagedServiceStop,
-  stopSupervisedPredecessorGateway,
-} from "./update-candidate-predecessor-stop.js";
-import {
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   recordUpdateDoctorConfigWriteRefusal,
   writeUpdatePostInstallDoctorResult,

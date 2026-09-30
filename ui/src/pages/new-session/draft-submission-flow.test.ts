@@ -24,6 +24,7 @@ import {
 } from "./draft-submission-flow.test-support.ts";
 import { DraftSubmissionFlow } from "./draft-submission-flow.ts";
 import { TestReactiveControllerHost } from "./reactive-controller-host.test-support.ts";
+/* oxlint-disable max-lines -- upstream v2026.9.7 (1038 lines; fork merge) */
 
 afterEach(() => {
   document.body.replaceChildren();

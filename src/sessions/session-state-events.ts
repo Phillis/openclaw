@@ -39,7 +39,7 @@ import {
   type SessionStateEventRecord,
   type SessionStateNotice,
 } from "./session-state-events.kernel.js";
-import { enqueueSessionStateNotice, shouldWakeWatcherLane } from "./session-state-notices.js";
+import { enqueueSessionStateNotice } from "./session-state-notices.js";
 import { deleteSessionUpstreamLink } from "./session-upstream-links.js";
 import type { SessionUpstreamLink } from "./session-upstream-links.kernel.js";
 
@@ -268,7 +268,8 @@ export function acknowledgeSessionStateNotices(
             // per stale lane. queueOnly keeps the event durable (replace-deduped) for
             // the lane's next real turn; main-lane watchers keep today's wake.
             queueOnly:
-              isAmbientGroupWatchCursor(row) || !shouldWakeWatcherLane(row.watcher_session_key),
+              isAmbientGroupWatchCursor(row) ||
+              !row.watcher_session_key.split(":").pop()?.startsWith("main"),
           });
         }
       }
@@ -385,7 +386,8 @@ export function sweepSessionStateWatchNotices(
         // per stale lane. queueOnly keeps the event durable (replace-deduped) for
         // the lane's next real turn; main-lane watchers keep today's wake.
         queueOnly:
-          isAmbientGroupWatchCursor(row) || !shouldWakeWatcherLane(row.watcher_session_key),
+          isAmbientGroupWatchCursor(row) ||
+          !row.watcher_session_key.split(":").pop()?.startsWith("main"),
       });
     }
     pruneSessionStateEvents({ ...options, now });

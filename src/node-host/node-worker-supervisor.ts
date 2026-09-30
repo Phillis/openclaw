@@ -80,6 +80,7 @@ import { stopOwnedNodeWorkerTree } from "./node-worker-tree-control.js";
 import { nodeWorkerDescriptorSecrets } from "./node-worker-turn-lifecycle.js";
 import { NodeWorkerTurnStore, type NodeWorkerTurnReceipt } from "./node-worker-turn-store.js";
 import { NodeWorkerWorkspaceRuntime } from "./node-worker-workspace.js";
+/* oxlint-disable max-lines -- upstream v2026.9.7 (1322 lines; fork merge) */
 
 const NODE_WORKER_STOP_GRACE_MS = 1_000;
 const FORCE_STOP_WAIT_MS = 4_000;
