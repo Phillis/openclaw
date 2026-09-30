@@ -400,9 +400,12 @@ describe("prepareEmbeddedAttemptTimeout", () => {
       }
 
       expect(harness.abortRun).toHaveBeenCalledOnce();
-      expect(harness.abortRun).toHaveBeenCalledWith(true, expect.objectContaining({
-        code: "OPENCLAW_RUN_BUDGET_TIMEOUT",
-      }));
+      expect(harness.abortRun).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({
+          code: "OPENCLAW_RUN_BUDGET_TIMEOUT",
+        }),
+      );
       expect(harness.onAttemptDeadlineChanged.mock.calls).toEqual([
         [{ kind: "bounded", deadlineAtMs: 60_000 }],
         [{ kind: "bounded", deadlineAtMs: 90_000 }],

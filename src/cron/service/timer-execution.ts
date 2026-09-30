@@ -206,13 +206,10 @@ export async function executeJobCore(
         effectiveJob.schedule.everyMs > 0
           ? effectiveJob.schedule.everyMs + 120_000
           : undefined;
-      const pendingSettlement = state.deps.requestHeartbeatAndWait?.(
-        heartbeatWake,
-        {
-          ...(abortSignal ? { abortSignal } : {}),
-          ...heartbeatWaitLifecycle,
-        },
-      );
+      const pendingSettlement = state.deps.requestHeartbeatAndWait?.(heartbeatWake, {
+        ...(abortSignal ? { abortSignal } : {}),
+        ...heartbeatWaitLifecycle,
+      });
       heartbeatResult = (await (settlementBoundMs
         ? Promise.race([
             pendingSettlement,
