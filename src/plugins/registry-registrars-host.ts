@@ -1,3 +1,4 @@
+import { registerSessionMaintenancePreserveKeysProvider as registerHostPreserveKeysProvider } from "../config/sessions/store-maintenance-preserve.js";
 import { isOperatorScope, type OperatorScope } from "../gateway/operator-scopes.js";
 import { createPluginBoardWidgetContentKindRegistrar } from "./board-widget-content-kinds.js";
 import { publishPluginSessionSchedulerJobs } from "./host-hook-runtime.js";
@@ -447,6 +448,57 @@ export function createHostRegistrars(state: PluginRegistryState) {
     );
   };
 
+  const registerSessionMaintenancePreserveKeysProvider = (
+    record: PluginRecord,
+    provider: () => Iterable<string> | undefined,
+  ) => {
+    const owner = getPluginRecordRegistry(registry, record);
+    const active = isPluginRecordActive(registry, record);
+    if (!active && isPluginRegistryRetired(registry)) {
+      return undefined;
+    }
+    if (typeof provider !== "function") {
+      reportRegistrationError(record, "session preserve keys provider must be a function");
+      return undefined;
+    }
+    /*
+     * Plugin-exposed half of the host's session-maintenance preserve-keys
+     * registry (store-maintenance-preserve.ts). The provider is invoked
+     * synchronously during maintenance sweeps; plugin-supplied providers are
+     * wrapped fail-soft so a plugin bug can never abort host maintenance
+     * (the internal registry already try/catches per provider, this is
+     * defense in depth with plugin attribution on failure).
+     *
+     * Lifetime: providers are registered for the process lifetime (the
+     * host's own internal registrations — worker placement, subagent
+     * registry — follow the same non-unregistering pattern). A disabled
+     * plugin's lingering provider is harmless by contract: it returns keys
+     * or undefined, never throws, and the plugin-side provider is fail-soft
+     * against a closed store.
+     */
+    registerHostPreserveKeysProvider(() => {
+      try {
+        const keys = provider();
+        if (keys === undefined || keys === null) {
+          return undefined;
+        }
+        const list: string[] = [];
+        for (const key of keys) {
+          if (typeof key === "string" && key.length > 0) {
+            list.push(key);
+          }
+        }
+        return list.length > 0 ? list : undefined;
+      } catch (error) {
+        reportRegistrationError(
+          record,
+          `session preserve keys provider threw: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return undefined;
+      }
+    });
+  };
+
   return {
     registerSessionExtension,
     registerTrustedToolPolicy,
@@ -456,6 +508,7 @@ export function createHostRegistrars(state: PluginRegistryState) {
     registerRuntimeLifecycle,
     registerAgentEventSubscription,
     registerSessionSchedulerJob,
+    registerSessionMaintenancePreserveKeysProvider,
     registerSessionAction,
     registerConversationBindingResolvedHandler,
   };

@@ -270,6 +270,20 @@ export type OpenClawPluginApi = {
   registerNodeHostCommand: (command: OpenClawPluginNodeHostCommand) => void;
   registerNodeInvokePolicy: (policy: OpenClawPluginNodeInvokePolicy) => void;
   registerSecurityAuditCollector: (collector: OpenClawPluginSecurityAuditCollector) => void;
+  /**
+   * Register a provider of session store keys that session maintenance
+   * (pruning/capping/age archival) must preserve. The provider is invoked
+   * synchronously during maintenance sweeps and must be cheap and
+   * fail-soft: return an iterable of session keys, or undefined/null when
+   * nothing needs preserving. A throwing provider is treated as
+   * "nothing to preserve" for that sweep (the error is reported with
+   * plugin attribution). Use for runtime-owned micro-task sessions whose
+   * mid-flight archival would break in-process coordination (e.g. a
+   * supervision epoch session).
+   */
+  registerSessionMaintenancePreserveKeysProvider: (
+    provider: () => Iterable<string> | undefined | null,
+  ) => void;
   registerService: (service: OpenClawPluginService) => void;
   /** Register a local gateway discovery advertiser such as mDNS/Bonjour. */
   registerGatewayDiscoveryService: (service: OpenClawGatewayDiscoveryService) => void;
