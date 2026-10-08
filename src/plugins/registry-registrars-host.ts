@@ -450,7 +450,7 @@ export function createHostRegistrars(state: PluginRegistryState) {
 
   const registerSessionMaintenancePreserveKeysProvider = (
     record: PluginRecord,
-    provider: () => Iterable<string> | undefined,
+    provider: () => Iterable<string> | undefined | null,
   ) => {
     const owner = getPluginRecordRegistry(registry, record);
     const active = isPluginRecordActive(registry, record);
