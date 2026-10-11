@@ -479,6 +479,26 @@ function isPrimarySessionMaintenanceKey(sessionKey: string): boolean {
   return parseAgentSessionKey(sessionKey)?.rest === "main";
 }
 
+/**
+ * Durable plugin/harness dispatch bindings (plugin-owned locked sessions, ACP
+ * client bindings, CLI backend bindings). Archive on such rows breaks live
+ * dispatch owners that route runs into the session, so maintenance skips them.
+ */
+export function hasDurableSessionDispatchBinding(
+  entry:
+    | Pick<SessionEntry, "acpSessionBinding" | "cliSessionBindings" | "pluginOwnerId">
+    | undefined,
+): boolean {
+  if (!entry) {
+    return false;
+  }
+  return (
+    Boolean(entry.pluginOwnerId?.trim()) ||
+    entry.acpSessionBinding !== undefined ||
+    Object.keys(entry.cliSessionBindings ?? {}).length > 0
+  );
+}
+
 function isProtectedSessionMaintenanceEntry(
   sessionKey: string,
   entry: SessionEntry | undefined,
@@ -522,8 +542,11 @@ function shouldPreserveNonArchivedMaintenanceEntry(params: SessionMaintenanceEnt
   // Evicting the row can strand its native runtime binding and later recreate
   // the same conversation under an incompatible model, so pressure may exceed
   // configured retention limits while the lock remains.
+  // Sessions with durable dispatch bindings (plugin owner, ACP, CLI backends)
+  // stay runnable the same way: archiving them rejects their live dispatch owners.
   return (
     params.entry?.modelSelectionLocked === true ||
+    hasDurableSessionDispatchBinding(params.entry) ||
     params.entry?.status === "running" ||
     params.preserveKeys?.has(params.key) === true ||
     isRecentSessionMaintenanceEntry(params) ||

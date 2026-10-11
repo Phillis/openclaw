@@ -11,6 +11,7 @@ import {
   isLikelyContextOverflowError,
   isProviderRequestSizeCeilingError,
 } from "../../embedded-agent-helpers.js";
+import { readProviderRequestSizeCeilingTokens } from "../../failover/message-patterns.js";
 import type { FailoverClassification } from "../../failover/signal.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { classifyCompactionReason } from "../compact-reasons.js";
@@ -213,21 +214,36 @@ export async function recoverEmbeddedRunOverflow(
   const isCompactionFailure = isCompactionFailureError(errorText);
 
   // Compaction here budgets against the model's context window, so it cannot make the request fit
-  // under the provider's own ceiling, and every retry re-sends a payload already rejected. Stop
-  // the run instead of compacting, adopting a successor transcript, or truncating and retrying:
-  // declining would return this to the same-model rate-limit retry that reported the refusal.
+  // under the provider's own ceiling, and every retry re-sends a payload already rejected. A
+  // provider-stated TPM ceiling with a parseable limit is the one exception: compaction budgeted
+  // against that ceiling can genuinely shrink the prompt below it, so attempt it before surfacing
+  // a terminal overflow. Runs without a usable limit still surface immediately instead of
+  // compacting, adopting a successor transcript, or truncating and retrying: declining would
+  // return this to the same-model rate-limit retry that reported the refusal.
+  let providerCeilingTokens: number | undefined;
   if (isProviderRequestSizeCeilingError(errorText)) {
+    providerCeilingTokens = readProviderRequestSizeCeilingTokens(errorText);
+    const ceilingCompactionEligible =
+      providerCeilingTokens !== undefined &&
+      !isCompactionFailure &&
+      input.attemptCompactionCount === 0 &&
+      input.state.overflowCompactionAttempts < MAX_OVERFLOW_COMPACTION_ATTEMPTS;
     log.warn(
       `[context-overflow-recovery] provider request-size ceiling for ${input.modelSelection.provider}/${input.modelSelection.model}; ` +
         `livenessState=blocked suggestedAction=reset_or_new kind=${isCompactionFailure ? "compaction_failure" : "context_overflow"} ` +
-        `compaction=skipped retry=skipped`,
+        `ceilingTokens=${providerCeilingTokens ?? "unknown"} ` +
+        `compaction=${ceilingCompactionEligible ? "attempting" : "skipped"} retry=skipped`,
     );
-    return {
-      action: "surface",
-      kind: isCompactionFailure ? "compaction_failure" : "context_overflow",
-      errorText,
-      userText: renderOverflowResetGuidance(input.attempt),
-    };
+    if (!ceilingCompactionEligible) {
+      return {
+        action: "surface",
+        kind: isCompactionFailure ? "compaction_failure" : "context_overflow",
+        errorText,
+        userText: renderOverflowResetGuidance(input.attempt),
+      };
+    }
+    // Fall through to the standard overflow-compaction branch below with the
+    // compaction budget capped at the provider ceiling so the retry can fit.
   }
 
   // A parked code-mode run is bound to the session it started in and `wait`
@@ -269,7 +285,10 @@ export async function recoverEmbeddedRunOverflow(
       `${pressureDescription} detected (attempt ${input.state.overflowCompactionAttempts}/${MAX_OVERFLOW_COMPACTION_ATTEMPTS}); attempting auto-compaction for ${input.modelSelection.provider}/${input.modelSelection.model}`,
     );
     const compaction = await compactEmbeddedRunForRecovery(input, {
-      tokenBudget: preflightPromptBudget ?? input.contextTokenBudget,
+      tokenBudget:
+        providerCeilingTokens !== undefined
+          ? Math.min(preflightPromptBudget ?? input.contextTokenBudget, providerCeilingTokens)
+          : (preflightPromptBudget ?? input.contextTokenBudget),
       trigger: compactionTrigger,
       diagId: overflowDiagId,
       attempt: input.state.overflowCompactionAttempts,

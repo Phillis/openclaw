@@ -25,6 +25,9 @@ const maintenanceFields = [
   "modelSelectionLocked",
   "chatType",
   "delivery",
+  "pluginOwnerId",
+  "acpSessionBinding",
+  "cliSessionBindings",
 ];
 
 function maintenanceCandidates(database: Pick<OpenClawAgentDatabase, "db">) {

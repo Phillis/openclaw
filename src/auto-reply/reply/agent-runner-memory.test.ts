@@ -44,6 +44,7 @@ import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import type { ReplyPayload } from "../types.js";
 import {
+  resetTranscriptTruncateBackoffForTest,
   runMemoryFlushIfNeeded as runMemoryFlushIfNeededRaw,
   runSessionCompactionIfNeeded as runSessionCompactionIfNeededRaw,
 } from "./agent-runner-memory.js";
@@ -3411,6 +3412,47 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(requireCompactEmbeddedAgentSessionCall(1).preflightCompactionTrigger).toBe("tokens");
   });
 
+  it("hard-truncates a byte-suppressed transcript so the seat keeps running", async () => {
+    resetTranscriptTruncateBackoffForTest();
+    const fixture = await createOversizedByteCompactionFixture();
+
+    await fixture.run(fixture.sessionEntry);
+    const latchedEntry = loadMainSessionEntry(fixture.storePath);
+    expect(latchedEntry.transcriptByteCompactionLatch).toMatchObject({ maxBytes: 10 });
+    // The destructive fallback only engages once suppression has persisted.
+    const agedLatchedEntry: SessionEntry = {
+      ...latchedEntry,
+      transcriptByteCompactionLatch: {
+        ...latchedEntry.transcriptByteCompactionLatch!,
+        latchedAt: Date.now() - 15 * 60_000,
+      },
+    };
+    await writeTestSessionStore(fixture.storePath, "main", agedLatchedEntry);
+
+    const returned = await fixture.run(agedLatchedEntry);
+
+    // The suppressed turn rotated the session onto a byte-bounded tail and cleared the latch.
+    expect(returned?.sessionId).toBeTruthy();
+    expect(returned?.sessionId).not.toBe(latchedEntry.sessionId);
+    expect(returned?.transcriptByteCompactionLatch).toBeUndefined();
+    const persisted = loadMainSessionEntry(fixture.storePath);
+    expect(persisted.sessionId).toBe(returned?.sessionId);
+    expect(persisted.transcriptByteCompactionLatch).toBeUndefined();
+    // The follow-up run now targets the rotated session identity.
+    expect(refreshQueuedFollowupSessionMock).toHaveBeenCalled();
+    // The complete original transcript was persisted to a sidecar before truncating.
+    const sidecars = (await fs.readdir(path.dirname(fixture.storePath))).filter((name) =>
+      name.includes(".truncated-"),
+    );
+    expect(sidecars.length).toBe(1);
+    const sidecarContents = await fs.readFile(
+      path.join(path.dirname(fixture.storePath), sidecars[0]!),
+      "utf8",
+    );
+    // The sidecar carries the full original oversized transcript.
+    expect(sidecarContents).toContain("x".repeat(256));
+  });
+
   it.each([
     ["fresh session selected from the outset", "fresh", "codex"],
     ["upgraded session with historical embedded ownership", "upgraded", "openclaw"],
@@ -3747,6 +3789,7 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(loadMainSessionEntry(fixture.storePath).compactionCount).toBe(1);
     expect(loadMainSessionEntry(fixture.storePath).transcriptByteCompactionLatch).toEqual({
       activeBytes: settledBytes,
+      latchedAt: expect.any(Number),
       sessionId: "session",
       maxBytes: 10,
     });

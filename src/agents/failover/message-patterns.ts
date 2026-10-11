@@ -15,13 +15,22 @@ function readStatedTokenCount(digits: string | undefined): number | undefined {
 // A request larger than the provider's entire TPM bucket cannot succeed by waiting;
 // it needs reset guidance or a differently provisioned fallback, not context compaction.
 export function isProviderRequestSizeCeilingError(errorMessage?: string): boolean {
+  return readProviderRequestSizeCeilingTokens(errorMessage) !== undefined;
+}
+
+/**
+ * The provider-stated TPM ceiling from a request-size refusal, when both figures are
+ * present and commensurable. Overflow recovery compacts against this budget so a
+ * prompt that exceeds the bucket can still shrink enough to fit.
+ */
+export function readProviderRequestSizeCeilingTokens(errorMessage?: string): number | undefined {
   if (!errorMessage) {
-    return false;
+    return undefined;
   }
   const stated = STATED_TOKEN_SIZES_RE.exec(errorMessage);
   const limit = readStatedTokenCount(stated?.[1]);
   const requested = readStatedTokenCount(stated?.[2]);
-  return limit !== undefined && requested !== undefined && requested > limit;
+  return limit !== undefined && requested !== undefined && requested > limit ? limit : undefined;
 }
 
 // Match model-transport EOF contracts, not plugin lifecycle stream failures.

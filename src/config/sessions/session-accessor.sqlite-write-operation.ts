@@ -46,6 +46,7 @@ export type SqliteSessionWriteOperation =
   | "session.transcript.compact"
   | "session.transcript.event-append"
   | "session.transcript.locked-write"
+  | "session.transcript.truncate"
   | "session.transcript.message-append"
   | "session.transcript.message-rewrite"
   | "session.transcript.replace"

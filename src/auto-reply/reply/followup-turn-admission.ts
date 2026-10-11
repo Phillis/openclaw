@@ -371,6 +371,7 @@ export async function admitFollowupTurn(params: {
       activeEntry = await runSessionCompactionIfNeeded({
         cfg: config,
         followupRun: turn.queued,
+        runId: turn.runId,
         pendingUserEntryId: readPendingUserTurnTranscriptAdmission(
           turn.queued.userTurnTranscriptRecorder,
         )?.entryId,

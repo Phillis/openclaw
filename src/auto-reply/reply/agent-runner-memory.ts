@@ -50,6 +50,10 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import {
+  truncateSessionTranscriptToByteBudget,
+  type SessionTranscriptTruncateOutcome,
+} from "../../config/sessions/session-transcript-truncate.js";
+import {
   isSessionTranscriptLeafControl,
   selectSessionTranscriptLeafControlledPath,
 } from "../../config/sessions/transcript-tree.js";
@@ -97,6 +101,7 @@ import { startFollowupRunPreAdoptionHeartbeat } from "./queue/lifecycle.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { incrementCompactionCount } from "./session-updates.js";
+import { maybeAlertTranscriptByteSuppression } from "./transcript-byte-suppression.js";
 
 const MAX_FLUSH_FAILURES = 3;
 const preflightCompactionLog = createSubsystemLogger("auto-reply/preflight-compaction");
@@ -136,6 +141,110 @@ function hasMatchingTranscriptByteCompactionLatch(
     activeBytes >= maxBytes &&
     activeBytes - latch.activeBytes < maxBytes
   );
+}
+
+/** Suppression epochs keep their first-latch clock across byte-progress refreshes. */
+function buildTranscriptByteCompactionLatch(params: {
+  activeBytes: number;
+  sessionId: string;
+  maxBytes: number;
+  previousLatchedAt?: number;
+  now?: number;
+}): NonNullable<SessionEntry["transcriptByteCompactionLatch"]> {
+  return {
+    activeBytes: params.activeBytes,
+    latchedAt: params.previousLatchedAt ?? params.now ?? Date.now(),
+    sessionId: params.sessionId,
+    maxBytes: params.maxBytes,
+  };
+}
+
+/** In-process retry floor for the hard-truncate fallback; sidecar writes are not free. */
+const TRANSCRIPT_TRUNCATE_RETRY_BACKOFF_MS = 10 * 60 * 1000;
+/**
+ * A freshly latched transcript may still shrink through ordinary turns; the
+ * destructive hard-truncate fallback only engages once suppression has actually
+ * persisted and the seat is starving.
+ */
+export const TRANSCRIPT_TRUNCATE_SUPPRESSION_MIN_AGE_MS = 10 * 60 * 1000;
+const truncateBackoffBySession = new Map<string, { until: number }>();
+
+export function resetTranscriptTruncateBackoffForTest(): void {
+  truncateBackoffBySession.clear();
+}
+
+/**
+ * Attempts the hard-truncate fallback for a byte-suppressed session: persist the
+ * full transcript to a sidecar, then rotate onto a byte-bounded tail so the seat
+ * keeps running. Returns the refreshed entry when the transcript now fits.
+ */
+async function relieveTranscriptByteSuppression(params: {
+  activeTranscriptBytes: number | undefined;
+  compactionTarget: {
+    agentId: string;
+    sessionKey: string;
+    storePath: string;
+  };
+  entry: SessionEntry;
+  maxActiveTranscriptBytes: number;
+  sessionStore?: Record<string, SessionEntry>;
+}): Promise<{
+  outcome: string;
+  entry?: SessionEntry;
+}> {
+  const backoff = truncateBackoffBySession.get(params.compactionTarget.sessionKey);
+  if (backoff && Date.now() < backoff.until) {
+    return { outcome: `backoff_${Math.ceil((backoff.until - Date.now()) / 60_000)}m` };
+  }
+  let truncate: SessionTranscriptTruncateOutcome;
+  try {
+    truncate = await truncateSessionTranscriptToByteBudget({
+      agentId: params.compactionTarget.agentId,
+      maxBytes: params.maxActiveTranscriptBytes,
+      sessionKey: params.compactionTarget.sessionKey,
+      storePath: params.compactionTarget.storePath,
+      expectedSession: {
+        lifecycleRevision: params.entry.lifecycleRevision,
+        sessionId: params.entry.sessionId,
+      },
+    });
+  } catch (error) {
+    preflightCompactionLog.warn("transcript hard-truncate fallback failed", {
+      error: String(error),
+      sessionKey: params.compactionTarget.sessionKey,
+    });
+    truncateBackoffBySession.set(params.compactionTarget.sessionKey, {
+      until: Date.now() + TRANSCRIPT_TRUNCATE_RETRY_BACKOFF_MS,
+    });
+    return { outcome: "error" };
+  }
+  if (truncate.status !== "truncated") {
+    if (truncate.status !== "already_fits") {
+      truncateBackoffBySession.set(params.compactionTarget.sessionKey, {
+        until: Date.now() + TRANSCRIPT_TRUNCATE_RETRY_BACKOFF_MS,
+      });
+    }
+    return { outcome: truncate.status };
+  }
+  truncateBackoffBySession.delete(params.compactionTarget.sessionKey);
+  preflightCompactionLog.warn(
+    "byte-triggered compaction could not fit the active transcript; hard-truncated to a bounded tail (full transcript persisted to sidecar)",
+    {
+      sessionKey: params.compactionTarget.sessionKey,
+      activeTranscriptBytes: truncate.activeBytesBefore,
+      activeTranscriptBytesAfter: truncate.activeBytesAfter,
+      droppedEvents: truncate.droppedEvents,
+      keptEvents: truncate.keptEvents,
+      maxActiveTranscriptBytes: params.maxActiveTranscriptBytes,
+      previousSessionId: truncate.previousSessionId,
+      sessionId: truncate.sessionId,
+      sidecarPath: truncate.sidecarPath,
+    },
+  );
+  if (params.sessionStore) {
+    params.sessionStore[params.compactionTarget.sessionKey] = truncate.entry;
+  }
+  return { entry: truncate.entry, outcome: "truncated" };
 }
 
 function estimatePromptTokensForMemoryFlush(prompt?: string): number | undefined {
@@ -593,6 +702,8 @@ export async function runSessionCompactionIfNeeded(params: {
   compactionRequestBudget?: CompactionRequestBudget;
   cfg: OpenClawConfig;
   followupRun: FollowupRun;
+  /** Turn identity for structured suppression alerts; canonical execution owns registration. */
+  runId?: string;
   promptForEstimate?: string;
   defaultModel: string;
   sessionEntry?: SessionEntry;
@@ -734,11 +845,12 @@ export async function runSessionCompactionIfNeeded(params: {
     transcriptByteCompactionLatched &&
     typeof activeTranscriptBytes === "number" &&
     activeTranscriptBytes < (latch?.activeBytes ?? 0)
-      ? {
+      ? buildTranscriptByteCompactionLatch({
           activeBytes: activeTranscriptBytes,
           sessionId: entry.sessionId,
           maxBytes: maxActiveTranscriptBytes!,
-        }
+          previousLatchedAt: latch?.latchedAt,
+        })
       : undefined;
   // Unknown projection size cannot invalidate a latch whose identity and threshold still apply.
   const shouldClearTranscriptByteCompactionLatch =
@@ -829,6 +941,84 @@ export async function runSessionCompactionIfNeeded(params: {
       threshold,
     });
   const shouldCompact = shouldCompactByTokens || shouldCompactByTranscriptBytes;
+  if (
+    !shouldCompact &&
+    transcriptByteCompactionLatched &&
+    exceedsTranscriptByteThreshold &&
+    // Native-compaction runtimes (Codex/CLI harnesses) own their transcripts; the
+    // host byte fuse only bounds fresh-thread bootstrap seeds for them.
+    !isCodexRuntime &&
+    !ownsNativeCompaction &&
+    typeof maxActiveTranscriptBytes === "number" &&
+    typeof activeTranscriptBytes === "number"
+  ) {
+    // This turn ships with byte suppression active and no pending compaction: the
+    // transcript is oversized because compaction already failed to fit it. Stamp an
+    // undated latch so suppression age becomes knowable, attempt the hard-truncate
+    // fallback so the seat keeps running, and alert when the suppression is stale.
+    const activeLatch = entry.transcriptByteCompactionLatch;
+    if (activeLatch && activeLatch.latchedAt === undefined) {
+      const stamped = await incrementCompactionCount({
+        ...compactionTarget,
+        amount: 0,
+        expectedSession: entry,
+        sessionStore: compactionStore,
+        transcriptByteCompactionLatch: buildTranscriptByteCompactionLatch({
+          activeBytes: activeLatch.activeBytes,
+          sessionId: activeLatch.sessionId,
+          maxBytes: activeLatch.maxBytes,
+        }),
+      });
+      assertActive();
+      if (stamped !== undefined) {
+        entry = compactionStore[compactionSessionKey] ?? entry;
+      }
+    }
+    const suppressionAgeMs =
+      entry.transcriptByteCompactionLatch?.latchedAt !== undefined
+        ? Math.max(0, Date.now() - (entry.transcriptByteCompactionLatch.latchedAt ?? 0))
+        : undefined;
+    const relief =
+      suppressionAgeMs !== undefined &&
+      suppressionAgeMs >= TRANSCRIPT_TRUNCATE_SUPPRESSION_MIN_AGE_MS
+        ? await relieveTranscriptByteSuppression({
+            activeTranscriptBytes,
+            compactionTarget,
+            entry,
+            maxActiveTranscriptBytes,
+            sessionStore: compactionStore,
+          })
+        : { outcome: `suppression_age_${suppressionAgeMs ?? "unknown"}ms` };
+    assertActive();
+    if (relief.entry) {
+      const previousSessionId = params.followupRun.run.sessionId;
+      entry = relief.entry;
+      params.followupRun.run.sessionId = entry.sessionId;
+      params.onSessionIdChanged?.(entry.sessionId);
+      const queueKey = params.followupRun.run.sessionKey ?? params.sessionKey;
+      if (queueKey) {
+        params.followupRun.run.sessionFile = queueKey;
+        refreshQueuedFollowupSession({
+          key: queueKey,
+          previousSessionId,
+          nextSessionId: entry.sessionId,
+          nextSessionFile: queueKey,
+        });
+      }
+      // The rotated transcript fits; stale byte/token estimates no longer apply.
+      // This turn proceeds and the next preflight re-evaluates the fresh session.
+      return entry;
+    }
+    maybeAlertTranscriptByteSuppression({
+      activeTranscriptBytes,
+      agentId: compactionAgentId,
+      autoTruncateOutcome: relief.outcome,
+      latchedAt: entry.transcriptByteCompactionLatch?.latchedAt,
+      maxActiveTranscriptBytes,
+      runId: params.runId,
+      sessionKey: compactionSessionKey,
+    });
+  }
   if (!shouldCompact) {
     return entry ?? params.sessionEntry;
   }
@@ -897,11 +1087,12 @@ export async function runSessionCompactionIfNeeded(params: {
       typeof postCompactionBytes === "number" &&
       typeof maxActiveTranscriptBytes === "number" &&
       postCompactionBytes >= maxActiveTranscriptBytes
-        ? {
+        ? buildTranscriptByteCompactionLatch({
             activeBytes: postCompactionBytes,
             sessionId: acceptedEntry.sessionId,
             maxBytes: maxActiveTranscriptBytes,
-          }
+            previousLatchedAt: expectedSession.transcriptByteCompactionLatch?.latchedAt,
+          })
         : undefined;
     const compactionCount = await incrementCompactionCount({
       ...compactionTarget,
@@ -1003,11 +1194,13 @@ export async function runSessionCompactionIfNeeded(params: {
                         },
                         {
                           prepared,
-                          transcriptByteCompactionLatch: {
+                          transcriptByteCompactionLatch: buildTranscriptByteCompactionLatch({
                             activeBytes: activeTranscriptBytes,
                             sessionId: expectedSession.sessionId,
                             maxBytes: maxActiveTranscriptBytes,
-                          },
+                            previousLatchedAt:
+                              expectedSession.transcriptByteCompactionLatch?.latchedAt,
+                          }),
                         },
                       );
                       hostAccountingCommitted = true;

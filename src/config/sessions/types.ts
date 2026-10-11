@@ -648,6 +648,8 @@ export type InternalSessionEntryCore = SessionEntryCore & {
   /** Suppresses repeated byte-triggered compaction after an oversized successor was observed. */
   transcriptByteCompactionLatch?: {
     activeBytes: number;
+    /** Epoch ms when suppression first latched; aged for bricked-seat alerting. */
+    latchedAt?: number;
     sessionId: string;
     maxBytes: number;
   };
