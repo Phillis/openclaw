@@ -5,6 +5,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngineRuntimeContext } from "../../context-engine/types.js";
 import { resolveBoundAgentIdForSession } from "../session-agent-binding.js";
+import { withoutGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
 
 type ResolveContextEngineCapabilitiesParams = {
   config?: OpenClawConfig;
@@ -32,20 +33,25 @@ export function resolveContextEngineCapabilities(
     llm: {
       complete: async (request) => {
         const { createRuntimeLlm } = await import("../../plugins/runtime/runtime-llm.runtime.js");
-        return await createRuntimeLlm({
-          getConfig: () => params.config,
-          authority: {
-            caller: { kind: "context-engine", id: params.purpose },
-            requiresBoundAgent: true,
-            ...(sessionKey ? { sessionKey } : {}),
-            ...(agentId ? { agentId } : {}),
-            ...(params.authProfileId ? { preferredProfile: params.authProfileId } : {}),
-            ...(contextEnginePluginId ? { pluginIdForPolicy: contextEnginePluginId } : {}),
-            allowAgentIdOverride: false,
-            allowModelOverride: false,
-            allowComplete: true,
-          },
-        }).complete(request);
+        // Context-engine completions are process-owned maintenance work: they
+        // outlive the turn that scheduled them, so the completion must not
+        // assert the launching turn's gateway tool caller identity.
+        return withoutGatewayToolCallerIdentity(() =>
+          createRuntimeLlm({
+            getConfig: () => params.config,
+            authority: {
+              caller: { kind: "context-engine", id: params.purpose },
+              requiresBoundAgent: true,
+              ...(sessionKey ? { sessionKey } : {}),
+              ...(agentId ? { agentId } : {}),
+              ...(params.authProfileId ? { preferredProfile: params.authProfileId } : {}),
+              ...(contextEnginePluginId ? { pluginIdForPolicy: contextEnginePluginId } : {}),
+              allowAgentIdOverride: false,
+              allowModelOverride: false,
+              allowComplete: true,
+            },
+          }).complete(request),
+        );
       },
     },
   };
