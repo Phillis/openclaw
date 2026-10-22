@@ -90,6 +90,10 @@ export function createTestPluginApi(api: TestPluginApiInput = {}): OpenClawPlugi
     registerMemoryPromptSupplement() {},
     registerMemoryPromptPreparation() {},
     registerMemoryCorpusSupplement() {},
+    // wc8 host custom line: session-maintenance preserve-keys provider
+    // surface — test no-op (preserves nothing; per-sweep semantics live in
+    // the host registry).
+    registerSessionMaintenancePreserveKeysProvider() {},
     resolvePath(input: string) {
       return input;
     },

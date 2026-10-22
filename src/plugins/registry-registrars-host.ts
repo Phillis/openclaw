@@ -452,7 +452,6 @@ export function createHostRegistrars(state: PluginRegistryState) {
     record: PluginRecord,
     provider: () => Iterable<string> | undefined | null,
   ) => {
-    const owner = getPluginRecordRegistry(registry, record);
     const active = isPluginRecordActive(registry, record);
     if (!active && isPluginRegistryRetired(registry)) {
       return undefined;
