@@ -56,6 +56,26 @@ function makeMidStreamDropInput(options?: {
   });
   const input: AssistantFailureInput = {
     runParams: { sessionId: "session:midstream-drop-test" },
+    normalizedAttempt: {
+      attempt,
+      attemptAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      terminalState: resolveEmbeddedRunAttemptTerminalState({ attempt, assistant }),
+      activeErrorContext: { provider: "opencode-go", model: "glm-5.3-flash" },
+    },
+    runInput: {
+      runParams: { sessionId: "session:midstream-drop-test" },
+      fallbackConfigured: true,
+      suspendForFailure: vi.fn(),
+      agentDir: "/tmp/openclaw-midstream-drop-test",
+      isProbeSession: false,
+    },
+    preparedRuntime: {
+      provider: "opencode-go",
+      modelId: "glm-5.3-flash",
+      model: "glm-5.3-flash",
+    },
+    runtime: {},
     attempt,
     attemptAssistant: assistant,
     currentAttemptAssistant: assistant,
@@ -251,6 +271,11 @@ describe("handleEmbeddedAssistantFailure mid-stream drop retry (BUG-019)", () =>
       ...base.input,
       attempt,
       attemptAssistant: assistant,
+      normalizedAttempt: {
+        ...base.input.normalizedAttempt,
+        attempt,
+        attemptAssistant: assistant,
+      },
     } as AssistantFailureInput;
     const outcome = await handleEmbeddedAssistantFailure(input);
     expect(outcome.action === "retry" && outcome.emptyErrorRetries === 1).toBe(false);

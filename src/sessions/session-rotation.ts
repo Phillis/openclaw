@@ -239,9 +239,13 @@ export async function runSessionRotationAdmission(params: {
   if (!isRotationEnabled(params.rotation)) {
     return { baseKey: params.baseKey, targetKey: params.baseKey, rotated: false };
   }
-  return await runExclusiveSessionLifecycleMutation({
-    scope: params.scope.storePath ?? `rotation:${params.baseKey}`,
-    identities: [params.baseKey],
+  return await runExclusiveSessionLifecycleMutation("patch", {
+    targets: [
+      {
+        scope: params.scope.storePath ?? `rotation:${params.baseKey}`,
+        identities: [params.baseKey],
+      },
+    ],
     run: async () => {
       const current = await resolveCurrentRotationEpoch(params.scope, params.baseKey);
       const currentEntry = loadRotationEntry(params.scope, current.key);

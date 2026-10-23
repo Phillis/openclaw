@@ -21,12 +21,6 @@ import {
 } from "./preemptive-compaction.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
-// Rough share of the shipped prompt the context engine's estimate does not
-// cover (~20% host-side overhead: system prompt, tool schemas, serialization).
-// Gates the engine-fit precheck against an overhead-adjusted budget so a
-// conservative engine estimate cannot slip a doomed prompt past the precheck.
-const ENGINE_FIT_OVERHEAD_RATIO = 0.8;
-
 type AttemptPromptPreflightParams = Pick<
   EmbeddedRunAttemptParams,
   "config" | "modelId" | "provider" | "sessionFile" | "sessionId" | "sessionKey"
@@ -48,6 +42,12 @@ type PreflightRecoveryBudgetSnapshot = Pick<
 // Carries the measured prompt budget into the outer recovery loop. The synthetic
 // precheck error is only a routing signal, so compaction engines need these
 // fields to compact against the prompt OpenClaw actually rendered.
+// Rough share of the shipped prompt the context engine's estimate does not
+// cover (~20% host-side overhead: system prompt, tool schemas, serialization).
+// Gates the engine-fit precheck against an overhead-adjusted budget so a
+// conservative engine estimate cannot slip a doomed prompt past the precheck.
+const ENGINE_FIT_OVERHEAD_RATIO = 0.8;
+
 function buildPreflightRecoveryBudgetSnapshot(snapshot: PreflightRecoveryBudgetSnapshot) {
   return {
     estimatedPromptTokens: snapshot.estimatedPromptTokens,
@@ -147,8 +147,6 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
   compactionReplayEnabled: boolean;
   contextEngineAssemblySucceeded: boolean;
   contextEnginePromptAuthority: NonNullable<AssembleResult["promptAuthority"]>;
-  /** Engine-assembly token estimate; keeps the host precheck active when it exceeds the attempt budget. */
-  contextEngineEstimatedTokens?: number;
   contextTokenBudget: number;
   hookMessagesForCurrentPrompt: AgentMessage[];
   includeBoundaryTimestamp: boolean;
@@ -162,6 +160,8 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
   toolResultMaxChars: number;
   toolSchemaTokens?: number;
   unwindowedContextEngineMessagesForPrecheck?: AgentMessage[];
+  /** Engine-assembly token estimate; keeps the host precheck active when it exceeds the attempt budget. */
+  contextEngineEstimatedTokens?: number;
 }): Promise<AttemptPromptPreflightState> {
   const { attempt } = input;
   const boundaryOptions = {
@@ -173,80 +173,11 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
     input.contextEnginePromptAuthority === "preassembly_may_overflow"
       ? input.unwindowedContextEngineMessagesForPrecheck
       : undefined;
-  let preemptiveCompaction: ReturnType<typeof shouldPreemptivelyCompactBeforePrompt> | null = null;
-  if (!skipPromptSubmission) {
-    try {
-      preemptiveCompaction = shouldPreemptivelyCompactBeforePrompt({
-        messages: input.hookMessagesForCurrentPrompt,
-        unwindowedMessages: unwindowedLlmBoundaryMessagesForPrecheck,
-        systemPrompt: input.systemPrompt,
-        prompt: input.promptForPrecheck,
-        contextTokenBudget: input.contextTokenBudget,
-        reserveTokens: input.reserveTokens,
-        toolResultMaxChars: input.toolResultMaxChars,
-        ...(typeof input.toolSchemaTokens === "number"
-          ? { toolSchemaTokens: input.toolSchemaTokens }
-          : {}),
-        replay: {
-          model: attempt.model,
-          sessionId: attempt.sessionId,
-          authProfileId: attempt.runtimePlan?.auth.forwardedAuthProfileId,
-          enabled: input.compactionReplayEnabled,
-        },
-      });
-    } catch (error) {
-      if (!(error instanceof CompactionReplayRefreshRequiredError)) {
-        throw error;
-      }
-      return {
-        ...input.state,
-        promptError: error,
-        promptErrorSource: "precheck",
-        skipPromptSubmission: true,
-      };
-    }
-  }
-  // Even when the context engine owns compaction, its own assembly estimate can
-  // exceed the CURRENT attempt's per-model budget (e.g. a fallback chain moved
-  // the run to a smaller-context model). Shipping that prompt is a guaranteed
-  // billed terminal overflow, so the host precheck stays active in that case.
-  // The engine estimate covers only engine-assembled context; host-side overhead
-  // (system prompt, tool schemas, serialization) ships on top of it and is not
-  // counted. Production evidence (2026-09-06): a supervision lane assembled at
-  // estimate 421,429 against a 524,288 budget — under the raw budget — yet the
-  // real prompt carried ~100K tokens of that overhead and the provider rejected
-  // it as a billed terminal overflow. The gate therefore compares against a
-  // budget scaled down by the overhead ratio; reserveTokens are NOT subtracted
-  // here because the preemptive machinery this gate keeps active already
-  // applies reserve internally when deciding ship vs compact.
-  const effectiveEngineFitBudget = Math.floor(input.contextTokenBudget * ENGINE_FIT_OVERHEAD_RATIO);
-  const contextEngineEstimateExceedsBudget =
-    typeof input.contextEngineEstimatedTokens === "number" &&
-    Number.isFinite(input.contextEngineEstimatedTokens) &&
-    input.contextEngineEstimatedTokens > 0 &&
-    input.contextTokenBudget > 0 &&
-    input.contextEngineEstimatedTokens > effectiveEngineFitBudget;
-  if (contextEngineEstimateExceedsBudget) {
-    log.warn(
-      `[context-overflow-precheck] engine estimate ${input.contextEngineEstimatedTokens} exceeds ` +
-        `effective attempt budget ${effectiveEngineFitBudget} (raw ${input.contextTokenBudget}, ` +
-        `overhead ratio ${ENGINE_FIT_OVERHEAD_RATIO}); keeping host precheck active ` +
-        `provider=${attempt.provider}/${attempt.modelId} ` +
-        `sessionKey=${attempt.sessionKey ?? attempt.sessionId}`,
-    );
-  }
-  const shouldSkipPrecheck =
-    skipPromptSubmission ||
-    (!contextEngineEstimateExceedsBudget &&
-      input.contextEngineAssemblySucceeded &&
-      input.activeContextEngine?.info.ownsCompaction &&
-      input.contextEnginePromptAuthority !== "preassembly_may_overflow" &&
-      !preemptiveCompaction?.compactionReplay);
-
-  if (shouldSkipPrecheck && !skipPromptSubmission) {
-    log.info(
-      `[context-overflow-precheck] skipped: context engine "${input.activeContextEngine!.info.id}" owns compaction`,
-    );
+  const unwindowedLlmBoundaryMessagesForPrecheck = unwindowedMessages
+    ? normalizeMessagesForLlmBoundary(unwindowedMessages, boundaryOptions)
+    : undefined;
+  if (input.state.skipPromptSubmission) {
+    return { ...input.state };
   }
   if ((input.pendingInputTokens ?? 0) >= input.contextTokenBudget) {
     return {
@@ -288,11 +219,25 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
       skipPromptSubmission: true,
     };
   }
+  const contextEngineEstimateExceedsBudget =
+    input.contextEngineEstimatedTokens !== undefined &&
+    input.contextEngineEstimatedTokens >=
+      Math.floor(input.contextTokenBudget * ENGINE_FIT_OVERHEAD_RATIO);
+  if (contextEngineEstimateExceedsBudget && input.contextEngineAssemblySucceeded) {
+    log.warn(
+      `[context-overflow-precheck] engine estimate ${input.contextEngineEstimatedTokens} exceeds ` +
+        `effective attempt budget ${Math.floor(input.contextTokenBudget * ENGINE_FIT_OVERHEAD_RATIO)} (raw ${input.contextTokenBudget}, ` +
+        `overhead ratio ${ENGINE_FIT_OVERHEAD_RATIO}); keeping host precheck active ` +
+        `provider=${attempt.provider}/${attempt.modelId} ` +
+        `sessionKey=${attempt.sessionKey ?? attempt.sessionId}`,
+    );
+  }
   if (
     input.contextEngineAssemblySucceeded &&
     input.activeContextEngine?.info.ownsCompaction &&
     input.contextEnginePromptAuthority !== "preassembly_may_overflow" &&
-    !preemptiveCompaction.compactionReplay
+    !preemptiveCompaction.compactionReplay &&
+    !contextEngineEstimateExceedsBudget
   ) {
     log.info(
       `[context-overflow-precheck] skipped: context engine "${input.activeContextEngine.info.id}" owns compaction`,

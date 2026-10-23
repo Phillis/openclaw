@@ -320,6 +320,7 @@ async function estimatePromptTokensFromSessionTranscript({
 /** Compacts session context before a reply or after a completed direct command. */
 export async function runSessionCompactionIfNeeded(params: {
   replyOperation?: ReplyOperation;
+  runId?: string; // fork wc9: turn id for receipts
   pendingUserEntryId?: string;
   compactionRequestBudget?: CompactionRequestBudget;
   cfg: OpenClawConfig;
@@ -1373,4 +1374,3 @@ async function recordMemoryFlushFailure(
   }
   return { sessionEntry, outcome };
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

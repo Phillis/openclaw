@@ -308,8 +308,7 @@ export type OpenClawPluginApi = {
    */
   registerSessionMaintenancePreserveKeysProvider: (
     provider: () => Iterable<string> | undefined | null,
-  ) => void;
-  registerService: (service: OpenClawPluginService) => void;  /** Register a local gateway discovery advertiser such as mDNS/Bonjour. */
+  ) => void /** Register a local gateway discovery advertiser such as mDNS/Bonjour. */;
   registerGatewayDiscoveryService: (service: OpenClawGatewayDiscoveryService) => void;
   /** Register a text-only CLI backend used by the local CLI runner. */
   registerCliBackend: (backend: CliBackendPlugin) => void;

@@ -272,9 +272,11 @@ export async function executeJobCore(
               // schedules the ordinary retry without consulting provider
               // classifications. The scheduled retry stays the only
               // re-execution path.
-              ...(heartbeatResult.failureKind === "local_kill"
-                ? { errorClassification: { kind: "local_transient" as const } }
-                : {}),
+              // Fork (P0-2) on the 10.6 classification vocab: local kills
+              // carry NO errorClassification (unclassified stays
+              // circuit-neutral; the frozen reason vocabulary has no local
+              // kind) — the failureText below carries the diagnosis.
+              ...(heartbeatResult.failureKind === "local_kill" ? {} : {}),
             }
           : { status: "skipped" as const, error: `heartbeat skipped: ${heartbeatResult.reason}` };
     return triggerEval ? { ...result, triggerEval } : result;

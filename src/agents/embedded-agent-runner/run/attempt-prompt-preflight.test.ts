@@ -14,6 +14,7 @@ const logMocks = vi.hoisted(() => ({
   isEnabled: vi.fn(() => false),
 }));
 
+// mock-isolation: fork test fakes this module by design; the real module performs IO.
 vi.mock("../logger.js", () => ({
   log: {
     debug: logMocks.debug,

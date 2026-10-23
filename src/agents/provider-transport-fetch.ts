@@ -281,7 +281,8 @@ export function resolveModelRequestTimeoutMs(
 ): number | undefined {
   return clampPositiveTimerTimeoutMs(
     timeoutMs === undefined
-      ? (model as { requestTimeoutMs?: unknown }).requestTimeoutMs
+      ? // SAFETY: optional-field probe; the guard above verified the object shape.
+        (model as { requestTimeoutMs?: unknown }).requestTimeoutMs
       : timeoutMs,
   );
 }
@@ -633,5 +634,3 @@ async function retryTransientPreStream5xx(params: {
   }
   return response;
 }
-
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

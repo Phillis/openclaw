@@ -181,7 +181,6 @@ export function diagnosticErrorFailureKind(err: unknown): DiagnosticErrorFailure
   const kind = code === undefined ? undefined : FAILURE_KIND_BY_CODE.get(code);
   if (kind) {
     return kind;
-
   }
 
   const message = findDiagnosticErrorProperty(err, readDirectMessage);

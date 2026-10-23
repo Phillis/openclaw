@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import { isDirectRunUrl } from "./lib/direct-run.mjs";
 import { resolveRepoToolBinPath } from "./lib/local-check-runtime.mts";
 import { createManagedCommandInvocation } from "./lib/managed-child-process.mts";
 import {
+  readGitText,
   compareRatchetCounts,
   listRatchetRenames,
   loadRatchetSnapshot,
@@ -44,10 +45,7 @@ function compareLineCapViolations(
 }
 
 function gitPaths(root: string, args: string[]) {
-  return execFileSync("git", args, { cwd: root, maxBuffer: 256 * 1024 * 1024 })
-    .toString("utf8")
-    .split("\0")
-    .filter(Boolean);
+  return readGitText(root, args).split("\0").filter(Boolean);
 }
 
 function collectViolations(
@@ -87,13 +85,20 @@ function collectViolations(
       ".",
     ],
   });
+  // Fork: with the full tree snapshotted post-merge, the JSON diagnostics
+  // stream can exceed spawnSync's default pipe — route stdout through a file.
+  const stdoutFile = path.join(snapshot, ".oxlint-stdout.json");
   const result = spawnSync(invocation.command, invocation.args, {
     cwd: snapshot,
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: 1024 * 1024 * 1024,
     shell: invocation.shell,
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  if (result.error && !fs.existsSync(stdoutFile)) {
+    throw result.error ?? new Error("oxlint line-cap probe failed");
+  }
   if (result.error || (result.status !== 0 && result.status !== 1)) {
     throw result.error ?? new Error(result.stderr || "oxlint line-cap probe failed");
   }

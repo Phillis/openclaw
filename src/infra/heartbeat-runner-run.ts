@@ -7,7 +7,6 @@ import {
   type ReplyOperationRunState,
 } from "../auto-reply/reply/reply-operation-run-state.js";
 import { resolveActiveReplyRunOwnerForSignal } from "../auto-reply/reply/reply-run-registry.state.js";
-import { setChannelSourceTurnId } from "../auto-reply/reply/source-turn-id.js";
 import { withReplySystemEventContext } from "../auto-reply/reply/system-event-session-key.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { formatErrorMessage } from "./errors.js";
@@ -18,7 +17,6 @@ import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js"
 import { heartbeatLog } from "./heartbeat-log.js";
 import { hasHeartbeatOutcomeForRun } from "./heartbeat-outcome-store.js";
 import {
-  DEFAULT_HEARTBEAT_TOOL_LOOP_BUDGET,
   isHeartbeatTypingEnabled,
   resolveHeartbeatChannelPlugin,
   resolveHeartbeatTurnReceiptRequired,
@@ -30,18 +28,16 @@ import {
   type HeartbeatRunOptions,
 } from "./heartbeat-runner-execution.js";
 import { createHeartbeatTypingCallbacks } from "./heartbeat-typing.js";
-import { getHeartbeatWakeAbortSignal, type HeartbeatRunResult } from "./heartbeat-wake.js";
-import {
-  armHeartbeatZeroTranscriptWatchdog,
-  HEARTBEAT_ZERO_TRANSCRIPT_KILL_REASON,
-  resolveHeartbeatZeroTranscriptProbeDefaults,
-} from "./heartbeat-zero-transcript-watchdog.js";
 import {
   getHeartbeatWakeAbortSignal,
   HEARTBEAT_SKIP_NO_PENDING_EVENT,
   type HeartbeatRunResult,
 } from "./heartbeat-wake.js";
-
+import {
+  armHeartbeatZeroTranscriptWatchdog,
+  HEARTBEAT_ZERO_TRANSCRIPT_KILL_REASON,
+  resolveHeartbeatZeroTranscriptProbeDefaults,
+} from "./heartbeat-zero-transcript-watchdog.js";
 import { markSessionEventWakeWorkStarted } from "./session-event-wake.js";
 import { resolveSystemEventQueueKey } from "./system-event-ownership.js";
 import {
@@ -160,6 +156,7 @@ async function enforceHeartbeatTurnReceiptResult(
   });
   return { status: "failed", reason, failureKind: "local_kill" };
 }
+
 export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<HeartbeatRunResult> {
   const wake = await resolveHeartbeatWakeStage(opts);
   if (wake.kind === "skipped") {
@@ -251,9 +248,6 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
     kill: () => {
       // Scoped definitive local cancel (P0-2): the recorded run owner is the
       // sanctioned lever; the signal-mapped owner covers the pre-record window.
-      // The wake abort signal itself is never aborted, so the wake bus performs
-      // no re-execution — the scheduled cron retry stays the only re-execution
-      // path.
       const owner = state.agentTurnOwner;
       if (owner) {
         return owner.abortByUser();
@@ -285,16 +279,11 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
       const { dispatchInboundMessageWithRoutedChannelDispatcher } =
         await import("../auto-reply/dispatch.js");
       await typing?.onReplyStart();
+      signal?.throwIfAborted();
       const heartbeatContext = {
         Body: appendCronStyleCurrentTimeLine(prepared.prompt, cfg, startedAt),
         From: sender,
-        To: sender,
-        // BUG-089 C: label the dispatch diagnostics with the real channel —
-        // without Surface/Provider the embedded beat dispatch logs
-        // `channel=unknown` (dispatch-from-config.gather.ts falls back to
-        // "unknown") even though delivery resolution is exact.
-        Surface: channel,
-        Provider: channel,
+        To: !suppressOriginatingContext ? delivery.to : undefined,
         OriginatingChannel: !suppressOriginatingContext ? channel : undefined,
         OriginatingTo: !suppressOriginatingContext ? delivery.to : undefined,
         AccountId: delivery.accountId,
@@ -321,11 +310,6 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
         SessionKey: runSessionKey,
         AgentId: agentId,
       } satisfies MsgContext;
-      // One idempotent source-turn id per beat (BUG-070-era invariant): without it
-      // internal beats carry no provider message id, the poll prompt cannot mint a
-      // channel turn id, and pre-persisted-turn reconciliation re-persists the
-      // same prompt (duplicate user prompt per beat).
-      setChannelSourceTurnId(heartbeatContext, `heartbeat-beat:v1:${agentId}:${startedAt}`);
       await dispatchInboundMessageWithRoutedChannelDispatcher({
         cfg,
         ctx: heartbeatContext,
@@ -334,6 +318,7 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
         replyOptions: withReplySystemEventContext<InternalGetReplyOptions>(
           {
             isHeartbeat: true,
+            useHeartbeatFailureCopy: prepared.useHeartbeatFailureCopy,
             // Isolated heartbeats mint a fresh session ID per run, so nothing later
             // reuses this run's bundle MCP runtime; retire it at settlement.
             ...(prepared.run.kind === "isolated" ? { cleanupBundleMcpOnRunEnd: true } : {}),
@@ -352,14 +337,16 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
                 }
               : {}),
             abortSignal: signal,
-            // Background wakes get a hard non-refundable tool-call budget; user and
-            // manual turns never enter this path and keep unbounded deep work.
-            maxToolLoopAttempts: DEFAULT_HEARTBEAT_TOOL_LOOP_BUDGET,
             // Admitted task continuations retain their ordinary agent budget even after wake coalescing.
             timeoutOverrideSeconds: prepared.hasTaskContinuation
               ? undefined
               : resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat),
-            bootstrapContextMode: heartbeat?.lightContext === true ? "lightweight" : undefined,
+            // A conversation's continuation keeps its full context and cached prompt prefix.
+            bootstrapContextMode:
+              heartbeat?.lightContext === true && !wake.preflight.conversationRoute
+                ? "lightweight"
+                : undefined,
+            continuesConversation: Boolean(wake.preflight.conversationRoute),
             disableBlockStreaming: true,
             suppressToolProgressMessages: true,
             suppressDefaultToolProgressMessages: true,
@@ -382,60 +369,40 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
                   },
                 };
               }
-            : {}),
-          abortSignal: signal,
-          // Admitted task continuations retain their ordinary agent budget even after wake coalescing.
-          timeoutOverrideSeconds: prepared.hasTaskContinuation
-            ? undefined
-            : resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat),
-          // A conversation's continuation keeps its full context and cached prompt prefix.
-          bootstrapContextMode:
-            heartbeat?.lightContext === true && !wake.preflight.conversationRoute
-              ? "lightweight"
-              : undefined,
-          continuesConversation: Boolean(wake.preflight.conversationRoute),
-          disableBlockStreaming: true,
-          suppressToolProgressMessages: true,
-          suppressDefaultToolProgressMessages: true,
-          onModelSelected: prepared.replyPrefix.onModelSelected,
-          onSessionPrepared: (binding) => {
-            // Capture initialization's exact identity once; later replacements cannot inherit delivery.
-            if (
-              !policy.prepared.policySessionEntry &&
-              !prepared.outboundPolicySessionKey &&
-              binding.sessionKey === prepared.sessionKey &&
-              binding.storePath === prepared.storePath &&
-              binding.lifecycleRevision !== undefined
-            ) {
-              policy.prepared = {
-                ...prepared,
-                policySessionEntry: {
-                  sessionId: binding.sessionId,
-                  lifecycleRevision: binding.lifecycleRevision,
-                  updatedAt: startedAt,
-                },
-              };
-            }
-
+            },
           },
           {
             sessionKey: prepared.inspectsRunQueue ? prepared.sessionKey : runSessionKey,
+            execRequestOwners,
             events: prepared.inspectsRunQueue ? prepared.genericEvents : [],
+            deferredEventIds: [...deferredGenericIds, ...ordinaryGenericIds].filter(
+              (id): id is string => typeof id === "string",
+            ),
+            onEventsAdmitted: (events) => {
+              admittedGenericEvents.push(
+                ...events.filter((event) => ordinaryGenericIds.has(event.id)),
+              );
+            },
           },
         ),
         dispatcherOptions: {
           deliver: (payload) =>
-            deliverHeartbeatDispatch(policy, payload, state.agentTurnOwner?.abortSignal ?? signal),
+            deliverHeartbeatDispatch(
+              policy,
+              payload,
+              execRequestAbortSignal(
+                execRequestOwners,
+                state.agentTurnOwner?.abortSignal ?? signal,
+              ),
+            ),
         },
       });
     })();
     if (watchdog) {
       const outcome = await watchdog.race(dispatchPromise);
       if (outcome === "watchdog_kill") {
-        // The kill is authoritative by construction: the probe observed zero
-        // transcript events at the window. A later cancelled settlement of the
-        // abandoned turn must never author a skipped outcome (that would hide
-        // the wedge and skip the retry); author the failed result now.
+        // The kill is authoritative: a later cancelled settlement must never
+        // author a skipped outcome that hides the wedge and skips the retry.
         policy.watchdogKillAuthoritative = true;
         const reason = HEARTBEAT_ZERO_TRANSCRIPT_KILL_REASON;
         emitHeartbeatEvent({
@@ -451,8 +418,9 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
       }
     }
     await dispatchPromise;
-    if (policy.result) {
-      return await settleTurnReceiptEnforcedResult(policy.result);
+    const settled = settledResult();
+    if (settled) {
+      return await settleTurnReceiptEnforcedResult(settled);
     }
     const execution = resolveReplyOperationAgentTurn(state);
     const reason =
@@ -464,8 +432,9 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
     emitHeartbeatEvent({ status: "skipped", reason, durationMs: Date.now() - startedAt });
     return { status: "skipped", reason };
   } catch (error) {
-    if (policy.result) {
-      return await settleTurnReceiptEnforcedResult(policy.result);
+    const settled = settledResult();
+    if (settled) {
+      return await settleTurnReceiptEnforcedResult(settled);
     }
     const reason = formatErrorMessage(error);
     emitHeartbeatEvent({

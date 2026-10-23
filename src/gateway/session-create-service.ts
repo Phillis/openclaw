@@ -1302,5 +1302,5 @@ export async function createGatewaySession(
   } catch (error) {
     return { ...result, postCommit: { status: "failed", error } };
   }
+  /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

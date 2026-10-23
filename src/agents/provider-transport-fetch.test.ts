@@ -62,6 +62,26 @@ function responseStream(
   return { stream, close };
 }
 
+function openResponseStreamText(text: string): {
+  close: () => void;
+  stream: ReadableStream<Uint8Array>;
+} {
+  // Leaves the stream open so cleanup/finalization paths can be exercised.
+  const encoder = new TextEncoder();
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  return {
+    close() {
+      streamController?.close();
+    },
+    stream: new ReadableStream({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(encoder.encode(text));
+      },
+    }),
+  };
+}
+
 function request(init: RequestInit = { method: "POST" }, target: Model = model) {
   return buildGuardedModelFetch(target)(`${target.baseUrl}/responses`, init);
 }
@@ -633,11 +653,10 @@ describe("buildGuardedModelFetch SSE readability", () => {
     );
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
 
 describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
   it("retries a pre-stream 500 once and returns the recovered 200 response", async () => {
-    const model = makeProviderModelFixture<"openai-completions">({
+    const probeModel = makeProviderModelFixture<"openai-completions">({
       id: "glm-5.3-flash",
       provider: "opencode-go",
       api: "openai-completions",
@@ -660,17 +679,20 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
       });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
-      method: "POST",
-      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
-    });
+    const response = await buildGuardedModelFetch(probeModel)(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+      },
+    );
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     await response.text();
   });
 
   it("retries twice (500 -> 502 -> 200) before giving up", async () => {
-    const model = makeProviderModelFixture<"openai-completions">({
+    const probeModel = makeProviderModelFixture<"openai-completions">({
       id: "glm-5.3-flash",
       provider: "opencode-go",
       api: "openai-completions",
@@ -698,17 +720,20 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
       });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
-      method: "POST",
-      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
-    });
+    const response = await buildGuardedModelFetch(probeModel)(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+      },
+    );
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     await response.text();
   });
 
   it("gives up after the bounded retries and surfaces the last 5xx", async () => {
-    const model = makeProviderModelFixture<"openai-completions">({
+    const probeModel = makeProviderModelFixture<"openai-completions">({
       id: "glm-5.3-flash",
       provider: "opencode-go",
       api: "openai-completions",
@@ -723,10 +748,13 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
     );
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
-      method: "POST",
-      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
-    });
+    const response = await buildGuardedModelFetch(probeModel)(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+      },
+    );
     expect(response.status).toBe(500);
     // 1 initial + 2 retries = 3 attempts, then the 5xx surfaces.
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -734,7 +762,7 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
   });
 
   it("does NOT retry a 200 SSE response", async () => {
-    const model = makeProviderModelFixture<"openai-completions">({
+    const probeModel = makeProviderModelFixture<"openai-completions">({
       id: "glm-5.3-flash",
       provider: "opencode-go",
       api: "openai-completions",
@@ -758,17 +786,20 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
     });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
-      method: "POST",
-      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
-    });
+    const response = await buildGuardedModelFetch(probeModel)(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+      },
+    );
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await response.text();
   });
 
   it("does NOT retry a 4xx (only 500/502/503/504 are retried)", async () => {
-    const model = makeProviderModelFixture<"openai-completions">({
+    const probeModel = makeProviderModelFixture<"openai-completions">({
       id: "glm-5.3-flash",
       provider: "opencode-go",
       api: "openai-completions",
@@ -781,17 +812,20 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
     });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const response = await buildGuardedModelFetch(model)("https://api.openai.com/v1/responses", {
-      method: "POST",
-      body: JSON.stringify({ model: "gpt-5.5", stream: true }),
-    });
+    const response = await buildGuardedModelFetch(probeModel)(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+      },
+    );
     expect(response.status).toBe(400);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await response.text();
   });
 
   it("does NOT retry when the request body is not replayable (Request-form body)", async () => {
-    const model = makeProviderModelFixture<"openai-completions">({
+    const probeModel = makeProviderModelFixture<"openai-completions">({
       id: "glm-5.3-flash",
       provider: "opencode-go",
       api: "openai-completions",
@@ -804,12 +838,12 @@ describe("transport-level 5xx retry (PHIL-FORK BUG-018)", () => {
     });
     fetchWithSsrFGuardMock.mockImplementation(fetchMock);
 
-    const request = new Request("https://api.openai.com/v1/responses", {
+    const probeRequest = new Request("https://api.openai.com/v1/responses", {
       method: "POST",
       body: JSON.stringify({ model: "gpt-5.5", stream: true }),
       headers: { "content-type": "application/json" },
     });
-    const response = await buildGuardedModelFetch(model)(request);
+    const response = await buildGuardedModelFetch(probeModel)(probeRequest);
     expect(response.status).toBe(500);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await response.text();

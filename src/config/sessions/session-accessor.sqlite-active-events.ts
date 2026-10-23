@@ -34,6 +34,7 @@ import {
   readVisibleMessageRange,
   resolveVisibleMessagePositions,
   resolveTranscriptBoundaryWindow,
+  readVisibleTranscriptStats,
 } from "./session-accessor.sqlite-reset-window.js";
 import {
   createVisibleMessageCursor,
@@ -219,6 +220,14 @@ export function readRecentSessionTranscriptActiveEvents(
       }),
     options,
   );
+}
+
+/** Reads logical transcript event count and JSONL byte size. */
+export function readSessionTranscriptActiveStats(scope: SessionTranscriptReadScope): {
+  eventCount: number;
+  sizeBytes: number;
+} {
+  return withCurrentProjectionSnapshot(scope, readVisibleTranscriptStats);
 }
 
 /** Reads one append-stable forward page from the materialized active-message projection. */

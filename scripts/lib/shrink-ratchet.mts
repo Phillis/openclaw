@@ -43,7 +43,7 @@ export function parseRatchetArgs(argv: string[]) {
   return args;
 }
 
-function readGitText(root: string, args: string[]) {
+export function readGitText(root: string, args: string[]) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-ratchet-git-"));
   const output = path.join(temporary, "stdout");
   let descriptor: number | undefined;
@@ -124,35 +124,49 @@ export function loadRatchetSources(root: string, filePaths: string[], ref = "") 
   if (filePaths.length === 0) {
     return new Map<string, string>();
   }
-  const output = execFileSync("git", ["cat-file", "--batch", "-z"], {
-    cwd: root,
-    input: filePaths.map((filePath) => ref + ":" + filePath).join("\0") + "\0",
-    maxBuffer: GIT_MAX_BUFFER,
-  });
-  const sources = new Map<string, string>();
-  let offset = 0;
-  // `-z` frames requests only; each response still has a newline header and payload terminator.
-  for (const filePath of filePaths) {
-    const headerEnd = output.indexOf(10, offset);
-    if (headerEnd < 0) {
-      throw new Error("Invalid git cat-file response for " + filePath);
+  // Fork: post-merge batch output can exceed execFileSync pipes — write to a
+  // temp file and read it back (readGitText pattern).
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-ratchet-catfile-"));
+  try {
+    const outputFile = path.join(temporary, "batch");
+    const descriptor = fs.openSync(outputFile, "wx", 0o600);
+    try {
+      execFileSync("git", ["cat-file", "--batch", "-z"], {
+        cwd: root,
+        input: filePaths.map((filePath) => ref + ":" + filePath).join("\0") + "\0",
+        stdio: ["pipe", descriptor, "ignore"],
+      });
+    } finally {
+      fs.closeSync(descriptor);
     }
-    // Missing responses echo the requested path, whose spaces/newlines can spoof a size.
-    // Only a complete object header may frame source bytes.
-    const header = output.subarray(offset, headerEnd).toString("utf8");
-    const size = Number(/^[0-9a-f]+ (?:blob|tree|commit|tag) (\d+)$/u.exec(header)?.[1]);
-    if (!Number.isSafeInteger(size)) {
-      throw new Error("Could not read " + (ref || "staged") + " source " + filePath);
+    const output: Buffer = fs.readFileSync(outputFile);
+    const sources = new Map<string, string>();
+    let offset = 0;
+    // `-z` frames requests only; each response still has a newline header and payload terminator.
+    for (const filePath of filePaths) {
+      const headerEnd = output.indexOf(10, offset);
+      if (headerEnd < 0) {
+        throw new Error("Invalid git cat-file response for " + filePath);
+      }
+      // Missing responses echo the requested path, whose spaces/newlines can spoof a size.
+      // Only a complete object header may frame source bytes.
+      const header = output.subarray(offset, headerEnd).toString("utf8");
+      const size = Number(/^[0-9a-f]+ (?:blob|tree|commit|tag) (\d+)$/u.exec(header)?.[1]);
+      if (!Number.isSafeInteger(size)) {
+        throw new Error("Could not read " + (ref || "staged") + " source " + filePath);
+      }
+      const sourceStart = headerEnd + 1;
+      const sourceEnd = sourceStart + size;
+      if (output[sourceEnd] !== 10) {
+        throw new Error("Invalid git cat-file framing for " + filePath);
+      }
+      sources.set(filePath, output.subarray(sourceStart, sourceEnd).toString("utf8"));
+      offset = sourceEnd + 1;
     }
-    const sourceStart = headerEnd + 1;
-    const sourceEnd = sourceStart + size;
-    if (output[sourceEnd] !== 10) {
-      throw new Error("Invalid git cat-file framing for " + filePath);
-    }
-    sources.set(filePath, output.subarray(sourceStart, sourceEnd).toString("utf8"));
-    offset = sourceEnd + 1;
+    return sources;
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
   }
-  return sources;
 }
 
 export function listRatchetRenames(

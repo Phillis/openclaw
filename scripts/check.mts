@@ -4,19 +4,47 @@ import { booleanFlag, parseFlagArgs, stringFlag } from "./lib/arg-utils.mts";
 import { printTimingSummary } from "./lib/check-timing-summary.mts";
 import { runManagedCommand } from "./lib/managed-child-process.mts";
 
-type CheckCommand = { name: string; args: string[]; usesBase?: boolean };
+type CheckCommand = {
+  name: string;
+  args: string[];
+  usesBase?: boolean;
+  /** Fork parallel-line ratchets: pinned per-ratchet base. Post-merge,
+   * growth ratchets compare against the upstream tag (fork delta only);
+   * inventory ratchets compare against the pre-merge fork line. */
+  base?: string;
+};
 type RunManagedCheck = (options: { args: string[]; bin: string }) => Promise<number>;
 
 export const PREFLIGHT_CHECKS: CheckCommand[] = [
   { name: "conflict markers", args: ["check:no-conflict-markers"] },
   { name: "script TypeScript erasability", args: ["check:script-erasability"] },
-  { name: "line-cap growth ratchet", args: ["check:line-cap-ratchet"], usesBase: false }, // fork: parallel release lines share no base ref
-  { name: "max-lines suppression ratchet", args: ["check:max-lines-ratchet"], usesBase: false }, // fork: parallel release lines share no base ref
-  { name: "assertion SAFETY comment ratchet", args: ["check:assertion-safety"], usesBase: false }, // fork: parallel release lines share no base ref
-  { name: "line-cap growth ratchet", args: ["check:line-cap-ratchet"], usesBase: true },
-  { name: "SQLite worker ratchet", args: ["check:database-worker-ratchet"], usesBase: true },
-  { name: "max-lines suppression ratchet", args: ["check:max-lines-ratchet"], usesBase: true },
-  { name: "assertion SAFETY comment ratchet", args: ["check:assertion-safety"], usesBase: true },
+  // Fork parallel release lines: run the ratchets against the explicit
+  // pre-merge line ref passed via --base (both sides' grandfathered debt is
+  // then correctly attributed; a baseless run cannot compare).
+  {
+    name: "line-cap growth ratchet",
+    args: ["check:line-cap-ratchet"],
+    usesBase: true,
+    base: "v2026.10.6",
+  },
+  {
+    name: "max-lines suppression ratchet",
+    args: ["check:max-lines-ratchet"],
+    usesBase: true,
+    base: "v2026.10.6",
+  },
+  {
+    name: "assertion SAFETY comment ratchet",
+    args: ["check:assertion-safety"],
+    usesBase: true,
+    base: "be0657ba12a",
+  },
+  {
+    name: "SQLite worker ratchet",
+    args: ["check:database-worker-ratchet"],
+    usesBase: true,
+    base: "be0657ba12a",
+  },
   { name: "test timeout race ratchet", args: ["check:test-timeout-race-ratchet"], usesBase: true },
   { name: "first-party mock export ratchet", args: ["check:test-mock-exports"], usesBase: true },
 
@@ -125,11 +153,12 @@ export async function main(argv = process.argv.slice(2)) {
     {
       name: "preflight guards",
       parallel: true,
-      commands: PREFLIGHT_CHECKS.map((command) =>
-        command.usesBase && args.base
-          ? { name: command.name, args: [...command.args, "--base", args.base] }
-          : command,
-      ),
+      commands: PREFLIGHT_CHECKS.map((command) => {
+        const ratchetBase = command.base ?? args.base;
+        return command.usesBase && ratchetBase
+          ? { name: command.name, args: [...command.args, "--base", ratchetBase] }
+          : command;
+      }),
     },
     {
       name: "typecheck",

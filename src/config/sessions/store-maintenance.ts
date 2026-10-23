@@ -469,7 +469,6 @@ function shouldPreserveNonArchivedMaintenanceEntry(params: SessionMaintenanceEnt
     (hasMainSessionRecoveryClaim(params.entry) && !params.entry?.mainRestartRecovery?.tombstone) ||
     params.entry?.modelSelectionLocked === true ||
     hasDurableSessionDispatchBinding(params.entry) ||
-    params.entry?.status === "running" ||
     params.preserveKeys?.has(params.key) === true ||
     isRecentSessionMaintenanceEntry(params) ||
     isProtectedSessionMaintenanceEntry(params.key, params.entry)

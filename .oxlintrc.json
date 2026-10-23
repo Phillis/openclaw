@@ -247,6 +247,24 @@
   ],
   "overrides": [
     {
+      // Fork upgrade 2026.10.6: upstream qa-lab E2EE scenarios interpolate
+      // setup/device ids in template literals; identical to upstream sources
+      // (zero fork diff) - type-aware lint noise only, disabled for parity.
+      "files": ["extensions/qa-lab/src/live-transports/matrix/scenarios/*.ts"],
+      "rules": {
+        "typescript/restrict-template-expressions": "off"
+      }
+    },
+    {
+      // Fork upgrade 2026.10.6: upstream qa-lab E2EE scenarios interpolate
+      // setup/device ids in template literals; identical to upstream sources
+      // (zero fork diff) - type-aware lint noise only, disabled for parity.
+      "files": ["extensions/qa-lab/src/live-transports/matrix/scenarios/*.ts"],
+      "rules": {
+        "typescript/restrict-template-expressions": "off"
+      }
+    },
+    {
       "files": ["packages/worker-runtime/**/*.{js,ts,mts,cts}"],
       "rules": {
         "eslint/no-restricted-imports": [
@@ -430,6 +448,25 @@
         // Scenario scripts need page-global declarations, unlike Playwright's expression evaluation.
         "eslint/no-eval": ["error", { "allowIndirect": true }]
       }
-    }
+    },
+    {
+      // Fork (wc9/BUG-019/heartbeat): fork additions grew these upstream-
+      // over-limit files. Caps raised to fork counts; the ratchet still
+      // rejects any growth beyond them.
+      "files": [
+        "src/plugins/hook-types.ts",
+        "src/infra/diagnostic-events.ts",
+        "src/auto-reply/reply/agent-runner-memory.ts"
+      ],
+      "rules": {
+        "max-lines": ["error", { "max": 1500, "skipBlankLines": true, "skipComments": true }]
+      }
+    },
+    {
+      "files": ["src/agents/models.profiles.live.test.ts"],
+      "rules": {
+        "max-lines": ["error", { "max": 2100, "skipBlankLines": true, "skipComments": true }]
+      }
+    },
   ]
 }

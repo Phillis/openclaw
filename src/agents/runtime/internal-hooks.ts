@@ -14,9 +14,7 @@ export {
   setInternalBeforeToolBatch,
   setInternalShouldStopAfterTurn,
   getInternalToolTurnCompletion,
-  setInternalBeforeToolBatch,
   setInternalToolTurnCompletion,
-
   type InternalBeforeToolBatchHook,
   type InternalShouldStopAfterTurnHook,
   type InternalToolExecutionPreparer,

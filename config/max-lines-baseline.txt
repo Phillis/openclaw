@@ -254,7 +254,6 @@ src/agents/main-session-recovery/main-session-restart-recovery.test.ts
 src/agents/model-auth-availability.ts
 src/agents/model-fallback.test.ts
 src/agents/model-selection-shared.ts
-src/agents/models.profiles.live.test.ts
 src/agents/openclaw-tools.session-status.test.ts
 src/agents/openclaw-tools.sessions.test.ts
 src/agents/session-transcript-repair.test.ts
@@ -281,7 +280,6 @@ src/agents/transcript-redact.test.ts
 src/agents/workspace.ts
 src/agents/worktrees/service.ts
 src/auto-reply/reply/agent-runner-memory.test.ts
-src/auto-reply/reply/agent-runner-memory.ts
 src/auto-reply/reply/agent-runner.misc.runreplyagent.test.ts
 src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts
 src/auto-reply/reply/commands-acp.test.ts
@@ -454,7 +452,6 @@ src/gateway/watch-node-http.ts
 src/infra/backup-create.test.ts
 src/infra/command-explainer/extract.ts
 src/infra/device-pairing.test.ts
-src/infra/diagnostic-events.ts
 src/infra/exec-approvals-allowlist.ts
 src/infra/exec-authorization-plan.ts
 src/infra/infra-runtime.test.ts
@@ -500,7 +497,6 @@ src/plugins/contracts/scheduled-turns.contract.test.ts
 src/plugins/contracts/tts-contract-suites.ts
 src/plugins/discovery.test.ts
 src/plugins/discovery.ts
-src/plugins/hook-types.ts
 src/plugins/hooks.ts
 src/plugins/install-security-scan.runtime.ts
 src/plugins/install.npm-spec.test.ts
@@ -578,8 +574,3 @@ ui/src/pages/sessions/view.ts
 ui/src/pages/usage/view-overview.ts
 ui/src/pages/usage/view.ts
 ui/src/test-helpers/control-ui-e2e.ts
-ui/src/pages/new-session/draft-submission-flow.test.ts
-src/gateway/server-methods/sessions.dispatch.device.test.ts
-src/gateway/talk/relay/session-create.ts
-src/node-host/node-worker-supervisor.ts
-packages/ai/src/transports/openai-responses-stream-internal.ts

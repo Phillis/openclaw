@@ -52,6 +52,13 @@ type QueuedSystemEventHandle = {
 };
 
 /** Persists non-busy trigger evaluation state without touching payload-run history. */
+/** Fork (P0-2): failover reason spellings that classify a definitive LOCAL
+ *  observation (zero-transcript watchdog, budget kills) — transient by
+ *  construction, never attributable to the provider lane. */
+function isLocalObservationFailureReason(reason: string): boolean {
+  return reason === "turn-receipt-missing" || reason === "zero-transcript-watchdog-kill";
+}
+
 export function applyTriggerEvaluationState(
   job: CronJob,
   triggerEval: CronTriggerEvalOutcome,
@@ -158,7 +165,10 @@ export function resolveTransientCronRetryDecision(params: {
       reason: "permanent error",
     };
   }
-  if (params.errorClassification?.kind === "local_transient") {
+  if (
+    params.errorClassification?.kind === "reason" &&
+    isLocalObservationFailureReason(params.errorClassification.reason)
+  ) {
     // A definitive local observation (e.g. the heartbeat zero-transcript
     // watchdog) is transient by construction: schedule the ordinary retry
     // without consulting provider classifications or error-text patterns, and

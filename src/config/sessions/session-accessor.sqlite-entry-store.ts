@@ -338,9 +338,10 @@ function clearSqliteSessionEntryPreservingWindows(
    * reset a single atomic upsert; the validator self-heal (upstream) covers
    * any residual race from external writers.
    */
-  // Upstream 9.6 certification retained: the (now single, atomic) reset must
-  // still be followed by the canonical-validation row certification.
-  certifyCanonicalSessionValidationRow(database, params.sessionKey);
+  // Canonical-validation certification after the single atomic reset
+  // (BUG-024 self-heal): upstream 10.6 moved certification to the pending/
+  // batch flow — mark the key pending so the validator sweeps certify it.
+  markCanonicalSessionValidationPending(database, [params.sessionKey]);
 }
 
 export function deleteLifecycleTargetRows(

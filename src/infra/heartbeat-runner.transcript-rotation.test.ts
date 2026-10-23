@@ -39,6 +39,7 @@ const deliverOutboundPayloadsInternal = vi.hoisted(() =>
   vi.fn(async () => [{ channel: "whatsapp", messageId: "msg-1" }]),
 );
 
+// mock-isolation: fork test fakes this module by design; the real module performs IO.
 vi.mock("./outbound/deliver.js", () => ({
   deliverOutboundPayloads: deliverOutboundPayloadsInternal,
   deliverOutboundPayloadsInternal,

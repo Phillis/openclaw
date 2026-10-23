@@ -468,24 +468,19 @@ type DiagnosticPhaseCompletedEvent = DiagnosticBaseEvent &
     type: "diagnostic.phase.completed";
   };
 
-/** Loop detectors that can warn or block a tool call; one spelling for every emitter. */
-export type ToolLoopDetectorKind =
-  | "generic_repeat"
-  | "argument_churn"
-  | "unknown_tool_repeat"
-  | "known_poll_no_progress"
-  | "global_circuit_breaker"
-  | "typed_error_repeat"
-  | "ping_pong";
-
-export type DiagnosticToolLoopEvent = DiagnosticBaseEvent & {
 export type DiagnosticToolLoopEvent = DiagnosticSessionEvent & {
   type: "tool.loop";
   agentId?: string;
   toolName: string;
   level: "warning" | "critical";
   action: "warn" | "block";
-  detector: ToolLoopDetectorKind;
+  detector:
+    | "generic_repeat"
+    | "argument_churn"
+    | "unknown_tool_repeat"
+    | "known_poll_no_progress"
+    | "global_circuit_breaker"
+    | "ping_pong";
   count: number;
   message: string;
   pairedToolName?: string;
@@ -1597,4 +1592,3 @@ export function resetDiagnosticEventsForTest(): void {
   state.asyncDroppedPriorityEvents = 0;
   resetDiagnosticTracePropagationForTest();
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

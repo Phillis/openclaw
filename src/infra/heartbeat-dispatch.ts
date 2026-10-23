@@ -43,10 +43,7 @@ import { isExecCompletionSystemEvent } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
 import { persistHeartbeatOutcome } from "./heartbeat-outcome-store.js";
-import {
-  resolveHeartbeatChannelPlugin,
-  resolveHeartbeatTurnReceiptRequired,
-} from "./heartbeat-runner-config.js";
+import { resolveHeartbeatChannelPlugin } from "./heartbeat-runner-config.js";
 import type {
   HeartbeatRunOptions,
   PreparedHeartbeatRun,
@@ -86,20 +83,11 @@ type HeartbeatDispatch = {
   deliveryReason?: string;
   deliverySilent?: boolean;
   projectTarget?: boolean;
-  /** Bounded real failure text captured at classification time (P0-1). */
-  failureText?: string;
-  /**
-   * W2: set once the run's reply settled — true when the run produced an
-   * explicit heartbeat tool response, which is itself turn-receipt evidence.
-   */
-  sawHeartbeatToolResponse?: boolean;
-  /**
-   * Set once the P0-2 watchdog kill has authoritatively owned this beat's run
-   * result; later cancelled/skipped settlements of the abandoned turn must not
-   * emit a second beat outcome event after the kill's failed event.
-   */
-  watchdogKillAuthoritative?: boolean;
   publicationSourceText?: string;
+  /** Fork (W2 turn-receipt): the beat used the heartbeat response tool. */
+  sawHeartbeatToolResponse?: boolean;
+  /** Fork (P0-2): the zero-transcript watchdog kill authored the failed result. */
+  watchdogKillAuthoritative?: boolean;
   prepareReply: NonNullable<ReplyOperationRunState["heartbeat"]>["prepareReply"];
 };
 
@@ -119,73 +107,6 @@ export function createHeartbeatDispatch(
 
 const FIRST_HEARTBEAT_ALERT_PREAMBLE =
   'First heartbeat alert: your bot runs periodic background checks and messages you only when something needs attention. Run `openclaw config set agents.defaults.heartbeat.target "none"` to keep these internal.';
-const MAX_HEARTBEAT_TARGET_AWARENESS_CHARS = 1_000;
-
-/** Bounded real-failure-text suffix persisted into cron receipts (P0-1). */
-const HEARTBEAT_FAILURE_TEXT_MAX_CHARS = 500;
-
-function prepareHeartbeatTargetAwareness(params: {
-  agentId: string;
-  storePath: string;
-  runSessionKey: string;
-  targetSessionKey?: string;
-  startedAt: number;
-}): ((payload: NormalizedOutboundPayload) => void) | undefined {
-  const sessionKey = params.targetSessionKey?.trim();
-  if (!sessionKey || sessionKey === params.runSessionKey) {
-    return undefined;
-  }
-  try {
-    if (resolveAgentIdFromSessionKey(sessionKey, params.agentId) !== params.agentId) {
-      return undefined;
-    }
-    const scope = { agentId: params.agentId, storePath: params.storePath, sessionKey };
-    const entry = loadExactSessionEntryReadOnly(scope)?.entry;
-    if (!entry?.sessionId) {
-      return undefined;
-    }
-    const expectedSessionId = entry.sessionId;
-    const expectedLifecycleRevision = entry.lifecycleRevision;
-    const idempotencyKey = `${HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX}${params.startedAt}:${params.runSessionKey}`;
-    return (payload) => {
-      try {
-        // Recheck the exact pre-send lifecycle before publishing awareness. Resets
-        // can preserve sessionId while rotating lifecycleRevision.
-        const latest = loadExactSessionEntryReadOnly(scope)?.entry;
-        if (
-          latest?.sessionId !== expectedSessionId ||
-          latest.lifecycleRevision !== expectedLifecycleRevision
-        ) {
-          return;
-        }
-        const deliveredText = resolveMirroredTranscriptText({
-          text: payload.hookContent ?? resolveOutboundPayloadMirrorText(payload),
-          mediaUrls: payload.mediaUrls,
-        });
-        if (!deliveredText) {
-          return;
-        }
-        const text = truncateUtf16Safe(deliveredText, MAX_HEARTBEAT_TARGET_AWARENESS_CHARS);
-        const suffix = text.length < deliveredText.length ? "\n[truncated]" : "";
-        enqueueSystemEvent(
-          `A heartbeat delivered this message to this channel:\n${text}${suffix}`,
-          withSystemEventOwner({ sessionKey, contextKey: idempotencyKey }, params.agentId),
-        );
-      } catch (error) {
-        // Platform delivery already succeeded; projection remains best-effort bookkeeping.
-        log.warn("heartbeat: failed to queue target session awareness", {
-          error: formatErrorMessage(error),
-        });
-      }
-    };
-  } catch (error) {
-    log.warn("heartbeat: failed to resolve existing target session projection", {
-      error: formatErrorMessage(error),
-    });
-    return undefined;
-  }
-}
-
 /** Monitoring decides which final is public before ordinary dispatch can send it. */
 async function prepareHeartbeatDispatchReply(
   policy: HeartbeatDispatch,
@@ -226,12 +147,7 @@ async function prepareHeartbeatDispatchReply(
           ? "agent-runner-cancelled"
           : HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT;
     policy.result = { status: "skipped", reason };
-    // P0-2: a watchdog kill already authored this beat's failed outcome event;
-    // the abandoned turn's later cancelled settlement must not emit a second
-    // skipped event for the same beat.
-    if (!policy.watchdogKillAuthoritative) {
-      emitHeartbeatEvent({ status: "skipped", reason, durationMs: Date.now() - startedAt });
-    }
+    emitHeartbeatEvent({ status: "skipped", reason, durationMs: Date.now() - startedAt });
     return {};
   }
   const channel = delivery.channel !== "none" ? delivery.channel : undefined;
@@ -269,25 +185,6 @@ async function prepareHeartbeatDispatchReply(
     outcome.kind === "failure" || !heartbeatResponse
       ? undefined
       : getReplyPayloadMetadata(heartbeatResponse.payload)?.heartbeatScratchProposal;
-  // P0-1: the delivery-normalization classification consumes replyPayload.text
-  // and discards it — the persisted cron receipt error_text then carries only
-  // the generic "agent-runner-failure" string and the actual runner/provider
-  // failure message is lost (observed 2026-09-21 07:46 beat: "heartbeat failed:
-  // agent-runner-failure" with the real text unrecoverable from any store).
-  // Capture the bounded real text at classification time so the cron receipt
-  // composes "heartbeat failed: agent-runner-failure: <text>". The BUG-089 H
-  // silent-timeout ack path stays untouched — suppressed failures never reach
-  // this branch, and this only affects the FAILURE path's persisted text.
-  if (outcome.kind === "failure" && outcome.reason === "agent-runner-failure") {
-    const rawFailureText = typeof selected?.text === "string" ? selected.text : "";
-    const trimmedFailureText = rawFailureText.trim();
-    if (trimmedFailureText) {
-      policy.failureText = truncateUtf16Safe(trimmedFailureText, HEARTBEAT_FAILURE_TEXT_MAX_CHARS);
-    }
-  }
-  // W2: an explicit heartbeat tool response is itself turn-receipt evidence,
-  // independent of whether its outcome row reached the store.
-  policy.sawHeartbeatToolResponse = heartbeatResponse !== undefined;
   if (scratch !== undefined && response) {
     if (!preflight.scratchJobId) {
       log.warn("heartbeat: scratch update ignored because no monitor job exists");
@@ -406,11 +303,7 @@ async function prepareHeartbeatDispatchReply(
     }
     policy.result =
       outcome.kind === "failure"
-        ? {
-            status: "failed",
-            reason: outcome.reason,
-            ...(policy.failureText ? { failureText: policy.failureText } : {}),
-          }
+        ? { status: "failed", reason: outcome.reason }
         : { status: "ran", durationMs: Date.now() - startedAt };
     return {};
   };
@@ -457,18 +350,6 @@ async function prepareHeartbeatDispatchReply(
   if (outcome.kind === "ack") {
     if ("response" in outcome && outcome.response) {
       await record(outcome.response);
-    } else if (resolveHeartbeatTurnReceiptRequired(cfg)) {
-      // W2: quiet acks (empty final / SILENT_REPLY_TOKEN) are the DESIGNED
-      // quiet signal, but receipt enforcement requires disk evidence for
-      // every completed beat. Route the quiet ack through the outcome store
-      // so its receipt is provable on disk — outcome done + the stable
-      // enforcement marker as summary (mirrors the no_change → done mapping;
-      // the outcome CHECK forbids a quiet literal).
-      await record({
-        outcome: "done",
-        notify: false,
-        summary: "quiet beat (receipt enforced)",
-      });
     }
     await restoreActivity();
     await suppressSelected();

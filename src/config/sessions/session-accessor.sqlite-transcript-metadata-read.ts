@@ -76,6 +76,9 @@ export function findTranscriptEventInRows(
 ): { event: TranscriptEvent } | undefined {
   for (const row of rows) {
     try {
+      /* transcript_events.event_json stores TranscriptEvent JSON by
+       * construction (append-only writers); the row came from that table. */
+      // SAFETY: event_json is TranscriptEvent JSON by table contract.
       const event = JSON.parse(row.event_json) as TranscriptEvent;
       if (match(event)) {
         return { event };

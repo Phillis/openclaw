@@ -52,7 +52,6 @@ import {
 } from "./node-worker-supervisor-recovery.js";
 import { NodeWorkerTurnStore, type NodeWorkerTurnReceipt } from "./node-worker-turn-store.js";
 import { NodeWorkerWorkspaceRuntime } from "./node-worker-workspace.js";
-/* oxlint-disable max-lines -- upstream v2026.9.7 content, fork merge growth */
 
 /** Coordinates turn admission, cancellation, workspace custody, and journal shutdown. */
 class NodeWorkerSupervisor {

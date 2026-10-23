@@ -22,8 +22,6 @@ export type AgentContextPruningConfig = NonNullable<SchemaAgentDefaultsConfig["c
 
 export type AgentContextLimitsConfig = NonNullable<SchemaAgentDefaultsConfig["contextLimits"]>;
 
-export type AgentContextLimitsConfig = NonNullable<z.input<typeof AgentContextLimitsSchema>>;
-
 export type AgentDefaultsConfig = Omit<SchemaAgentDefaultsConfig, "sandbox"> & {
   sandbox?: AgentSandboxConfig;
 };

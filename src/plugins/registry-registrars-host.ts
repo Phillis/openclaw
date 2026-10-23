@@ -475,27 +475,36 @@ export function createHostRegistrars(state: PluginRegistryState) {
      * or undefined, never throws, and the plugin-side provider is fail-soft
      * against a closed store.
      */
-    registerHostPreserveKeysProvider(() => {
-      try {
-        const keys = provider();
-        if (keys === undefined || keys === null) {
-          return undefined;
-        }
-        const list: string[] = [];
-        for (const key of keys) {
-          if (typeof key === "string" && key.length > 0) {
-            list.push(key);
+    registerHostPreserveKeysProvider(
+      // wc8 surface adapted to the 10.6 async prepare API: the sync plugin
+      // provider is wrapped into a Prepared whose capture() normalizes and
+      // returns the key list (fail-soft per contract).
+      async () => ({
+        capture: () => {
+          try {
+            const keys = provider();
+            if (keys === undefined || keys === null) {
+              return undefined;
+            }
+            const list: string[] = [];
+            for (const key of keys) {
+              if (typeof key === "string" && key.length > 0) {
+                list.push(key);
+              }
+            }
+            return list.length > 0 ? list : undefined;
+          } catch (error) {
+            reportRegistrationError(
+              record,
+              `session preserve keys provider threw: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            return undefined;
           }
-        }
-        return list.length > 0 ? list : undefined;
-      } catch (error) {
-        reportRegistrationError(
-          record,
-          `session preserve keys provider threw: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        return undefined;
-      }
-    });
+        },
+        dispose: () => {},
+      }),
+    );
+    return undefined;
   };
 
   return {

@@ -199,7 +199,8 @@ export function enqueueSessionStateNotice(params: {
     params.queueOnly ||
     isSubagentSessionKey(params.watcherSessionKey) ||
     !params.watcherSessionKey.split(":").pop()?.startsWith("main")
-  ) {    return;
+  ) {
+    return;
   }
   const assertCurrent = () => {
     if (!isSystemEventStoreCurrent(params.watcherSessionKey, storePath)) {

@@ -13,6 +13,7 @@ import type { SessionState, ToolCallRecord } from "../logging/diagnostic-session
 const isMessagingToolSendActionMock = vi.hoisted(() =>
   vi.fn((toolName: string): boolean => toolName === "telegram"),
 );
+// mock-isolation: fork test fakes this module by design; the real module performs IO.
 vi.mock("./embedded-agent-messaging.js", () => ({
   isMessagingToolSendAction: isMessagingToolSendActionMock,
 }));

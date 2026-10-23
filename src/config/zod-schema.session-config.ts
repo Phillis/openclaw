@@ -64,7 +64,8 @@ export const SessionSchema = z
         progressFloorTokens: z.number().positive().optional(),
       })
       .strict()
-      .optional(),    sharing: z
+      .optional(),
+    sharing: z
       .strictObject({
         readOnly: z.boolean().optional(),
         suggest: z.boolean().optional(),

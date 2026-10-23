@@ -153,7 +153,6 @@ export type CronRunErrorClassification =
   /** `reportedByAgent`: the run's final answer reported AUTOMATION_FAILED; no runtime fault. */
   | { kind: "permanent"; reportedByAgent?: true };
 
-
 /** Closed producer-authored facts allowed in operator-facing failure notifications. */
 export type CronFailureNotificationDetail =
   | { kind: "command-exit"; exitCode: number }

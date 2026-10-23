@@ -11,9 +11,7 @@ import type {
   ToolResultContentSource,
 } from "./types.js";
 
-export type InternalShouldStopAfterTurnHook = NonNullable<
-  AgentLoopConfig["shouldStopAfterTurn"]
->;
+export type InternalShouldStopAfterTurnHook = NonNullable<AgentLoopConfig["shouldStopAfterTurn"]>;
 
 export type InternalBeforeToolBatchHook = NonNullable<AgentLoopConfig["beforeToolBatch"]>;
 

@@ -19,12 +19,10 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { StoreWriterQueue } from "../shared/store-writer-queue.js";
 import { checkLoopGovernorAdmissionForAdmissionScope } from "./loop-governor.js";
-import { createLifecycleDiagnosticOperation } from "./session-lifecycle-diagnostics.js";
 import {
   createLifecycleDiagnosticOperation,
   type SessionLifecycleMutationOperation,
 } from "./session-lifecycle-diagnostics.js";
-
 import {
   collectSessionIdentityTargets,
   normalizeSessionIdentities,

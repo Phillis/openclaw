@@ -13,6 +13,7 @@ import {
   withTempHeartbeatSandbox,
 } from "./heartbeat-runner.test-utils.js";
 
+// mock-isolation: fork test fakes this module by design; the real module performs IO.
 vi.mock("./outbound/deliver.js", () => ({
   deliverOutboundPayloads: vi.fn().mockResolvedValue([]),
   deliverOutboundPayloadsInternal: vi.fn().mockResolvedValue([]),

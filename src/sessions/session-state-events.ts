@@ -184,7 +184,6 @@ export function acknowledgeSessionStateNotices(
     enqueueSessionStateNotice,
     options,
   );
-
 }
 
 /** Reset parent-side assumptions while retaining target history across session incarnations. */
@@ -229,7 +228,6 @@ async function clearSessionState(
           [context.admission.databasePath],
         ),
       },
-
     );
   } finally {
     finish();

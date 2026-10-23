@@ -53,6 +53,8 @@ export interface CreateAgentSessionOptions extends Omit<
   tools: string[];
   /** Hydrate an authorized tool deferred out of the current provider-visible tool set. */
   resolveDeferredTool?: AgentOptions["resolveDeferredTool"];
+  /** Run-scoped graceful stop installed for bounded background runs (heartbeat budget). */
+  shouldStopAfterTurn?: InternalShouldStopAfterTurnHook;
 }
 
 function createSessionPrepareNextTurnWithContext(

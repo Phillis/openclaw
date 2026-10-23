@@ -282,39 +282,14 @@ export function collectAssertionSafetyReport(root: string, ref: string) {
   const git = (args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: GIT_MAX_BUFFER });
   try {
-    const args = parseRatchetArgs(argv);
-    if (args.staged && args.prune) {
-      throw new Error("--prune cannot be combined with --staged");
-    }
-
-    const baseRef = resolveRatchetBase(root, {
-      base: args.base,
-      staged: args.staged,
-      baseDisabled: args.baseDisabled,
-    });
-    const baseBaseline = baseRef
-      ? loadRatchetReference(root, baseRef, BASELINE_PATH, parseAssertionBaseline)
-      : null;
-    const current = collectCurrentAssertionSafetyCounts(root, { staged: args.staged });
-
-    let baseline;
-    try {
-      baseline = loadRatchetSnapshot(root, BASELINE_PATH, args.staged, parseAssertionBaseline);
-    } catch {
-      if (args.prune && !args.staged && baseBaseline === null) {
-        writeBaseline(root, current);
-        reportRatchetSuccess(
-          `Initialized ${BASELINE_PATH}: ${current.size} files, ${totalCount(current)} assertions.`,
-        );
-        return 0;
-      }
-      throw new Error("Missing " + BASELINE_PATH + (args.staged ? " in the index" : ""));
-    }
-
-    if (args.prune && !args.staged && baseBaseline === null) {
-      writeBaseline(root, current);
-      reportRatchetSuccess(
-        `Refreshed initial ${BASELINE_PATH}: ${current.size} files, ${totalCount(current)} assertions.`,
+    for (const file of [
+      "check-assertion-safety-ratchet.mts",
+      "lib/native-typescript.mts",
+      "lib/shrink-ratchet.mts",
+      "lib/type-assertion-guard-scope.mjs",
+    ]) {
+      report.tooling.sha256[`scripts/${file}`] = sha256(
+        fs.readFileSync(new URL(file, import.meta.url)),
       );
     }
     const require = createRequire(import.meta.url);
@@ -345,8 +320,14 @@ export function collectAssertionSafetyReport(root: string, ref: string) {
     report.source.baselineBlob = entries.get(BASELINE_PATH)?.blob ?? null;
     report.source.packageBlob = entries.get("package.json")?.blob ?? null;
     report.source.lockfileBlob = entries.get("pnpm-lock.yaml")?.blob ?? null;
-    const baseline = parseRatchetCounts(git(["show", `${commit}:${BASELINE_PATH}`]), BASELINE_PATH);
-    report.totals.allowances = [...baseline.values()].reduce((total, count) => total + count, 0);
+    const baselineCounts = parseRatchetCounts(
+      git(["show", `${commit}:${BASELINE_PATH}`]),
+      BASELINE_PATH,
+    );
+    report.totals.allowances = [...baselineCounts.values()].reduce(
+      (total, count) => total + count,
+      0,
+    );
     const paths = new Set([
       ...[...entries.keys()].filter(
         (file) =>
@@ -354,12 +335,12 @@ export function collectAssertionSafetyReport(root: string, ref: string) {
             pathMatchesTypeAssertionRoot(file, sourceRoot),
           ) && SOURCE_EXTENSIONS.has(path.posix.extname(file)),
       ),
-      ...baseline.keys(),
+      ...baselineCounts.keys(),
     ]);
     report.files = [...paths].toSorted(compareStrings).map((file): AssertionFileReport => {
       const entry = entries.get(file);
       const governed = isGovernedAssertionSourcePath(file);
-      const allowance = baseline.get(file) ?? 0;
+      const allowance = baselineCounts.get(file) ?? 0;
       return {
         path: file,
         blob: entry?.blob ?? null,

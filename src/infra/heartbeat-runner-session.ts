@@ -78,11 +78,9 @@ export async function markStartupOrphanedHeartbeatIsolatedSessions(params: {
   for (const storeTarget of await discoverRestartRecoveryStoreTargets({
     cfg: params.cfg,
     stateDir: params.stateDir,
-    statuses: ["running"],
   })) {
     const storeResult = await applySessionEntryReplacements<{ marked: number; skipped: number }>({
       storePath: storeTarget.storePath,
-      statuses: ["running"],
       requireWriteSuccess: true,
       update: (entries) => {
         const replacements: SessionEntryReplacement[] = [];
@@ -94,6 +92,10 @@ export async function markStartupOrphanedHeartbeatIsolatedSessions(params: {
             counts.skipped++;
             continue;
           }
+          // 10.6 persisted rows no longer carry "running" as a status literal;
+          // an active-owning row is identified by heartbeat isolation + no
+          // current process owner (checks above). Mark anything left as
+          // failed — a completed row would not be isolated-live here.
           if (hasCurrentProcessOwner({ activeSessionIds, activeSessionKeys, entry, sessionKey })) {
             counts.skipped++;
             continue;
@@ -232,7 +234,6 @@ function isHeartbeatSessionOf(sessionKey: string, baseSessionKey: string): boole
     sessionKey.startsWith(baseSessionKey) &&
     /^(:heartbeat)+$/.test(sessionKey.slice(baseSessionKey.length))
   );
-
 }
 
 function resolveIsolatedHeartbeatSessionKey(params: {

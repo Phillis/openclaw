@@ -1,6 +1,5 @@
 import type { AssistantMessage, ToolResultMessage } from "@openclaw/llm-core";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
-import { asOptionalRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createStreamedSteeringConfig, getSteeringAtCheckpoint } from "./agent-loop-steering.js";
 import {
   emitToolResultMessage,
@@ -9,6 +8,7 @@ import {
   type AsyncToolBatchScheduling,
   type ExecutedToolCallBatch,
 } from "./agent-stream-response.js";
+import { applyToolPreValidate, prepareToolCallArguments } from "./agent-tool-prepare.js";
 import {
   REPEATED_TOOL_ERROR_CODE,
   REPEATED_TOOL_ERROR_MESSAGE,
@@ -923,32 +923,6 @@ function shouldTerminateToolBatch(finalizedCalls: FinalizedToolCallOutcome[]): b
     finalizedCalls.length > 0 &&
     finalizedCalls.every((finalized) => finalized.result.terminate === true)
   );
-}
-
-function prepareToolCallArguments(tool: AgentTool, toolCall: AgentToolCall): AgentToolCall {
-  if (!tool.prepareArguments) {
-    return toolCall;
-  }
-  const preparedArguments = tool.prepareArguments(toolCall.arguments);
-  if (preparedArguments === toolCall.arguments) {
-    return toolCall;
-  }
-  return {
-    ...toolCall,
-    arguments: preparedArguments as Record<string, unknown>,
-  };
-}
-
-/** Applies the tool's preValidate normalization before batch admission; a non-record result keeps the raw arguments. */
-function applyToolPreValidate(tool: AgentTool, toolCall: AgentToolCall): AgentToolCall {
-  if (!tool.preValidate || !isRecord(toolCall.arguments)) {
-    return toolCall;
-  }
-  const normalized = tool.preValidate(toolCall.arguments);
-  if (!isRecord(normalized) || normalized === toolCall.arguments) {
-    return toolCall;
-  }
-  return { ...toolCall, arguments: normalized };
 }
 
 async function resolveToolCallTool(
