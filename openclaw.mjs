@@ -28,11 +28,10 @@ const isSourceCheckoutLauncher = () =>
   existsSync(new URL("./.git", import.meta.url)) ||
   existsSync(new URL("./src/entry.ts", import.meta.url));
 
-const { detectCurrentSqliteCapabilities, nodeRuntimeFailure, nodeRuntimeNote } =
-  await import("./node-sqlite.mjs");
+const { detectCurrentSqliteCapabilities, nodeRuntimeFailure } = await import("./node-sqlite.mjs");
 
 const RECOMMENDED_NODE_MAJOR = 26;
-const SUPPORTED_NODE_RANGE = ">=24.16.0 <25, or >=26.1.0";
+const SUPPORTED_NODE_RANGE = ">=24.22.1 <25, or >=26.12.1";
 const COMPILE_CACHE_DISABLED_RESPAWNED_ENV = "OPENCLAW_COMPILE_CACHE_DISABLED_RESPAWNED";
 
 const ensureSupportedRuntimeVersion = async () => {
@@ -57,10 +56,6 @@ const ensureSupportedRuntimeVersion = async () => {
   const probe = await detectCurrentSqliteCapabilities();
   const failure = nodeRuntimeFailure(process.versions.node, probe);
   if (!failure) {
-    const note = nodeRuntimeNote(process.versions.node, probe);
-    if (note) {
-      process.stderr.write(`${note}\n`);
-    }
     return false;
   }
   const unsupportedCommand = classifyUnsupportedNodeCommand(process.argv);
@@ -149,6 +144,9 @@ const respawnWithPackagedCompileCacheIfNeeded = () => {
     return false;
   }
   const desiredDirectory = resolvePackagedCompileCacheDirectory();
+  if (!desiredDirectory) {
+    return false;
+  }
   const desired = path.resolve(desiredDirectory);
   if (
     path.resolve(currentDirectory) === desired ||
@@ -710,16 +708,18 @@ if (isBrowserNativeHostInvocation) {
   ) {
     try {
       const directory = resolvePackagedCompileCacheDirectory();
-      const baseDirectory = path.resolve(directory);
-      const result = module.enableCompileCache(directory);
-      void maintainOpenClawCompileCache(directory);
-      const enabled = module.constants?.compileCacheStatus?.ENABLED;
-      if (enabled !== undefined && result?.status === enabled) {
-        // Bootstrap adapter for src/infra/node-compile-cache-env.ts: preserve the first
-        // successful input without importing runtime code before cache activation.
-        const key = Symbol.for("openclaw.nodeCompileCacheBase");
-        const owner = (globalThis[key] ??= {});
-        owner.baseDirectory ??= baseDirectory;
+      if (directory) {
+        const baseDirectory = path.resolve(directory);
+        const result = module.enableCompileCache(directory);
+        void maintainOpenClawCompileCache(directory);
+        const enabled = module.constants?.compileCacheStatus?.ENABLED;
+        if (enabled !== undefined && result?.status === enabled) {
+          // Bootstrap adapter for src/infra/node-compile-cache-env.ts: preserve the first
+          // successful input without importing runtime code before cache activation.
+          const key = Symbol.for("openclaw.nodeCompileCacheBase");
+          const owner = (globalThis[key] ??= {});
+          owner.baseDirectory ??= baseDirectory;
+        }
       }
     } catch {
       // Ignore errors

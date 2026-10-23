@@ -113,39 +113,41 @@ describe("explicit ambient agent targets", () => {
   });
 });
 
-describe("loop governor byKind budgets", () => {
-  const entries = { oscar: {} };
-  const base = { agents: ["oscar"], maxTurnsPerHour: 40 };
+describe("agent GitHub sandbox identity", () => {
+  const profileId = "ghp_0123456789abcdef0123456789abcdef";
 
-  it("accepts colon and colon-less kind keys with positive integer budgets", () => {
-    for (const byKind of [
-      { "cron:": 20, "subagent:": 40 },
-      { cron: 20, subagent: 40, incognito: 10 },
-    ]) {
-      expect(AgentsSchema.safeParse({ entries, loopGovernor: { ...base, byKind } }).success).toBe(
-        true,
-      );
+  it.each([undefined, false, true])("accepts allowInSandbox=%s for one agent", (allowInSandbox) => {
+    const github = { profileId, ...(allowInSandbox === undefined ? {} : { allowInSandbox }) };
+    const result = AgentsSchema.safeParse({ entries: { release: { tools: { github } } } });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data?.entries?.release?.tools?.github).toEqual(github);
     }
   });
 
-  it("accepts config without byKind (existing single-budget shape)", () => {
-    expect(AgentsSchema.safeParse({ entries, loopGovernor: base }).success).toBe(true);
+  it.each(["true", 1, null])("rejects non-boolean allowInSandbox=%s", (allowInSandbox) => {
+    const result = AgentsSchema.safeParse({
+      entries: { release: { tools: { github: { profileId, allowInSandbox } } } },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({
+          path: ["entries", "release", "tools", "github", "allowInSandbox"],
+        }),
+      ]);
+    }
   });
 
-  it("rejects unknown kinds and invalid budgets", () => {
-    expect(
-      AgentsSchema.safeParse({
-        entries,
-        loopGovernor: { ...base, byKind: { heartbeat: 20 } },
-      }).success,
-    ).toBe(false);
-    expect(
-      AgentsSchema.safeParse({ entries, loopGovernor: { ...base, byKind: { "cron:": 0 } } })
-        .success,
-    ).toBe(false);
-    expect(
-      AgentsSchema.safeParse({ entries, loopGovernor: { ...base, byKind: { "cron:": 1.5 } } })
-        .success,
-    ).toBe(false);
+  it("rejects a global sandbox identity opt-in", () => {
+    const result = OpenClawSchema.safeParse({
+      tools: { github: { profileId, allowInSandbox: true } },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({ path: ["tools", "github"], code: "unrecognized_keys" }),
+      ]);
+    }
   });
 });

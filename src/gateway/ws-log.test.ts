@@ -79,42 +79,49 @@ describe("gateway ws log helpers", () => {
     },
   );
 
-  test("optimized mode stays quiet for successful long-poll responses", () => {
+  test("evicts only the oldest unanswered request timings when the cap is exceeded", () => {
     setVerbose(false);
-    setGatewayWsLogStyle("auto");
     setLoggerOverride({ level: "silent", consoleLevel: "info" });
     const output = vi.fn();
     loggingState.rawConsole = { log: output, info: output, warn: output, error: output };
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    // Deliberate long-poll methods hold requests open past the slow threshold
-    // by design; a slow success is not notable.
-    const longPollMethods = [
-      "agent.wait",
-      "agent.waitDecision",
-      "agent.waitAnswer",
-      "agent.waitUpgrade",
-    ];
-    for (const method of longPollMethods) {
-      clock.mockReturnValue(1_000);
-      logWs("in", "req", { connId: `conn-${method}`, id: "wait", method });
-      clock.mockReturnValue(3_000);
-      logWs("out", "res", { connId: `conn-${method}`, id: "wait", method, ok: true });
+    const frame = (id: string) => ({ connId: "evict", id, method: "health" });
+    const answer = (id: string) => {
+      output.mockClear();
+      logWs("out", "res", { ...frame(id), ok: true });
+    };
+    // Old requests that never get a response, then the request under test, then enough
+    // newer ones to cross the cap.
+    for (let index = 0; index < 1_500; index += 1) {
+      logWs("in", "req", frame(`stale-${index}`));
     }
-    expect(output).not.toHaveBeenCalled();
-
-    // Failures must stay visible so external log monitors keep working.
-    logWs("in", "req", { connId: "conn-fail", id: "wait", method: "agent.wait" });
-    clock.mockReturnValue(5_000);
-    logWs("out", "res", { connId: "conn-fail", id: "wait", method: "agent.wait", ok: false });
-    expect(output).toHaveBeenCalledTimes(1);
-    expect(output).toHaveBeenLastCalledWith(expect.stringContaining("agent.wait"));
-
-    // Non-wait methods keep the DEFAULT_WS_SLOW_MS threshold.
-    logWs("in", "req", { connId: "conn-list", id: "list", method: "sessions.list" });
-    clock.mockReturnValue(5_100);
-    logWs("out", "res", { connId: "conn-list", id: "list", method: "sessions.list", ok: true });
-    expect(output).toHaveBeenCalledTimes(2);
-    expect(output).toHaveBeenLastCalledWith(expect.stringContaining("100ms"));
+    logWs("in", "req", frame("live"));
+    for (let index = 0; index < 600; index += 1) {
+      logWs("in", "req", frame(`newer-${index}`));
+    }
+    clock.mockReturnValue(1_000 + 5_000);
+    try {
+      // The request that was in flight when the cap tripped keeps its slow-response timing.
+      answer("live");
+      expect(output).toHaveBeenLastCalledWith(expect.stringContaining("5000ms"));
+      answer("newer-599");
+      expect(output).toHaveBeenLastCalledWith(expect.stringContaining("5000ms"));
+      // Exactly the 101 oldest entries were dropped to hold the 2000 bound.
+      answer("stale-0");
+      expect(output).not.toHaveBeenCalled();
+      answer("stale-100");
+      expect(output).not.toHaveBeenCalled();
+      answer("stale-101");
+      expect(output).toHaveBeenLastCalledWith(expect.stringContaining("5000ms"));
+    } finally {
+      clock.mockReturnValue(1_000);
+      for (let index = 0; index < 1_500; index += 1) {
+        logWs("out", "res", { ...frame(`stale-${index}`), ok: true });
+      }
+      for (let index = 0; index < 600; index += 1) {
+        logWs("out", "res", { ...frame(`newer-${index}`), ok: true });
+      }
+    }
   });
 
   test("admits only useful optimized-mode frames and honors console info enablement", () => {

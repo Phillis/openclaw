@@ -4,6 +4,7 @@ export {
   attachInternalToolBatchLifecycle,
   attachInternalToolExecutionPreparer,
   attachInternalToolResultAcknowledgement,
+  attachInternalToolResultContentSource,
   attachInternalToolResultProvenance,
   copyInternalToolExecutionPreparer,
   copyInternalToolResultState,
@@ -12,6 +13,10 @@ export {
   getInternalShouldStopAfterTurn,
   setInternalBeforeToolBatch,
   setInternalShouldStopAfterTurn,
+  getInternalToolTurnCompletion,
+  setInternalBeforeToolBatch,
+  setInternalToolTurnCompletion,
+
   type InternalBeforeToolBatchHook,
   type InternalShouldStopAfterTurnHook,
   type InternalToolExecutionPreparer,
